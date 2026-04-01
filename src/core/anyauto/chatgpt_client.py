@@ -111,6 +111,12 @@ class ChatGPTClient:
         # 设置 oai-did cookie
         seed_oai_device_cookie(self.session, self.device_id)
         self.last_registration_state = FlowState()
+        self.last_create_account_data = {}
+        self.last_create_account_continue_url = ""
+        self.last_create_account_callback_url = ""
+        self.last_create_account_refresh_token = ""
+        self.last_create_account_account_id = ""
+        self.last_create_account_workspace_id = ""
     
     def _log(self, msg):
         """输出日志"""
@@ -719,6 +725,56 @@ class ChatGPTClient:
                     data = r.json()
                 except Exception:
                     data = {}
+                self.last_create_account_data = data if isinstance(data, dict) else {}
+                if isinstance(self.last_create_account_data, dict):
+                    continue_url = normalize_flow_url(
+                        self.last_create_account_data.get("continue_url") or "",
+                        auth_base=self.AUTH,
+                    )
+                    if continue_url:
+                        self.last_create_account_continue_url = continue_url
+                        if "/api/auth/callback/openai" in continue_url and "code=" in continue_url:
+                            self.last_create_account_callback_url = continue_url
+
+                    page_info = self.last_create_account_data.get("page") or {}
+                    if isinstance(page_info, dict):
+                        page_url = normalize_flow_url(
+                            page_info.get("url")
+                            or page_info.get("href")
+                            or page_info.get("external_url")
+                            or "",
+                            auth_base=self.AUTH,
+                        )
+                        if page_url and not self.last_create_account_continue_url:
+                            self.last_create_account_continue_url = page_url
+                        if page_url and ("/api/auth/callback/openai" in page_url) and ("code=" in page_url):
+                            self.last_create_account_callback_url = page_url
+
+                    self.last_create_account_refresh_token = str(
+                        self.last_create_account_data.get("refresh_token") or ""
+                    ).strip()
+                    self.last_create_account_account_id = str(
+                        self.last_create_account_data.get("account_id")
+                        or self.last_create_account_data.get("chatgpt_account_id")
+                        or (self.last_create_account_data.get("account") or {}).get("id")
+                        or ""
+                    ).strip()
+
+                    workspace_id = str(
+                        self.last_create_account_data.get("workspace_id")
+                        or self.last_create_account_data.get("default_workspace_id")
+                        or (self.last_create_account_data.get("workspace") or {}).get("id")
+                        or ""
+                    ).strip()
+                    workspaces = self.last_create_account_data.get("workspaces")
+                    if (not workspace_id) and isinstance(workspaces, list) and workspaces:
+                        workspace_id = str((workspaces[0] or {}).get("id") or "").strip()
+                    self.last_create_account_workspace_id = workspace_id
+
+                    if self.last_create_account_refresh_token:
+                        self._log("create_account 直接返回 refresh_token，已缓存")
+                    if self.last_create_account_workspace_id:
+                        self._log(f"create_account 返回 workspace_id: {self.last_create_account_workspace_id}")
                 next_state = self._state_from_payload(data, current_url=str(r.url) or self.BASE)
                 self._log(f"账号创建成功 {describe_flow_state(next_state)}")
                 return (True, next_state) if return_state else (True, "账号创建成功")

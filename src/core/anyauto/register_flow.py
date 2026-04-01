@@ -151,6 +151,7 @@ class AnyAutoRegistrationEngine:
             browser_mode=self.browser_mode,
         )
         oauth_client._log = self._log
+        oauth_client.session = chatgpt_client.session
 
         tokens = oauth_client.login_passwordless_and_get_tokens(
             email,
@@ -171,6 +172,195 @@ class AnyAutoRegistrationEngine:
         if oauth_client.last_error:
             self._log(f"Passwordless OAuth 失败: {oauth_client.last_error}")
         return None
+
+    @staticmethod
+    def _extract_create_account_result(chatgpt_client: ChatGPTClient) -> Dict[str, Any]:
+        return {
+            "refresh_token": str(getattr(chatgpt_client, "last_create_account_refresh_token", "") or "").strip(),
+            "callback_url": str(getattr(chatgpt_client, "last_create_account_callback_url", "") or "").strip(),
+            "continue_url": str(getattr(chatgpt_client, "last_create_account_continue_url", "") or "").strip(),
+            "account_id": str(getattr(chatgpt_client, "last_create_account_account_id", "") or "").strip(),
+            "workspace_id": str(getattr(chatgpt_client, "last_create_account_workspace_id", "") or "").strip(),
+            "raw": getattr(chatgpt_client, "last_create_account_data", {}) or {},
+        }
+
+    def _run_oauth_token_completion(
+        self,
+        chatgpt_client: ChatGPTClient,
+        email: str,
+        password: str,
+        skymail_adapter: EmailServiceAdapter,
+        oauth_config: Dict[str, Any],
+        *,
+        reason: str,
+        allow_passwordless: bool = True,
+    ) -> Dict[str, Any]:
+        last_error = ""
+        last_session = chatgpt_client.session
+
+        for oauth_attempt in range(2):
+            if oauth_attempt > 0:
+                self._log(f"{reason} 第 {oauth_attempt + 1}/2 次重试...")
+                time.sleep(1)
+
+            oauth_client = OAuthClient(
+                config=oauth_config,
+                proxy=self.proxy_url,
+                verbose=False,
+                browser_mode=self.browser_mode,
+            )
+            oauth_client._log = self._log
+            oauth_client.session = last_session
+
+            tokens = oauth_client.login_and_get_tokens(
+                email,
+                password,
+                chatgpt_client.device_id,
+                chatgpt_client.ua,
+                chatgpt_client.sec_ch_ua,
+                chatgpt_client.impersonate,
+                skymail_adapter,
+            )
+            last_session = oauth_client.session
+            if tokens and tokens.get("access_token"):
+                return {
+                    "tokens": tokens,
+                    "session": oauth_client.session,
+                    "last_error": "",
+                    "source": "oauth_password",
+                }
+
+            last_error = str(getattr(oauth_client, "last_error", "") or "").strip()
+            if allow_passwordless and self._is_phone_required_error(last_error):
+                self._log(f"{reason} 命中手机号/风控，切换 passwordless OAuth 补齐...")
+                pwdless = self._passwordless_oauth_reauth(
+                    chatgpt_client,
+                    email,
+                    skymail_adapter,
+                    oauth_config,
+                )
+                if pwdless and pwdless.get("access_token"):
+                    return {
+                        "tokens": pwdless,
+                        "session": pwdless.get("session") or last_session,
+                        "last_error": "",
+                        "source": "oauth_passwordless",
+                    }
+
+        return {
+            "tokens": None,
+            "session": last_session,
+            "last_error": last_error,
+            "source": "",
+        }
+
+    def _build_session_success_result(self, session_result: Dict[str, Any]) -> Dict[str, Any]:
+        account_id = str(session_result.get("account_id", "") or "").strip()
+        if not account_id:
+            account_id = str(session_result.get("workspace_id", "") or "").strip()
+        if not account_id:
+            account_id = self._extract_account_id_from_token(session_result.get("access_token", ""))
+
+        workspace_id = str(session_result.get("workspace_id", "") or "").strip() or account_id
+        return {
+            "success": True,
+            "access_token": session_result.get("access_token", ""),
+            "session_token": session_result.get("session_token", ""),
+            "account_id": account_id,
+            "workspace_id": workspace_id,
+            "metadata": {
+                "auth_provider": session_result.get("auth_provider", ""),
+                "expires": session_result.get("expires", ""),
+                "user_id": session_result.get("user_id", ""),
+                "user": session_result.get("user") or {},
+                "account": session_result.get("account") or {},
+                "raw_session": session_result.get("raw_session") or {},
+            },
+        }
+
+    def _merge_success_result(
+        self,
+        base_result: Dict[str, Any],
+        *,
+        create_account_result: Optional[Dict[str, Any]] = None,
+        oauth_tokens: Optional[Dict[str, Any]] = None,
+        token_source: str = "",
+    ) -> Dict[str, Any]:
+        merged = dict(base_result or {})
+        metadata = dict(merged.get("metadata") or {})
+        create_account_result = dict(create_account_result or {})
+        oauth_tokens = dict(oauth_tokens or {})
+        base_access_token = str(merged.get("access_token") or "").strip()
+        base_session_token = str(merged.get("session_token") or "").strip()
+        oauth_access_token = str(oauth_tokens.get("access_token") or "").strip()
+
+        access_token = str(
+            oauth_access_token
+            or base_access_token
+            or ""
+        ).strip()
+        refresh_token = str(
+            oauth_tokens.get("refresh_token")
+            or create_account_result.get("refresh_token")
+            or merged.get("refresh_token")
+            or ""
+        ).strip()
+        id_token = str(
+            oauth_tokens.get("id_token")
+            or merged.get("id_token")
+            or ""
+        ).strip()
+        session_token = str(
+            base_session_token
+            or oauth_tokens.get("session_token")
+            or ""
+        ).strip()
+
+        account_id = str(
+            oauth_tokens.get("account_id")
+            or create_account_result.get("account_id")
+            or merged.get("account_id")
+            or self._extract_account_id_from_token(oauth_access_token)
+            or self._extract_account_id_from_token(base_access_token)
+            or ""
+        ).strip()
+        if not account_id:
+            account_id = self._extract_account_id_from_token(access_token)
+
+        explicit_workspace_id = str(
+            oauth_tokens.get("workspace_id")
+            or create_account_result.get("workspace_id")
+            or ""
+        ).strip()
+        workspace_id = str(
+            explicit_workspace_id
+            or merged.get("workspace_id")
+            or account_id
+            or ""
+        ).strip()
+
+        merged.update({
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "id_token": id_token,
+            "session_token": session_token,
+            "account_id": account_id,
+            "workspace_id": workspace_id,
+        })
+
+        if create_account_result.get("callback_url"):
+            metadata["create_account_callback_url"] = create_account_result.get("callback_url")
+        if create_account_result.get("continue_url"):
+            metadata["create_account_continue_url"] = create_account_result.get("continue_url")
+        metadata["access_token_source"] = "oauth" if oauth_access_token else "session_reuse"
+        if session_token:
+            metadata["session_token_source"] = "session_reuse" if base_session_token else "oauth"
+        if token_source:
+            metadata["refresh_token_source"] = token_source
+        metadata["refresh_token_acquired"] = bool(refresh_token)
+        metadata["has_session_token"] = bool(session_token)
+        merged["metadata"] = metadata
+        return merged
 
     def run(self):
         """
@@ -261,87 +451,88 @@ class AnyAutoRegistrationEngine:
                 # 保存会话与设备
                 self.session = chatgpt_client.session
                 self.device_id = chatgpt_client.device_id
+                create_account_result = self._extract_create_account_result(chatgpt_client)
+                if create_account_result.get("refresh_token"):
+                    self._log("注册链路在 create_account 阶段已拿到 refresh_token")
 
                 if add_phone_required:
-                    pwdless = self._passwordless_oauth_reauth(
-                        chatgpt_client,
-                        normalized_email,
-                        skymail_adapter,
-                        oauth_config,
-                    )
-                    if pwdless and pwdless.get("access_token"):
-                        self.session = pwdless.get("session") or self.session
-                        return {
-                            "success": True,
-                            "access_token": pwdless.get("access_token", ""),
-                            "refresh_token": pwdless.get("refresh_token", ""),
-                            "id_token": pwdless.get("id_token", ""),
-                        }
+                    self._log("注册态命中 add_phone，仍先尝试复用当前会话；缺 refresh_token 时再走 OAuth 补齐")
 
                 # 5. 复用 session 取 token
                 self._log("步骤 2/2: 优先复用注册会话提取 ChatGPT Session / AccessToken...")
                 session_ok, session_result = chatgpt_client.reuse_session_and_get_tokens()
                 if session_ok:
-                    self._log("Token 提取完成！")
-                    account_id = str(session_result.get("account_id", "") or "").strip()
-                    if not account_id:
-                        account_id = str(session_result.get("workspace_id", "") or "").strip()
-                    if not account_id:
-                        account_id = self._extract_account_id_from_token(session_result.get("access_token", ""))
-                    workspace_id = str(session_result.get("workspace_id", "") or "").strip() or account_id
-                    return {
-                        "success": True,
-                        "access_token": session_result.get("access_token", ""),
-                        "session_token": session_result.get("session_token", ""),
-                        "account_id": account_id,
-                        "workspace_id": workspace_id,
-                        "metadata": {
-                            "auth_provider": session_result.get("auth_provider", ""),
-                            "expires": session_result.get("expires", ""),
-                            "user_id": session_result.get("user_id", ""),
-                            "user": session_result.get("user") or {},
-                            "account": session_result.get("account") or {},
-                        },
-                    }
+                    self._log("会话复用成功，先保留 session/access_token，再补齐 refresh_token...")
+                    base_result = self._build_session_success_result(session_result)
+                    base_result = self._merge_success_result(
+                        base_result,
+                        create_account_result=create_account_result,
+                        token_source="create_account" if create_account_result.get("refresh_token") else "",
+                    )
+
+                    if base_result.get("refresh_token"):
+                        self._log(f"无需额外 OAuth，refresh_token 已补齐，来源: {base_result.get('metadata', {}).get('refresh_token_source') or 'unknown'}")
+                        return base_result
+
+                    oauth_completion = self._run_oauth_token_completion(
+                        chatgpt_client,
+                        normalized_email,
+                        self.password,
+                        skymail_adapter,
+                        oauth_config,
+                        reason="session 成功后的 OAuth 补 rt",
+                        allow_passwordless=True,
+                    )
+                    self.session = oauth_completion.get("session") or self.session
+                    tokens = oauth_completion.get("tokens") or {}
+                    if tokens.get("access_token"):
+                        merged_result = self._merge_success_result(
+                            base_result,
+                            create_account_result=create_account_result,
+                            oauth_tokens=tokens,
+                            token_source=str(oauth_completion.get("source") or "oauth"),
+                        )
+                        self._log(
+                            f"OAuth 补齐完成，refresh_token={'已获取' if merged_result.get('refresh_token') else '仍缺失'}，"
+                            f"来源: {oauth_completion.get('source') or 'oauth'}"
+                        )
+                        return merged_result
+
+                    metadata = dict(base_result.get("metadata") or {})
+                    metadata["refresh_token_acquired"] = False
+                    metadata["refresh_token_error"] = oauth_completion.get("last_error") or ""
+                    if self._is_phone_required_error(oauth_completion.get("last_error")):
+                        metadata["phone_verification_required"] = True
+                    base_result["metadata"] = metadata
+                    self._log("会话复用已成功，但 OAuth 仍未补齐 refresh_token，将保留当前会话结果返回")
+                    return base_result
 
                 # 6. OAuth 回退
                 self._log(f"复用会话失败，回退到 OAuth 登录补全流程: {session_result}")
-                tokens = None
-                oauth_client = None
-                for oauth_attempt in range(2):
-                    if oauth_attempt > 0:
-                        self._log(f"同账号 OAuth 重试 {oauth_attempt + 1}/2 ...")
-                        time.sleep(1)
-
-                    oauth_client = OAuthClient(
-                        config=oauth_config,
-                        proxy=self.proxy_url,
-                        verbose=False,
-                        browser_mode=self.browser_mode,
-                    )
-                    oauth_client._log = self._log
-                    oauth_client.session = chatgpt_client.session
-
-                    tokens = oauth_client.login_and_get_tokens(
-                        normalized_email,
-                        self.password,
-                        chatgpt_client.device_id,
-                        chatgpt_client.ua,
-                        chatgpt_client.sec_ch_ua,
-                        chatgpt_client.impersonate,
-                        skymail_adapter,
-                    )
-                    if tokens and tokens.get("access_token"):
-                        break
-
-                    if oauth_client.last_error and "add_phone" in oauth_client.last_error:
-                        break
+                oauth_completion = self._run_oauth_token_completion(
+                    chatgpt_client,
+                    normalized_email,
+                    self.password,
+                    skymail_adapter,
+                    oauth_config,
+                    reason="复用会话失败后的 OAuth 回退",
+                    allow_passwordless=True,
+                )
+                tokens = oauth_completion.get("tokens") or {}
+                self.session = oauth_completion.get("session") or self.session
 
                 if tokens and tokens.get("access_token"):
                     self._log("OAuth 回退补全成功！")
                     workspace_id = ""
                     session_cookie = ""
                     try:
+                        oauth_client = OAuthClient(
+                            config=oauth_config,
+                            proxy=self.proxy_url,
+                            verbose=False,
+                            browser_mode=self.browser_mode,
+                        )
+                        oauth_client.session = self.session
                         session_data = oauth_client._decode_oauth_session_cookie()
                         if session_data:
                             workspaces = session_data.get("workspaces", [])
@@ -361,29 +552,27 @@ class AnyAutoRegistrationEngine:
                         pass
 
                     account_id = self._extract_account_id_from_token(tokens.get("access_token", "")) or workspace_id
-                    return {
+                    return self._merge_success_result({
                         "success": True,
                         "access_token": tokens.get("access_token", ""),
-                        "refresh_token": tokens.get("refresh_token", ""),
-                        "id_token": tokens.get("id_token", ""),
                         "account_id": account_id or ("v2_acct_" + chatgpt_client.device_id[:8]),
                         "workspace_id": workspace_id or account_id,
                         "session_token": session_cookie,
-                    }
+                    }, create_account_result=create_account_result, oauth_tokens=tokens, token_source=str(oauth_completion.get("source") or "oauth"))
 
                 # 7. 手机号验证需求：按成功返回，但标记为待补全
-                if oauth_client and self._is_phone_required_error(oauth_client.last_error):
+                if self._is_phone_required_error(oauth_completion.get("last_error")):
                     self._log("检测到手机号验证需求，按成功返回并标记待补全")
                     return {
                         "success": True,
                         "metadata": {
                             "phone_verification_required": True,
                             "token_pending": True,
-                            "oauth_error": oauth_client.last_error,
+                            "oauth_error": oauth_completion.get("last_error"),
                         },
                     }
 
-                last_error = str(getattr(oauth_client, "last_error", "") or "").strip() or "获取最终 OAuth Tokens 失败"
+                last_error = str(oauth_completion.get("last_error") or "").strip() or "获取最终 OAuth Tokens 失败"
                 return {"success": False, "error_message": f"账号已创建成功，但 {last_error}"}
 
             except Exception as attempt_error:

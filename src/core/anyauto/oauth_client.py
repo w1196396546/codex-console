@@ -27,6 +27,18 @@ from .sentinel_token import build_sentinel_token
 
 class OAuthClient:
     """OAuth 客户端 - 用于获取 Access Token 和 Refresh Token"""
+
+    @staticmethod
+    def _normalize_oauth_issuer(value):
+        raw = str(value or "").strip()
+        if not raw:
+            return "https://auth.openai.com"
+        parsed = urlparse(raw)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+        if raw.startswith("//"):
+            return f"https:{raw}".rstrip("/")
+        return raw.rstrip("/")
     
     def __init__(self, config, proxy=None, verbose=True, browser_mode="protocol"):
         """
@@ -39,7 +51,9 @@ class OAuthClient:
             browser_mode: protocol | headless | headed
         """
         self.config = dict(config or {})
-        self.oauth_issuer = self.config.get("oauth_issuer", "https://auth.openai.com")
+        self.oauth_issuer = self._normalize_oauth_issuer(
+            self.config.get("oauth_issuer", "https://auth.openai.com")
+        )
         self.oauth_client_id = self.config.get("oauth_client_id", "app_EMoamEEZ73f0CkXaXp7hrann")
         self.oauth_redirect_uri = self.config.get("oauth_redirect_uri", "http://localhost:1455/auth/callback")
         self.proxy = proxy

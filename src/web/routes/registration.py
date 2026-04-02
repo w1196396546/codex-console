@@ -138,6 +138,9 @@ class OutlookAccountForRegistration(BaseModel):
     name: str
     has_oauth: bool              # 是否有 OAuth 配置
     is_registered: bool          # 是否已注册
+    has_refresh_token: bool = False
+    needs_token_refresh: bool = False
+    is_registration_complete: bool = False
     registered_account_id: Optional[int] = None
 
 
@@ -176,6 +179,21 @@ class OutlookBatchRegistrationResponse(BaseModel):
 
 
 # ============== Helper Functions ==============
+
+def _has_refresh_token(account: Optional[object]) -> bool:
+    if not account:
+        return False
+    return bool(str(getattr(account, "refresh_token", "") or "").strip())
+
+
+def _is_account_registration_complete(account: Optional[object]) -> bool:
+    if not account:
+        return False
+    return _has_refresh_token(account)
+
+
+def _needs_token_refresh(account: Optional[object]) -> bool:
+    return bool(account) and not _is_account_registration_complete(account)
 
 def task_to_response(task: RegistrationTask) -> RegistrationTaskResponse:
     """转换任务模型为响应"""
@@ -1447,6 +1465,9 @@ async def get_outlook_accounts_for_registration():
             ).first()
 
             is_registered = existing_account is not None
+            has_refresh_token = _has_refresh_token(existing_account)
+            needs_token_refresh = _needs_token_refresh(existing_account)
+            is_registration_complete = _is_account_registration_complete(existing_account)
             if is_registered:
                 registered_count += 1
             else:
@@ -1458,6 +1479,9 @@ async def get_outlook_accounts_for_registration():
                 name=service.name,
                 has_oauth=bool(config.get("client_id") and config.get("refresh_token")),
                 is_registered=is_registered,
+                has_refresh_token=has_refresh_token,
+                needs_token_refresh=needs_token_refresh,
+                is_registration_complete=is_registration_complete,
                 registered_account_id=existing_account.id if existing_account else None
             ))
 
@@ -1583,7 +1607,7 @@ async def start_outlook_batch_registration(
                     Account.email == email
                 ).first()
 
-                if existing_account:
+                if _is_account_registration_complete(existing_account):
                     skipped_count += 1
                 else:
                     actual_service_ids.append(service_id)

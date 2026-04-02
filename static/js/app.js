@@ -1360,7 +1360,7 @@ async function loadOutlookAccounts() {
 
         renderOutlookAccountsList();
 
-        addLog('info', `[系统] 已加载 ${data.total} 个 Outlook 账户 (已注册: ${data.registered_count}, 未注册: ${data.unregistered_count})`);
+        addLog('info', `[系统] 已加载 ${data.total} 个 Outlook 账户 (已注册: ${data.registered_count}, 可执行: ${data.unregistered_count})`);
 
     } catch (error) {
         console.error('加载 Outlook 账户列表失败:', error);
@@ -1449,12 +1449,14 @@ function renderOutlookAccountsList() {
     }
 
     const html = filteredAccounts.map(account => `
-        <label class="outlook-account-item" style="display: flex; align-items: center; padding: var(--spacing-sm); border-bottom: 1px solid var(--border-light); cursor: pointer; ${account.is_registered ? 'opacity: 0.6;' : ''}" data-id="${account.id}" data-registered="${account.is_registered}">
+        <label class="outlook-account-item" style="display: flex; align-items: center; padding: var(--spacing-sm); border-bottom: 1px solid var(--border-light); cursor: pointer; ${account.is_registration_complete ? 'opacity: 0.6;' : ''}" data-id="${account.id}" data-registered="${account.is_registered}">
             <input type="checkbox" class="outlook-account-checkbox" value="${account.id}" ${selectedOutlookAccountIds.has(Number(account.id)) ? 'checked' : ''} style="margin-right: var(--spacing-sm);">
             <div style="flex: 1;">
                 <div style="font-weight: 500;">${escapeHtml(account.email)}</div>
                 <div style="font-size: 0.75rem; color: var(--text-muted);">
-                    ${account.is_registered
+                    ${account.needs_token_refresh
+                        ? `<span style="color: var(--warning-color);">↻ 已注册，待补 Token</span>`
+                        : account.is_registered
                         ? `<span style="color: var(--success-color);">✓ 已注册</span>`
                         : '<span style="color: var(--primary-color);">未注册</span>'
                     }
@@ -1499,7 +1501,7 @@ function selectUnregisteredOutlook() {
         selectedOutlookAccountIds = outlookSelectorApi.selectVisibleUnregisteredAccounts(selectedOutlookAccountIds, filteredAccounts);
     } else {
         filteredAccounts.forEach((account) => {
-            if (!account.is_registered) {
+            if (!account.is_registration_complete) {
                 selectedOutlookAccountIds.add(Number(account.id));
             }
         });
@@ -1570,8 +1572,8 @@ async function handleOutlookBatchRegistration() {
         const data = await api.post('/registration/outlook-batch', requestData);
 
         if (data.to_register === 0) {
-            addLog('warning', '[警告] 所有选中的邮箱都已注册，无需重复注册');
-            toast.warning('所有选中的邮箱都已注册');
+            addLog('warning', '[警告] 所有选中的邮箱都已完整可用，无需重复注册');
+            toast.warning('所有选中的邮箱都已完整可用');
             resetButtons();
             return;
         }

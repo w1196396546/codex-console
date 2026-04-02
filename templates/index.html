@@ -330,7 +330,7 @@
                                             >
                                             <select id="outlook-account-status-filter" class="form-select">
                                                 <option value="all">全部状态</option>
-                                                <option value="unregistered">仅未注册</option>
+                                                <option value="unregistered">仅可执行</option>
                                                 <option value="registered">仅已注册</option>
                                             </select>
                                         </div>
@@ -347,7 +347,7 @@
                                         </div>
                                         <div style="margin-top: var(--spacing-sm); display: flex; gap: var(--spacing-xs); flex-wrap: wrap;">
                                             <button type="button" class="btn btn-ghost btn-sm" onclick="selectAllOutlookAccounts()">全选</button>
-                                            <button type="button" class="btn btn-ghost btn-sm" onclick="selectUnregisteredOutlook()">只选未注册</button>
+                                            <button type="button" class="btn btn-ghost btn-sm" onclick="selectUnregisteredOutlook()">只选可执行</button>
                                             <button type="button" class="btn btn-ghost btn-sm" onclick="deselectAllOutlookAccounts()">取消全选</button>
                                         </div>
                                         <small style="display: block; margin-top: var(--spacing-xs); color: var(--text-muted);">
@@ -379,7 +379,7 @@
                                     <div class="form-group">
                                         <label style="display: flex; align-items: center; gap: var(--spacing-sm); cursor: pointer;">
                                             <input type="checkbox" id="outlook-skip-registered" checked>
-                                            <span>自动跳过已注册的邮箱</span>
+                                            <span>自动跳过已完整可用的邮箱</span>
                                         </label>
                                     </div>
                                 </div>

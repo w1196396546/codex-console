@@ -34,7 +34,7 @@
             return Boolean(account.is_registered);
         }
         if (status === 'unregistered') {
-            return !account.is_registered;
+            return !account.is_registration_complete;
         }
         return true;
     }
@@ -66,7 +66,7 @@
 
         for (const account of accounts || []) {
             const numericId = toNumericId(account.id);
-            if (numericId !== null && !account.is_registered) {
+            if (numericId !== null && !account.is_registration_complete) {
                 selected.add(numericId);
             }
         }
@@ -92,7 +92,7 @@
 
         for (const account of visibleAccounts || []) {
             const numericId = toNumericId(account.id);
-            if (numericId !== null && !account.is_registered) {
+            if (numericId !== null && !account.is_registration_complete) {
                 next.add(numericId);
             }
         }

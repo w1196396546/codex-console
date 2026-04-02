@@ -177,6 +177,12 @@
                             <option value="luckmail">LuckMail</option>
                         </select>
 
+                        <select id="filter-refresh-token-state" class="form-select">
+                            <option value="">全部 RT 状态</option>
+                            <option value="has">有 RT</option>
+                            <option value="missing">无 RT</option>
+                        </select>
+
                         <input type="text" id="search-input" class="form-input" placeholder="🔍 搜索邮箱..." style="min-width: 200px;">
                     </div>
 
@@ -193,6 +199,17 @@
                         <button class="btn btn-info" id="batch-check-sub-btn" disabled title="批量检测订阅状态">
                             🔍 检测订阅
                         </button>
+                        <div class="dropdown">
+                            <button class="btn btn-secondary" id="batch-state-btn" disabled>
+                                批量改状态
+                            </button>
+                            <div class="dropdown-menu" id="batch-state-menu">
+                                <a href="#" class="dropdown-item" data-status="active">设为 active</a>
+                                <a href="#" class="dropdown-item" data-status="expired">设为 expired</a>
+                                <a href="#" class="dropdown-item" data-status="banned">设为 banned</a>
+                                <a href="#" class="dropdown-item" data-status="failed">设为 failed</a>
+                            </div>
+                        </div>
                         <div class="dropdown">
                             <button class="btn btn-success" id="batch-upload-btn" disabled>
                                 ☁️ 上传
@@ -343,6 +360,7 @@
     </div>
 
     <script src="/static/js/utils.js?v={{ static_version }}"></script>
+    <script src="/static/js/accounts_state_actions.js?v={{ static_version }}"></script>
     <script src="/static/js/accounts.js?v={{ static_version }}"></script>
 </body>
 </html>

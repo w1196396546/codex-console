@@ -97,13 +97,13 @@
 
 账号管理页使用以下两类 RT 状态：
 
-- `has_rt`
-- `missing_rt`
+- `has`
+- `missing`
 
 映射规则：
 
-- `has_rt`：`refresh_token` 非空
-- `missing_rt`：`refresh_token` 为空
+- `has`：`refresh_token` 非空
+- `missing`：`refresh_token` 为空
 
 ### 4.3 账号管理账号状态
 

@@ -95,6 +95,7 @@ class AccountResponse(BaseModel):
     cpa_uploaded_at: Optional[str] = None
     subscription_type: Optional[str] = None
     subscription_at: Optional[str] = None
+    has_refresh_token: bool = False
     cookies: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -181,12 +182,18 @@ class BatchDeleteRequest(BaseModel):
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
     search_filter: Optional[str] = None
+    refresh_token_state_filter: Optional[str] = None
 
 
 class BatchUpdateRequest(BaseModel):
     """批量更新请求"""
-    ids: List[int]
+    ids: List[int] = []
     status: str
+    select_all: bool = False
+    status_filter: Optional[str] = None
+    email_service_filter: Optional[str] = None
+    search_filter: Optional[str] = None
+    refresh_token_state_filter: Optional[str] = None
 
 
 class OverviewRefreshRequest(BaseModel):
@@ -218,8 +225,13 @@ def resolve_account_ids(
     status_filter: Optional[str] = None,
     email_service_filter: Optional[str] = None,
     search_filter: Optional[str] = None,
+    refresh_token_state_filter: Optional[str] = None,
 ) -> List[int]:
     """当 select_all=True 时查询全部符合条件的 ID，否则直接返回传入的 ids"""
+    normalized_refresh_token_state = _normalize_refresh_token_state(
+        refresh_token_state_filter,
+        field_name="refresh_token_state_filter",
+    )
     if not select_all:
         return ids
     query = db.query(Account.id)
@@ -227,6 +239,11 @@ def resolve_account_ids(
         query = _apply_status_filter(query, status_filter)
     if email_service_filter:
         query = query.filter(Account.email_service == email_service_filter)
+    query = _apply_refresh_token_state_filter(
+        query,
+        normalized_refresh_token_state,
+        field_name="refresh_token_state_filter",
+    )
     if search_filter:
         pattern = f"%{search_filter}%"
         query = query.filter(
@@ -235,8 +252,17 @@ def resolve_account_ids(
     return [row[0] for row in query.all()]
 
 
+def _has_refresh_token_value(refresh_token: Optional[str]) -> bool:
+    return bool(str(refresh_token or "").strip())
+
+
+def _refresh_token_presence_expression():
+    return func.trim(func.coalesce(Account.refresh_token, ""))
+
+
 def account_to_response(account: Account) -> AccountResponse:
     """转换 Account 模型为响应模型"""
+    has_refresh_token = _has_refresh_token_value(account.refresh_token)
     return AccountResponse(
         id=account.id,
         email=account.email,
@@ -255,10 +281,38 @@ def account_to_response(account: Account) -> AccountResponse:
         cpa_uploaded_at=account.cpa_uploaded_at.isoformat() if account.cpa_uploaded_at else None,
         subscription_type=account.subscription_type,
         subscription_at=account.subscription_at.isoformat() if account.subscription_at else None,
+        has_refresh_token=has_refresh_token,
         cookies=account.cookies,
         created_at=account.created_at.isoformat() if account.created_at else None,
         updated_at=account.updated_at.isoformat() if account.updated_at else None,
     )
+
+
+def _normalize_refresh_token_state(value: Optional[str], *, field_name: str) -> Optional[str]:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized not in {"has", "missing"}:
+        raise HTTPException(status_code=400, detail=f"无效的 {field_name}")
+    return normalized
+
+
+def _apply_refresh_token_state_filter(
+    query,
+    refresh_token_state: Optional[str],
+    *,
+    field_name: str = "refresh_token_state",
+):
+    normalized = _normalize_refresh_token_state(
+        refresh_token_state,
+        field_name=field_name,
+    )
+    presence_expression = _refresh_token_presence_expression()
+    if normalized == "has":
+        return query.filter(presence_expression != "")
+    if normalized == "missing":
+        return query.filter(presence_expression == "")
+    return query
 
 
 def _extract_cookie_value(cookies_text: Optional[str], cookie_name: str) -> str:
@@ -881,6 +935,7 @@ async def list_accounts(
     status: Optional[str] = Query(None, description="状态筛选"),
     email_service: Optional[str] = Query(None, description="邮箱服务筛选"),
     search: Optional[str] = Query(None, description="搜索关键词"),
+    refresh_token_state: Optional[str] = Query(None, description="RT 状态筛选"),
 ):
     """
     获取账号列表
@@ -898,6 +953,8 @@ async def list_accounts(
         # 邮箱服务筛选
         if email_service:
             query = query.filter(Account.email_service == email_service)
+
+        query = _apply_refresh_token_state_filter(query, refresh_token_state)
 
         # 搜索
         if search:
@@ -1429,7 +1486,8 @@ async def batch_delete_accounts(request: BatchDeleteRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter, request.search_filter,
+            request.refresh_token_state_filter,
         )
         deleted_count = 0
         errors = []
@@ -1455,12 +1513,48 @@ async def batch_update_accounts(request: BatchUpdateRequest):
     """批量更新账号状态"""
     if request.status not in [e.value for e in AccountStatus]:
         raise HTTPException(status_code=400, detail="无效的状态值")
+    _normalize_refresh_token_state(
+        request.refresh_token_state_filter,
+        field_name="refresh_token_state_filter",
+    )
 
     with get_db() as db:
+        requested_ids = resolve_account_ids(
+            db,
+            request.ids,
+            request.select_all,
+            request.status_filter,
+            request.email_service_filter,
+            request.search_filter,
+            request.refresh_token_state_filter,
+        )
+        requested_count = len(requested_ids)
+
+        if request.select_all:
+            ids = requested_ids
+            missing_ids: List[int] = []
+        else:
+            existing_rows = db.query(Account.id).filter(Account.id.in_(requested_ids)).all() if requested_ids else []
+            existing_id_set = {row[0] for row in existing_rows}
+            missing_ids = [account_id for account_id in requested_ids if account_id not in existing_id_set]
+            ids = [account_id for account_id in requested_ids if account_id in existing_id_set]
+        skipped_count = len(missing_ids)
+
+        if not ids:
+            return {
+                "success": True,
+                "requested_count": requested_count,
+                "updated_count": 0,
+                "skipped_count": skipped_count,
+                "missing_ids": missing_ids,
+                "errors": None,
+                "message": "当前筛选结果下无可更新账号" if requested_count == 0 else f"部分账号不存在，已跳过 {skipped_count} 个",
+            }
+
         updated_count = 0
         errors = []
 
-        for account_id in request.ids:
+        for account_id in ids:
             try:
                 account = crud.get_account_by_id(db, account_id)
                 if account:
@@ -1471,7 +1565,11 @@ async def batch_update_accounts(request: BatchUpdateRequest):
 
         return {
             "success": True,
+            "requested_count": requested_count,
             "updated_count": updated_count,
+            "skipped_count": skipped_count,
+            "missing_ids": missing_ids,
+            "message": f"部分账号不存在，已跳过 {skipped_count} 个" if skipped_count > 0 else None,
             "errors": errors if errors else None
         }
 
@@ -1483,6 +1581,7 @@ class BatchExportRequest(BaseModel):
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
     search_filter: Optional[str] = None
+    refresh_token_state_filter: Optional[str] = None
 
 
 @router.post("/export/json")
@@ -1491,7 +1590,8 @@ async def export_accounts_json(request: BatchExportRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter, request.search_filter,
+            request.refresh_token_state_filter,
         )
         accounts = db.query(Account).filter(Account.id.in_(ids)).all()
 
@@ -1537,7 +1637,8 @@ async def export_accounts_csv(request: BatchExportRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter, request.search_filter,
+            request.refresh_token_state_filter,
         )
         accounts = db.query(Account).filter(Account.id.in_(ids)).all()
 
@@ -1625,7 +1726,8 @@ async def export_accounts_sub2api(request: BatchExportRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter, request.search_filter,
+            request.refresh_token_state_filter,
         )
         accounts = db.query(Account).filter(Account.id.in_(ids)).all()
 
@@ -1654,7 +1756,8 @@ async def export_accounts_codex(request: BatchExportRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter, request.search_filter,
+            request.refresh_token_state_filter,
         )
         accounts = db.query(Account).filter(Account.id.in_(ids)).all()
 
@@ -1690,7 +1793,8 @@ async def export_accounts_cpa(request: BatchExportRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter, request.search_filter,
+            request.refresh_token_state_filter,
         )
         accounts = db.query(Account).filter(Account.id.in_(ids)).all()
 
@@ -1844,6 +1948,7 @@ class BatchRefreshRequest(BaseModel):
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
     search_filter: Optional[str] = None
+    refresh_token_state_filter: Optional[str] = None
 
 
 class TokenValidateRequest(BaseModel):
@@ -1859,6 +1964,7 @@ class BatchValidateRequest(BaseModel):
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
     search_filter: Optional[str] = None
+    refresh_token_state_filter: Optional[str] = None
 
 
 @router.post("/batch-refresh")
@@ -1875,7 +1981,8 @@ async def batch_refresh_tokens(request: BatchRefreshRequest, background_tasks: B
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter, request.search_filter,
+            request.refresh_token_state_filter,
         )
 
     for account_id in ids:
@@ -1926,7 +2033,8 @@ async def batch_validate_tokens(request: BatchValidateRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter, request.search_filter,
+            request.refresh_token_state_filter,
         )
 
     for account_id in ids:
@@ -1989,6 +2097,7 @@ class BatchCPAUploadRequest(BaseModel):
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
     search_filter: Optional[str] = None
+    refresh_token_state_filter: Optional[str] = None
     cpa_service_id: Optional[int] = None  # 指定 CPA 服务 ID，不传则使用全局配置
 
 
@@ -2012,7 +2121,8 @@ async def batch_upload_accounts_to_cpa(request: BatchCPAUploadRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter, request.search_filter,
+            request.refresh_token_state_filter,
         )
 
     results = batch_upload_to_cpa(ids, proxy, api_url=cpa_api_url, api_token=cpa_api_token)
@@ -2077,6 +2187,7 @@ class BatchSub2ApiUploadRequest(BaseModel):
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
     search_filter: Optional[str] = None
+    refresh_token_state_filter: Optional[str] = None
     service_id: Optional[int] = None  # 指定 Sub2API 服务 ID，不传则使用第一个启用的
     concurrency: int = 3
     priority: int = 50
@@ -2109,7 +2220,8 @@ async def batch_upload_accounts_to_sub2api(request: BatchSub2ApiUploadRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter, request.search_filter,
+            request.refresh_token_state_filter,
         )
 
     results = batch_upload_to_sub2api(
@@ -2178,6 +2290,7 @@ class BatchUploadTMRequest(BaseModel):
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
     search_filter: Optional[str] = None
+    refresh_token_state_filter: Optional[str] = None
     service_id: Optional[int] = None
 
 
@@ -2201,7 +2314,8 @@ async def batch_upload_accounts_to_tm(request: BatchUploadTMRequest):
 
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter, request.search_filter,
+            request.refresh_token_state_filter,
         )
 
     results = batch_upload_to_team_manager(ids, api_url, api_key)

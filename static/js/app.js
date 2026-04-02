@@ -18,7 +18,7 @@ let outlookAccounts = [];
 let selectedOutlookAccountIds = new Set();
 let outlookAccountFilters = {
     keyword: '',
-    status: 'all',
+    executionState: 'all',
 };
 let taskCompleted = false;  // 标记任务是否已完成
 let batchCompleted = false;  // 标记批量任务是否已完成
@@ -259,7 +259,7 @@ function initEventListeners() {
 
     if (elements.outlookAccountStatusFilter) {
         elements.outlookAccountStatusFilter.addEventListener('change', () => {
-            outlookAccountFilters.status = elements.outlookAccountStatusFilter.value || 'all';
+            outlookAccountFilters.executionState = elements.outlookAccountStatusFilter.value || 'all';
             renderOutlookAccountsList();
         });
     }
@@ -1357,10 +1357,13 @@ async function loadOutlookAccounts() {
         outlookAccounts = data.accounts || [];
         selectedOutlookAccountIds = createDefaultOutlookSelection(outlookAccounts);
         resetOutlookAccountFilters();
+        const executableCount = typeof outlookSelectorApi.countExecutableAccounts === 'function'
+            ? outlookSelectorApi.countExecutableAccounts(outlookAccounts)
+            : outlookAccounts.filter((account) => isExecutableOutlookAccount(account)).length;
 
         renderOutlookAccountsList();
 
-        addLog('info', `[系统] 已加载 ${data.total} 个 Outlook 账户 (已注册: ${data.registered_count}, 可执行: ${data.unregistered_count})`);
+        addLog('info', `[系统] 已加载 ${data.total} 个 Outlook 账户 (账号已存在: ${data.registered_count}, 可执行: ${executableCount})`);
 
     } catch (error) {
         console.error('加载 Outlook 账户列表失败:', error);
@@ -1373,13 +1376,52 @@ function createDefaultOutlookSelection(accounts) {
     if (typeof outlookSelectorApi.createInitialSelectedIds === 'function') {
         return outlookSelectorApi.createInitialSelectedIds(accounts);
     }
-    return new Set((accounts || []).filter((item) => !item.is_registered).map((item) => Number(item.id)));
+    return new Set(
+        (accounts || [])
+            .filter((item) => isExecutableOutlookAccount(item))
+            .map((item) => Number(item.id))
+            .filter((id) => Number.isFinite(id))
+    );
+}
+
+function resolveOutlookExecutionState(account) {
+    if (typeof outlookSelectorApi.mapExecutionState === 'function') {
+        return outlookSelectorApi.mapExecutionState(account);
+    }
+    if (account && account.is_registration_complete === true) {
+        return 'registered_complete';
+    }
+    if (account && Boolean(account.is_registered)) {
+        return 'registered_needs_token_refresh';
+    }
+    return 'unregistered';
+}
+
+function isExecutableOutlookAccount(account) {
+    if (typeof outlookSelectorApi.isExecutableAccount === 'function') {
+        return outlookSelectorApi.isExecutableAccount(account);
+    }
+    const executionState = resolveOutlookExecutionState(account);
+    return executionState === 'unregistered' || executionState === 'registered_needs_token_refresh';
+}
+
+function getOutlookExecutionStateLabel(executionState) {
+    if (typeof outlookSelectorApi.getExecutionStateLabel === 'function') {
+        return outlookSelectorApi.getExecutionStateLabel(executionState);
+    }
+    if (executionState === 'registered_needs_token_refresh') {
+        return '已注册，待补 Token';
+    }
+    if (executionState === 'registered_complete') {
+        return '注册已完成';
+    }
+    return '未注册';
 }
 
 function resetOutlookAccountFilters() {
     outlookAccountFilters = {
         keyword: '',
-        status: 'all',
+        executionState: 'all',
     };
 
     if (elements.outlookAccountSearch) {
@@ -1448,23 +1490,31 @@ function renderOutlookAccountsList() {
         return;
     }
 
-    const html = filteredAccounts.map(account => `
-        <label class="outlook-account-item" style="display: flex; align-items: center; padding: var(--spacing-sm); border-bottom: 1px solid var(--border-light); cursor: pointer; ${account.is_registration_complete ? 'opacity: 0.6;' : ''}" data-id="${account.id}" data-registered="${account.is_registered}">
+    const html = filteredAccounts.map((account) => {
+        const executionState = resolveOutlookExecutionState(account);
+        const isComplete = executionState === 'registered_complete';
+        const label = getOutlookExecutionStateLabel(executionState);
+        const statusColor = executionState === 'registered_needs_token_refresh'
+            ? 'var(--warning-color)'
+            : (executionState === 'registered_complete' ? 'var(--success-color)' : 'var(--primary-color)');
+        const statusIcon = executionState === 'registered_needs_token_refresh'
+            ? '↻ '
+            : (executionState === 'registered_complete' ? '✓ ' : '');
+        const statusText = `<span style="color: ${statusColor};">${statusIcon}${label}</span>`;
+
+        return `
+        <label class="outlook-account-item" style="display: flex; align-items: center; padding: var(--spacing-sm); border-bottom: 1px solid var(--border-light); cursor: pointer; ${isComplete ? 'opacity: 0.6;' : ''}" data-id="${account.id}" data-registered="${account.is_registered}" data-execution-state="${executionState}">
             <input type="checkbox" class="outlook-account-checkbox" value="${account.id}" ${selectedOutlookAccountIds.has(Number(account.id)) ? 'checked' : ''} style="margin-right: var(--spacing-sm);">
             <div style="flex: 1;">
                 <div style="font-weight: 500;">${escapeHtml(account.email)}</div>
                 <div style="font-size: 0.75rem; color: var(--text-muted);">
-                    ${account.needs_token_refresh
-                        ? `<span style="color: var(--warning-color);">↻ 已注册，待补 Token</span>`
-                        : account.is_registered
-                        ? `<span style="color: var(--success-color);">✓ 已注册</span>`
-                        : '<span style="color: var(--primary-color);">未注册</span>'
-                    }
+                    ${statusText}
                     ${account.has_oauth ? ' | OAuth' : ''}
                 </div>
             </div>
         </label>
-    `).join('');
+    `;
+    }).join('');
 
     elements.outlookAccountsContainer.innerHTML = html;
 
@@ -1494,20 +1544,24 @@ function selectAllOutlookAccounts() {
     renderOutlookAccountsList();
 }
 
-// 只选未注册
-function selectUnregisteredOutlook() {
+// 只追加当前筛选结果中的可执行账户
+function selectExecutableOutlookAccounts() {
     const filteredAccounts = getFilteredOutlookAccounts();
-    if (typeof outlookSelectorApi.selectVisibleUnregisteredAccounts === 'function') {
-        selectedOutlookAccountIds = outlookSelectorApi.selectVisibleUnregisteredAccounts(selectedOutlookAccountIds, filteredAccounts);
+    if (typeof outlookSelectorApi.selectVisibleExecutableAccounts === 'function') {
+        selectedOutlookAccountIds = outlookSelectorApi.selectVisibleExecutableAccounts(selectedOutlookAccountIds, filteredAccounts);
+    } else if (typeof outlookSelectorApi.selectExecutableVisibleAccounts === 'function') {
+        selectedOutlookAccountIds = outlookSelectorApi.selectExecutableVisibleAccounts(selectedOutlookAccountIds, filteredAccounts);
     } else {
         filteredAccounts.forEach((account) => {
-            if (!account.is_registration_complete) {
+            if (isExecutableOutlookAccount(account)) {
                 selectedOutlookAccountIds.add(Number(account.id));
             }
         });
     }
     renderOutlookAccountsList();
 }
+
+const selectUnregisteredOutlook = selectExecutableOutlookAccounts;
 
 // 取消全选
 function deselectAllOutlookAccounts() {
@@ -1572,8 +1626,8 @@ async function handleOutlookBatchRegistration() {
         const data = await api.post('/registration/outlook-batch', requestData);
 
         if (data.to_register === 0) {
-            addLog('warning', '[警告] 所有选中的邮箱都已完整可用，无需重复注册');
-            toast.warning('所有选中的邮箱都已完整可用');
+            addLog('warning', '[警告] 所有选中的邮箱都已注册完成，无需重复执行');
+            toast.warning('所有选中的邮箱都已注册完成');
             resetButtons();
             return;
         }
@@ -1583,7 +1637,7 @@ async function handleOutlookBatchRegistration() {
         // 持久化到 sessionStorage，跨页面导航后可恢复
         sessionStorage.setItem('activeTask', JSON.stringify({ batch_id: data.batch_id, mode: isOutlookBatchMode ? 'outlook_batch' : 'batch', total: data.to_register }));
         addLog('info', `[系统] 批量任务已创建: ${data.batch_id}`);
-        addLog('info', `[系统] 总数: ${data.total}, 跳过已注册: ${data.skipped}, 待注册: ${data.to_register}`);
+        addLog('info', `[系统] 总数: ${data.total}, 跳过已完成: ${data.skipped}, 待执行: ${data.to_register}`);
 
         // 初始化批量状态显示
         showBatchStatus({ count: data.to_register });
@@ -1903,20 +1957,5 @@ async function restoreActiveTask() {
         } catch {
             sessionStorage.removeItem('activeTask');
         }
-    }
-}
-
-
-async function refreshOutlookRegistrationStatus() {
-    try {
-        const ids = outlookAccounts.map(item => item.id).filter(Boolean);
-        const data = await api.post('/registration/outlook/check-accounts', { service_ids: ids });
-        outlookAccounts = data.accounts || [];
-        renderOutlookAccounts(outlookAccounts);
-        addLog('info', `[??] Outlook ??????? (???: ${data.registered_count}, ???: ${data.unregistered_count})`);
-        toast.success('Outlook ???????');
-    } catch (error) {
-        console.error('?? Outlook ??????:', error);
-        toast.error('?? Outlook ??????: ' + error.message);
     }
 }

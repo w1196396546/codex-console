@@ -195,6 +195,17 @@ def _is_account_registration_complete(account: Optional[object]) -> bool:
 def _needs_token_refresh(account: Optional[object]) -> bool:
     return bool(account) and not _is_account_registration_complete(account)
 
+
+def _derive_outlook_execution_state(account: Optional[object]) -> str:
+    # 当前注册执行状态只看账号是否存在、以及 refresh token 是否完整；
+    # 不引入 account.status 的额外业务语义。
+    if _is_account_registration_complete(account):
+        return "registered_complete"
+    if account:
+        return "registered_needs_token_refresh"
+    return "unregistered"
+
+
 def task_to_response(task: RegistrationTask) -> RegistrationTaskResponse:
     """转换任务模型为响应"""
     return RegistrationTaskResponse(
@@ -1563,7 +1574,7 @@ async def start_outlook_batch_registration(
     启动 Outlook 批量注册任务
 
     - service_ids: 选中的 EmailService ID 列表
-    - skip_registered: 是否自动跳过已注册邮箱（默认 True）
+    - skip_registered: 是否自动跳过已完整注册邮箱（默认 True）
     - proxy: 代理地址
     - interval_min: 最小间隔秒数
     - interval_max: 最大间隔秒数
@@ -1584,7 +1595,7 @@ async def start_outlook_batch_registration(
     if request.mode not in ("parallel", "pipeline"):
         raise HTTPException(status_code=400, detail="模式必须为 parallel 或 pipeline")
 
-    # 过滤掉已注册的邮箱
+    # 过滤掉已完整注册的邮箱
     actual_service_ids = request.service_ids
     skipped_count = 0
 
@@ -1607,7 +1618,7 @@ async def start_outlook_batch_registration(
                     Account.email == email
                 ).first()
 
-                if _is_account_registration_complete(existing_account):
+                if _derive_outlook_execution_state(existing_account) == "registered_complete":
                     skipped_count += 1
                 else:
                     actual_service_ids.append(service_id)

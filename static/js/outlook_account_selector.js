@@ -29,14 +29,45 @@
         return String(value || '').trim().toLowerCase();
     }
 
-    function matchesStatus(account, status) {
-        if (status === 'registered') {
-            return Boolean(account.is_registered);
+    function hasRegistrationCompleteFlag(account) {
+        return Boolean(account) && account.is_registration_complete === true;
+    }
+
+    // 当前注册执行状态只看账号是否存在、以及 refresh token 是否完整；
+    // 不引入 account.status 的额外业务语义。
+    function mapExecutionState(account) {
+        if (hasRegistrationCompleteFlag(account)) {
+            return 'registered_complete';
         }
-        if (status === 'unregistered') {
-            return !account.is_registration_complete;
+        if (account && Boolean(account.is_registered)) {
+            return 'registered_needs_token_refresh';
         }
-        return true;
+        return 'unregistered';
+    }
+
+    function isExecutableExecutionState(executionState) {
+        return executionState === 'unregistered' || executionState === 'registered_needs_token_refresh';
+    }
+
+    function isExecutableAccount(account) {
+        return isExecutableExecutionState(mapExecutionState(account));
+    }
+
+    function getExecutionStateLabel(executionState) {
+        if (executionState === 'registered_needs_token_refresh') {
+            return '已注册，待补 Token';
+        }
+        if (executionState === 'registered_complete') {
+            return '注册已完成';
+        }
+        return '未注册';
+    }
+
+    function matchesExecutionState(account, executionState) {
+        if (!executionState || executionState === 'all') {
+            return true;
+        }
+        return mapExecutionState(account) === executionState;
     }
 
     function matchesKeyword(account, keyword) {
@@ -54,10 +85,10 @@
 
     function filterAccounts(accounts, filters) {
         const keyword = normalizeKeyword(filters && filters.keyword);
-        const status = (filters && filters.status) || 'all';
+        const executionState = (filters && (filters.executionState || filters.status)) || 'all';
 
         return (accounts || []).filter((account) => (
-            matchesStatus(account, status) && matchesKeyword(account, keyword)
+            matchesExecutionState(account, executionState) && matchesKeyword(account, keyword)
         ));
     }
 
@@ -66,12 +97,22 @@
 
         for (const account of accounts || []) {
             const numericId = toNumericId(account.id);
-            if (numericId !== null && !account.is_registration_complete) {
+            if (numericId !== null && isExecutableAccount(account)) {
                 selected.add(numericId);
             }
         }
 
         return selected;
+    }
+
+    function countExecutableAccounts(accounts) {
+        let count = 0;
+        for (const account of accounts || []) {
+            if (isExecutableAccount(account)) {
+                count += 1;
+            }
+        }
+        return count;
     }
 
     function selectVisibleAccounts(selectedIds, visibleAccounts) {
@@ -87,18 +128,21 @@
         return next;
     }
 
-    function selectVisibleUnregisteredAccounts(selectedIds, visibleAccounts) {
+    function selectVisibleExecutableAccounts(selectedIds, visibleAccounts) {
         const next = cloneIdSet(selectedIds);
 
         for (const account of visibleAccounts || []) {
             const numericId = toNumericId(account.id);
-            if (numericId !== null && !account.is_registration_complete) {
+            if (numericId !== null && isExecutableAccount(account)) {
                 next.add(numericId);
             }
         }
 
         return next;
     }
+
+    const selectExecutableVisibleAccounts = selectVisibleExecutableAccounts;
+    const selectVisibleUnregisteredAccounts = selectVisibleExecutableAccounts;
 
     function deselectVisibleAccounts(selectedIds, visibleAccounts) {
         const next = cloneIdSet(selectedIds);
@@ -143,11 +187,17 @@
 
     return {
         buildSelectionSummary,
+        countExecutableAccounts,
         createInitialSelectedIds,
         deselectVisibleAccounts,
         filterAccounts,
+        getExecutionStateLabel,
         getVisibleSelectedIds,
+        isExecutableAccount,
+        mapExecutionState,
+        selectExecutableVisibleAccounts,
         selectVisibleAccounts,
+        selectVisibleExecutableAccounts,
         selectVisibleUnregisteredAccounts,
     };
 });

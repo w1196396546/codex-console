@@ -329,9 +329,10 @@
                                                 placeholder="🔍 搜索 Outlook 邮箱"
                                             >
                                             <select id="outlook-account-status-filter" class="form-select">
-                                                <option value="all">全部状态</option>
-                                                <option value="unregistered">仅可执行</option>
-                                                <option value="registered">仅已注册</option>
+                                                <option value="all">全部</option>
+                                                <option value="unregistered">未注册</option>
+                                                <option value="registered_needs_token_refresh">已注册待补Token</option>
+                                                <option value="registered_complete">注册已完成</option>
                                             </select>
                                         </div>
                                         <div
@@ -346,9 +347,9 @@
                                             </div>
                                         </div>
                                         <div style="margin-top: var(--spacing-sm); display: flex; gap: var(--spacing-xs); flex-wrap: wrap;">
-                                            <button type="button" class="btn btn-ghost btn-sm" onclick="selectAllOutlookAccounts()">全选</button>
-                                            <button type="button" class="btn btn-ghost btn-sm" onclick="selectUnregisteredOutlook()">只选可执行</button>
-                                            <button type="button" class="btn btn-ghost btn-sm" onclick="deselectAllOutlookAccounts()">取消全选</button>
+                                            <button type="button" class="btn btn-ghost btn-sm" onclick="selectAllOutlookAccounts()">全选当前结果</button>
+                                            <button type="button" class="btn btn-ghost btn-sm" onclick="selectExecutableOutlookAccounts()">只选可执行</button>
+                                            <button type="button" class="btn btn-ghost btn-sm" onclick="deselectAllOutlookAccounts()">清空当前结果</button>
                                         </div>
                                         <small style="display: block; margin-top: var(--spacing-xs); color: var(--text-muted);">
                                             筛选后继续勾选会自动叠加，已选项不会因为切换筛选而丢失；上方快捷按钮只作用于当前筛选结果。

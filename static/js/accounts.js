@@ -10,7 +10,15 @@ let totalAccounts = 0;
 let selectedAccounts = new Set();
 let isLoading = false;
 let selectAllPages = false;  // 是否选中了全部页
-let currentFilters = { status: '', email_service: '', search: '' };  // 当前筛选条件
+let currentFilters = { status: '', email_service: '', refresh_token_state: '', search: '' };  // 当前筛选条件
+const stateActions = window.AccountsStateActions || {};
+const accountsListLoader = stateActions.createLatestRequestOrchestrator
+    ? stateActions.createLatestRequestOrchestrator({
+        fetcher: fetchAccountsPage,
+        applyResult: applyAccountsPageResult,
+        applyError: applyAccountsPageError,
+    })
+    : null;
 
 // DOM 元素
 const elements = {
@@ -21,12 +29,15 @@ const elements = {
     failedAccounts: document.getElementById('failed-accounts'),
     filterStatus: document.getElementById('filter-status'),
     filterService: document.getElementById('filter-service'),
+    filterRefreshTokenState: document.getElementById('filter-refresh-token-state'),
     searchInput: document.getElementById('search-input'),
     refreshBtn: document.getElementById('refresh-btn'),
     batchRefreshBtn: document.getElementById('batch-refresh-btn'),
     batchValidateBtn: document.getElementById('batch-validate-btn'),
     batchUploadBtn: document.getElementById('batch-upload-btn'),
     batchCheckSubBtn: document.getElementById('batch-check-sub-btn'),
+    batchStateBtn: document.getElementById('batch-state-btn'),
+    batchStateMenu: document.getElementById('batch-state-menu'),
     batchDeleteBtn: document.getElementById('batch-delete-btn'),
     exportBtn: document.getElementById('export-btn'),
     exportMenu: document.getElementById('export-menu'),
@@ -50,33 +61,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // 事件监听
 function initEventListeners() {
-    // 筛选
-    elements.filterStatus.addEventListener('change', () => {
-        currentPage = 1;
-        resetSelectAllPages();
-        loadAccounts();
-    });
+    const uploadMenu = document.getElementById('upload-menu');
 
-    elements.filterService.addEventListener('change', () => {
-        currentPage = 1;
-        resetSelectAllPages();
-        loadAccounts();
-    });
+    // 筛选
+    elements.filterStatus.addEventListener('change', handleFiltersChanged);
+    elements.filterService.addEventListener('change', handleFiltersChanged);
+    elements.filterRefreshTokenState.addEventListener('change', handleFiltersChanged);
 
     // 搜索（防抖）
-    elements.searchInput.addEventListener('input', debounce(() => {
-        currentPage = 1;
-        resetSelectAllPages();
-        loadAccounts();
-    }, 300));
+    elements.searchInput.addEventListener('input', debounce(handleFiltersChanged, 300));
 
     // 快捷键聚焦搜索
     elements.searchInput.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
             elements.searchInput.blur();
             elements.searchInput.value = '';
-            resetSelectAllPages();
-            loadAccounts();
+            handleFiltersChanged();
         }
     });
 
@@ -96,8 +96,19 @@ function initEventListeners() {
     // 批量检测订阅
     elements.batchCheckSubBtn.addEventListener('click', handleBatchCheckSubscription);
 
+    // 批量改状态
+    elements.batchStateBtn.addEventListener('click', (e) => {
+        if (elements.batchStateBtn.disabled) return;
+        e.stopPropagation();
+        elements.batchStateMenu.classList.toggle('active');
+    });
+    delegate(elements.batchStateMenu, 'click', '.dropdown-item', async (e, target) => {
+        e.preventDefault();
+        elements.batchStateMenu.classList.remove('active');
+        await handleBatchStateUpdate(target.dataset.status);
+    });
+
     // 上传下拉菜单
-    const uploadMenu = document.getElementById('upload-menu');
     elements.batchUploadBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         uploadMenu.classList.toggle('active');
@@ -172,8 +183,36 @@ function initEventListeners() {
     document.addEventListener('click', () => {
         elements.exportMenu.classList.remove('active');
         uploadMenu.classList.remove('active');
+        elements.batchStateMenu.classList.remove('active');
         document.querySelectorAll('#accounts-table .dropdown-menu.active').forEach(m => m.classList.remove('active'));
     });
+}
+
+function collectFilterValues() {
+    return {
+        status: elements.filterStatus.value,
+        email_service: elements.filterService.value,
+        refresh_token_state: elements.filterRefreshTokenState.value,
+        search: elements.searchInput.value.trim(),
+    };
+}
+
+function handleFiltersChanged() {
+    const nextState = stateActions.deriveFilterChangeState({
+        previousFilters: currentFilters,
+        nextFilters: collectFilterValues(),
+        currentPage,
+        selectedIds: selectedAccounts,
+        selectAllPages,
+    });
+
+    currentFilters = nextState.filters || collectFilterValues();
+    currentPage = nextState.currentPage;
+    selectedAccounts = nextState.selectedIds || new Set();
+    selectAllPages = Boolean(nextState.selectAllPages);
+    updateBatchButtons();
+    renderSelectAllBanner();
+    loadAccounts();
 }
 
 // 加载统计信息
@@ -204,7 +243,26 @@ function animateValue(element, value) {
 
 // 加载账号列表
 async function loadAccounts() {
-    if (isLoading) return;
+    if (accountsListLoader) {
+        return accountsListLoader.request({
+            page: currentPage,
+            pageSize,
+            filters: collectFilterValues(),
+        });
+    }
+
+    return fetchAccountsPage({
+        page: currentPage,
+        pageSize,
+        filters: collectFilterValues(),
+    }).then((data) => {
+        applyAccountsPageResult(data);
+    }).catch((error) => {
+        applyAccountsPageError(error);
+    });
+}
+
+async function fetchAccountsPage({ page, pageSize: nextPageSize, filters }) {
     isLoading = true;
 
     // 显示加载状态
@@ -220,49 +278,39 @@ async function loadAccounts() {
         </tr>
     `;
 
-    // 记录当前筛选条件
-    currentFilters.status = elements.filterStatus.value;
-    currentFilters.email_service = elements.filterService.value;
-    currentFilters.search = elements.searchInput.value.trim();
-
-    const params = new URLSearchParams({
-        page: currentPage,
-        page_size: pageSize,
+    const queryString = stateActions.buildAccountsQuery({
+        page,
+        pageSize: nextPageSize,
+        filters,
     });
 
-    if (currentFilters.status) {
-        params.append('status', currentFilters.status);
-    }
+    return api.get(`/accounts?${queryString}`);
+}
 
-    if (currentFilters.email_service) {
-        params.append('email_service', currentFilters.email_service);
-    }
+function applyAccountsPageResult(data, request) {
+    currentPage = request.page;
+    pageSize = request.pageSize;
+    currentFilters = request.filters;
+    totalAccounts = data.total;
+    renderAccounts(data.accounts);
+    updatePagination();
+    isLoading = false;
+}
 
-    if (currentFilters.search) {
-        params.append('search', currentFilters.search);
-    }
-
-    try {
-        const data = await api.get(`/accounts?${params}`);
-        totalAccounts = data.total;
-        renderAccounts(data.accounts);
-        updatePagination();
-    } catch (error) {
-        console.error('加载账号列表失败:', error);
-        elements.table.innerHTML = `
-            <tr>
-                <td colspan="9">
-                    <div class="empty-state">
-                        <div class="empty-state-icon">❌</div>
-                        <div class="empty-state-title">加载失败</div>
-                        <div class="empty-state-description">请检查网络连接后重试</div>
-                    </div>
-                </td>
-            </tr>
-        `;
-    } finally {
-        isLoading = false;
-    }
+function applyAccountsPageError(error) {
+    console.error('加载账号列表失败:', error);
+    elements.table.innerHTML = `
+        <tr>
+            <td colspan="9">
+                <div class="empty-state">
+                    <div class="empty-state-icon">❌</div>
+                    <div class="empty-state-title">加载失败</div>
+                    <div class="empty-state-description">请检查网络连接后重试</div>
+                </div>
+            </td>
+        </tr>
+    `;
+    isLoading = false;
 }
 
 // 渲染账号列表
@@ -326,6 +374,10 @@ function renderAccounts(accounts) {
                             <a href="#" class="dropdown-item" onclick="event.preventDefault();closeMoreMenu(this);refreshToken(${account.id})">刷新</a>
                             <a href="#" class="dropdown-item" onclick="event.preventDefault();closeMoreMenu(this);uploadAccount(${account.id})">上传</a>
                             <a href="#" class="dropdown-item" onclick="event.preventDefault();closeMoreMenu(this);markSubscription(${account.id})">标记</a>
+                            <a href="#" class="dropdown-item" onclick="event.preventDefault();closeMoreMenu(this);updateAccountStatus(${account.id}, 'active')">设为 active</a>
+                            <a href="#" class="dropdown-item" onclick="event.preventDefault();closeMoreMenu(this);updateAccountStatus(${account.id}, 'expired')">设为 expired</a>
+                            <a href="#" class="dropdown-item" onclick="event.preventDefault();closeMoreMenu(this);updateAccountStatus(${account.id}, 'banned')">设为 banned</a>
+                            <a href="#" class="dropdown-item" onclick="event.preventDefault();closeMoreMenu(this);updateAccountStatus(${account.id}, 'failed')">设为 failed</a>
                         </div>
                     </div>
                     <button class="btn btn-danger btn-sm" onclick="deleteAccount(${account.id}, '${escapeHtml(account.email)}')">删除</button>
@@ -454,15 +506,13 @@ function resetSelectAllPages() {
 
 // 构建批量请求体（含 select_all 和筛选参数）
 function buildBatchPayload(extraFields = {}) {
-    if (selectAllPages) {
-        return {
-            ids: [],
-            select_all: true,
-            status_filter: currentFilters.status || null,
-            email_service_filter: currentFilters.email_service || null,
-            search_filter: currentFilters.search || null,
-            ...extraFields
-        };
+    if (stateActions.buildBatchOperationPayload) {
+        return stateActions.buildBatchOperationPayload({
+            selectedIds: selectedAccounts,
+            selectAllPages,
+            filters: currentFilters,
+            extraFields,
+        });
     }
     return { ids: Array.from(selectedAccounts), ...extraFields };
 }
@@ -511,11 +561,17 @@ function selectAllPagesAction() {
 // 更新批量操作按钮
 function updateBatchButtons() {
     const count = getEffectiveCount();
+    const batchStateControl = stateActions.getBatchStateControlState({
+        selectedCount: selectedAccounts.size,
+        selectAllPages,
+        totalAccounts,
+    });
     elements.batchDeleteBtn.disabled = count === 0;
     elements.batchRefreshBtn.disabled = count === 0;
     elements.batchValidateBtn.disabled = count === 0;
     elements.batchUploadBtn.disabled = count === 0;
     elements.batchCheckSubBtn.disabled = count === 0;
+    elements.batchStateBtn.disabled = batchStateControl.disabled;
     elements.exportBtn.disabled = count === 0;
 
     elements.batchDeleteBtn.textContent = count > 0 ? `🗑️ 删除 (${count})` : '🗑️ 批量删除';
@@ -523,6 +579,7 @@ function updateBatchButtons() {
     elements.batchValidateBtn.textContent = count > 0 ? `✅ 验证 (${count})` : '✅ 验证Token';
     elements.batchUploadBtn.textContent = count > 0 ? `☁️ 上传 (${count})` : '☁️ 上传';
     elements.batchCheckSubBtn.textContent = count > 0 ? `🔍 检测 (${count})` : '🔍 检测订阅';
+    elements.batchStateBtn.textContent = batchStateControl.label;
 }
 
 // 刷新单个账号Token
@@ -735,6 +792,24 @@ async function editSessionToken(id, currentToken = '') {
     }
 }
 
+async function updateAccountStatus(id, status) {
+    const request = stateActions.buildSingleStateRequest({
+        accountId: id,
+        status,
+    });
+    const confirmed = await confirm(`确定要将账号 ${id} 的状态改为 ${status} 吗？`);
+    if (!confirmed) return;
+
+    try {
+        await api.patch(request.path, request.body);
+        toast.success(`账号 ${id} 状态已更新为 ${status}`);
+        loadStats();
+        loadAccounts();
+    } catch (error) {
+        toast.error('更新账号状态失败: ' + error.message);
+    }
+}
+
 // 复制邮箱
 function copyEmail(email) {
     copyToClipboard(email);
@@ -773,6 +848,54 @@ async function handleBatchDelete() {
         loadAccounts();
     } catch (error) {
         toast.error('删除失败: ' + error.message);
+    }
+}
+
+async function handleBatchStateUpdate(status) {
+    const requestedCount = getEffectiveCount();
+    if (requestedCount === 0) return;
+
+    const confirmed = await confirm(`确定要将选中的 ${requestedCount} 个账号设为 ${status} 吗？`);
+    if (!confirmed) return;
+
+    elements.batchStateBtn.disabled = true;
+    elements.batchStateBtn.textContent = '状态更新中...';
+
+    try {
+        const payload = stateActions.buildBatchStatePayload({
+            status,
+            selectedIds: selectedAccounts,
+            selectAllPages,
+            filters: currentFilters,
+        });
+        const result = await api.post('/accounts/batch-update', payload);
+        const summary = stateActions.summarizeBatchStateResult({
+            requestedCount: result.requested_count ?? requestedCount,
+            updatedCount: result.updated_count || 0,
+            skippedCount: result.skipped_count || 0,
+            missingIds: result.missing_ids || [],
+            errors: result.errors || [],
+        });
+
+        if (summary.level === 'success') {
+            toast.success(summary.message);
+        } else {
+            toast.warning(summary.message);
+        }
+
+        if (result.errors && result.errors.length > 0) {
+            console.warn('批量改状态存在失败项:', result.errors);
+        }
+
+        selectedAccounts.clear();
+        selectAllPages = false;
+        loadStats();
+        loadAccounts();
+    } catch (error) {
+        toast.error('批量改状态失败: ' + error.message);
+    } finally {
+        updateBatchButtons();
+        renderSelectAllBanner();
     }
 }
 

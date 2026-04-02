@@ -117,6 +117,7 @@ class ChatGPTClient:
         self.last_create_account_refresh_token = ""
         self.last_create_account_account_id = ""
         self.last_create_account_workspace_id = ""
+        self.last_existing_account_detected = False
     
     def _log(self, msg):
         """输出日志"""
@@ -238,9 +239,21 @@ class ChatGPTClient:
         target = f"{state.continue_url} {state.current_url}".lower()
         return state.page_type == "add_phone" or "add-phone" in target
 
+    def _state_supports_workspace_resolution(self, state: FlowState):
+        target = f"{state.continue_url} {state.current_url}".lower()
+        if state.page_type in {"consent", "workspace", "workspace_selection", "organization_selection"}:
+            return True
+        return any(marker in target for marker in ("workspace", "organization", "consent", "sign-in-with-chatgpt"))
+
     def _state_requires_navigation(self, state: FlowState):
         if (state.method or "GET").upper() != "GET":
             return False
+        if (
+            state.source == "api"
+            and state.current_url
+            and state.page_type not in {"create_account_password", "password", "email_otp_verification"}
+        ):
+            return True
         if state.page_type == "external_url" and state.continue_url:
             return True
         if state.continue_url and state.continue_url != state.current_url:
@@ -855,6 +868,7 @@ class ChatGPTClient:
         state = self._state_from_url(final_url)
         self._log(f"注册状态起点: {describe_flow_state(state)}")
 
+        self.last_existing_account_detected = False
         register_submitted = False
         otp_verified = False
         account_created = False
@@ -885,6 +899,9 @@ class ChatGPTClient:
                 continue
 
             if self._state_is_email_otp(state):
+                if (not register_submitted) and (not account_created):
+                    self.last_existing_account_detected = True
+                    self._log("检测到已有账号直达邮箱验证码页，按登录态继续")
                 self._log("等待邮箱验证码...")
                 otp_code = skymail_client.wait_for_verification_code(email, timeout=90)
                 if not otp_code:
@@ -945,6 +962,11 @@ class ChatGPTClient:
                 self._log("检测到 add_phone 阶段，交由后续登录补全流程处理")
                 self.last_registration_state = state
                 return True, "add_phone_required"
+
+            if self._state_supports_workspace_resolution(state):
+                self._log("检测到 workspace/org 阶段，交由后续 OAuth 补全流程处理")
+                self.last_registration_state = state
+                return True, "workspace_required"
 
             if self._state_requires_navigation(state):
                 success, next_state = self._follow_flow_state(

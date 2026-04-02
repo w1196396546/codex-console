@@ -1,9 +1,11 @@
 import base64
 import json
+from types import SimpleNamespace
 
 from src.config.constants import EmailServiceType, OPENAI_API_ENDPOINTS, OPENAI_PAGE_TYPES
 from src.core.http_client import OpenAIHTTPClient
 from src.core.openai.oauth import OAuthStart
+from src.core import register as register_module
 from src.core.register import RegistrationEngine
 from src.services.base import BaseEmailService
 
@@ -294,3 +296,57 @@ def test_existing_account_login_uses_auto_sent_otp_without_manual_send():
     assert len(email_service.otp_requests) == 1
     assert email_service.otp_requests[0]["otp_sent_at"] is not None
     assert result.metadata["token_acquired_via_relogin"] is False
+
+
+def test_run_propagates_anyauto_login_source(monkeypatch):
+    class StubAnyAutoRegistrationEngine:
+        def __init__(self, email_service, proxy_url=None, callback_logger=None, max_retries=3, browser_mode="protocol", extra_config=None):
+            self.email_service = email_service
+            self.proxy_url = proxy_url
+            self.callback_logger = callback_logger
+            self.max_retries = max_retries
+            self.browser_mode = browser_mode
+            self.extra_config = extra_config
+            self.email_info = {"service_id": "mailbox-1"}
+            self.email = "tester@example.com"
+            self.inbox_email = "tester@example.com"
+            self.password = "known-pass"
+            self.session = None
+            self.device_id = "device-login"
+
+        def run(self):
+            return {
+                "success": True,
+                "source": "login",
+                "access_token": "access-login",
+                "refresh_token": "refresh-login",
+                "id_token": "id-login",
+                "session_token": "session-login",
+                "account_id": "acct-login",
+                "workspace_id": "ws-login",
+                "metadata": {
+                    "existing_account_detected": True,
+                },
+            }
+
+    monkeypatch.setattr(register_module, "AnyAutoRegistrationEngine", StubAnyAutoRegistrationEngine)
+    monkeypatch.setattr(
+        register_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            registration_max_retries=1,
+            openai_client_id="client-1",
+            openai_auth_url="https://auth.example.test",
+            openai_token_url="https://auth.example.test/oauth/token",
+            openai_redirect_uri="http://localhost:1455/auth/callback",
+            openai_scope="openid profile email offline_access",
+        ),
+    )
+
+    engine = RegistrationEngine(FakeEmailService(["123456"]))
+    result = engine.run()
+
+    assert result.success is True
+    assert result.source == "login"
+    assert result.password == "known-pass"
+    assert result.metadata["existing_account_detected"] is True

@@ -2944,7 +2944,7 @@ class RegistrationEngine:
             result.session_token = flow_result.get("session_token", "")
             result.account_id = flow_result.get("account_id", "") or ""
             result.workspace_id = flow_result.get("workspace_id", "") or ""
-            result.source = "register"
+            result.source = str(flow_result.get("source", "register") or "register")
 
             def _extract_account_id_from_token(token: str) -> str:
                 try:

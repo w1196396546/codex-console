@@ -15,6 +15,8 @@ from .oauth_client import OAuthClient
 from .utils import generate_random_name, generate_random_birthday, decode_jwt_payload
 from ...config.constants import PASSWORD_CHARSET, DEFAULT_PASSWORD_LENGTH
 from ...config.settings import get_settings
+from ...database import crud
+from ...database.session import get_db
 
 
 class EmailServiceAdapter:
@@ -108,6 +110,42 @@ class AnyAutoRegistrationEngine:
             "next-auth",
         ]
         return any(marker.lower() in text for marker in retriable_markers)
+
+    @staticmethod
+    def _is_existing_account_error(message: str) -> bool:
+        text = str(message or "").lower()
+        return any(
+            marker in text
+            for marker in (
+                "user_exists",
+                "already registered",
+                "already exists",
+                "email already exists",
+                "该邮箱已存在",
+                "邮箱已注册",
+                "已注册账号",
+            )
+        )
+
+    def _resolve_existing_account_password(self, email: str) -> tuple[str, str]:
+        configured_password = str(
+            self.extra_config.get("existing_account_password")
+            or self.extra_config.get("login_password")
+            or ""
+        ).strip()
+        if configured_password:
+            return configured_password, "extra_config"
+
+        try:
+            with get_db() as db:
+                account = crud.get_account_by_email(db, email)
+                stored_password = str(getattr(account, "password", "") or "").strip() if account else ""
+                if stored_password:
+                    return stored_password, "database"
+        except Exception as exc:
+            self._log(f"回填已注册账号密码失败: {exc}")
+
+        return "", ""
 
     @staticmethod
     def _extract_account_id_from_token(token: str) -> str:
@@ -362,6 +400,86 @@ class AnyAutoRegistrationEngine:
         merged["metadata"] = metadata
         return merged
 
+    def _build_oauth_success_result(
+        self,
+        chatgpt_client: ChatGPTClient,
+        oauth_config: Dict[str, Any],
+        oauth_completion: Dict[str, Any],
+        *,
+        create_account_result: Optional[Dict[str, Any]] = None,
+        success_log: str,
+        source: str = "register",
+        metadata_extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        tokens = oauth_completion.get("tokens") or {}
+        self.session = oauth_completion.get("session") or self.session
+        self._log(success_log)
+
+        workspace_id = ""
+        session_cookie = ""
+        oauth_client = None
+        try:
+            oauth_client = OAuthClient(
+                config=oauth_config,
+                proxy=self.proxy_url,
+                verbose=False,
+                browser_mode=self.browser_mode,
+            )
+            oauth_client.session = self.session
+            session_data = oauth_client._decode_oauth_session_cookie()
+            if session_data:
+                workspaces = session_data.get("workspaces", [])
+                if workspaces:
+                    workspace_id = str((workspaces[0] or {}).get("id") or "")
+                    if workspace_id:
+                        self._log(f"成功萃取 Workspace ID: {workspace_id}")
+        except Exception:
+            pass
+
+        try:
+            cookie_jar = getattr(getattr(oauth_client, "session", None), "cookies", None)
+            for cookie in getattr(cookie_jar, "jar", []):
+                if cookie.name == "__Secure-next-auth.session-token":
+                    session_cookie = cookie.value
+                    break
+        except Exception:
+            pass
+
+        account_id = self._extract_account_id_from_token(tokens.get("access_token", "")) or workspace_id
+        merged = self._merge_success_result(
+            {
+                "success": True,
+                "access_token": tokens.get("access_token", ""),
+                "account_id": account_id or ("v2_acct_" + chatgpt_client.device_id[:8]),
+                "workspace_id": workspace_id or account_id,
+                "session_token": session_cookie,
+            },
+            create_account_result=create_account_result,
+            oauth_tokens=tokens,
+            token_source=str(oauth_completion.get("source") or "oauth"),
+        )
+        merged["source"] = source
+        if metadata_extra:
+            metadata = dict(merged.get("metadata") or {})
+            metadata.update(metadata_extra)
+            merged["metadata"] = metadata
+        return merged
+
+    @staticmethod
+    def _mark_existing_account_result(
+        result: Dict[str, Any],
+        *,
+        password_source: str = "",
+    ) -> Dict[str, Any]:
+        marked = dict(result or {})
+        marked["source"] = "login"
+        metadata = dict(marked.get("metadata") or {})
+        metadata["existing_account_detected"] = True
+        if password_source:
+            metadata["login_password_source"] = password_source
+        marked["metadata"] = metadata
+        return marked
+
     def run(self):
         """
         执行 any-auto-register 风格注册流程。
@@ -432,6 +550,59 @@ class AnyAutoRegistrationEngine:
                     normalized_email, self.password, first_name, last_name, birthdate, skymail_adapter
                 )
                 if not success:
+                    if self._is_existing_account_error(msg):
+                        self._log("检测到邮箱已注册，准备改走登录补 token")
+                        self.session = chatgpt_client.session
+                        self.device_id = chatgpt_client.device_id
+                        create_account_result = self._extract_create_account_result(chatgpt_client)
+                        login_password, password_source = self._resolve_existing_account_password(normalized_email)
+                        if not login_password:
+                            last_error = "检测到邮箱已注册，但当前任务未持有历史密码，无法自动切换登录补 token"
+                            return {"success": False, "error_message": last_error}
+
+                        self.password = login_password
+                        self._log(f"已切换到登录密码，来源: {password_source}")
+                        oauth_completion = self._run_oauth_token_completion(
+                            chatgpt_client,
+                            normalized_email,
+                            self.password,
+                            skymail_adapter,
+                            oauth_config,
+                            reason="已注册账号回退 OAuth 登录",
+                            allow_passwordless=True,
+                        )
+                        tokens = oauth_completion.get("tokens") or {}
+                        if tokens.get("access_token"):
+                            return self._build_oauth_success_result(
+                                chatgpt_client,
+                                oauth_config,
+                                oauth_completion,
+                                create_account_result=create_account_result,
+                                success_log="已注册账号 OAuth 登录补全成功！",
+                                source="login",
+                                metadata_extra={
+                                    "existing_account_detected": True,
+                                    "login_password_source": password_source,
+                                },
+                            )
+
+                        if self._is_phone_required_error(oauth_completion.get("last_error")):
+                            self._log("已注册账号登录命中手机号验证，按成功返回并标记待补全")
+                            return {
+                                "success": True,
+                                "source": "login",
+                                "metadata": {
+                                    "existing_account_detected": True,
+                                    "login_password_source": password_source,
+                                    "phone_verification_required": True,
+                                    "token_pending": True,
+                                    "oauth_error": oauth_completion.get("last_error"),
+                                },
+                            }
+
+                        last_error = str(oauth_completion.get("last_error") or "").strip() or "已注册账号登录补 token 失败"
+                        return {"success": False, "error_message": last_error}
+
                     last_error = f"注册流失败: {msg}"
                     if attempt < self.max_retries - 1 and self._should_retry(msg):
                         self._log(f"注册流失败，准备整流程重试: {msg}")
@@ -452,6 +623,16 @@ class AnyAutoRegistrationEngine:
                 self.session = chatgpt_client.session
                 self.device_id = chatgpt_client.device_id
                 create_account_result = self._extract_create_account_result(chatgpt_client)
+                existing_account_detected = bool(getattr(chatgpt_client, "last_existing_account_detected", False))
+                password_source = ""
+                if existing_account_detected:
+                    existing_password, password_source = self._resolve_existing_account_password(normalized_email)
+                    if existing_password:
+                        self.password = existing_password
+                        self._log(f"检测到已有账号登录态，OAuth 补 token 改用历史密码，来源: {password_source}")
+                    else:
+                        self.password = ""
+                        self._log("检测到已有账号登录态，但本地未找到历史密码；后续仅保留会话复用结果",)
                 if create_account_result.get("refresh_token"):
                     self._log("注册链路在 create_account 阶段已拿到 refresh_token")
 
@@ -469,9 +650,22 @@ class AnyAutoRegistrationEngine:
                         create_account_result=create_account_result,
                         token_source="create_account" if create_account_result.get("refresh_token") else "",
                     )
+                    if existing_account_detected:
+                        base_result = self._mark_existing_account_result(
+                            base_result,
+                            password_source=password_source,
+                        )
 
                     if base_result.get("refresh_token"):
                         self._log(f"无需额外 OAuth，refresh_token 已补齐，来源: {base_result.get('metadata', {}).get('refresh_token_source') or 'unknown'}")
+                        return base_result
+
+                    if existing_account_detected and not self.password:
+                        metadata = dict(base_result.get("metadata") or {})
+                        metadata["refresh_token_acquired"] = False
+                        metadata["refresh_token_error"] = "缺少历史密码，跳过 OAuth 补齐"
+                        base_result["metadata"] = metadata
+                        self._log("已有账号缺少历史密码，跳过 OAuth 补 refresh_token，保留当前会话结果返回")
                         return base_result
 
                     oauth_completion = self._run_oauth_token_completion(
@@ -496,6 +690,11 @@ class AnyAutoRegistrationEngine:
                             f"OAuth 补齐完成，refresh_token={'已获取' if merged_result.get('refresh_token') else '仍缺失'}，"
                             f"来源: {oauth_completion.get('source') or 'oauth'}"
                         )
+                        if existing_account_detected:
+                            merged_result = self._mark_existing_account_result(
+                                merged_result,
+                                password_source=password_source,
+                            )
                         return merged_result
 
                     metadata = dict(base_result.get("metadata") or {})
@@ -522,43 +721,13 @@ class AnyAutoRegistrationEngine:
                 self.session = oauth_completion.get("session") or self.session
 
                 if tokens and tokens.get("access_token"):
-                    self._log("OAuth 回退补全成功！")
-                    workspace_id = ""
-                    session_cookie = ""
-                    try:
-                        oauth_client = OAuthClient(
-                            config=oauth_config,
-                            proxy=self.proxy_url,
-                            verbose=False,
-                            browser_mode=self.browser_mode,
-                        )
-                        oauth_client.session = self.session
-                        session_data = oauth_client._decode_oauth_session_cookie()
-                        if session_data:
-                            workspaces = session_data.get("workspaces", [])
-                            if workspaces:
-                                workspace_id = str((workspaces[0] or {}).get("id") or "")
-                                if workspace_id:
-                                    self._log(f"成功萃取 Workspace ID: {workspace_id}")
-                    except Exception:
-                        pass
-
-                    try:
-                        for cookie in oauth_client.session.cookies.jar:
-                            if cookie.name == "__Secure-next-auth.session-token":
-                                session_cookie = cookie.value
-                                break
-                    except Exception:
-                        pass
-
-                    account_id = self._extract_account_id_from_token(tokens.get("access_token", "")) or workspace_id
-                    return self._merge_success_result({
-                        "success": True,
-                        "access_token": tokens.get("access_token", ""),
-                        "account_id": account_id or ("v2_acct_" + chatgpt_client.device_id[:8]),
-                        "workspace_id": workspace_id or account_id,
-                        "session_token": session_cookie,
-                    }, create_account_result=create_account_result, oauth_tokens=tokens, token_source=str(oauth_completion.get("source") or "oauth"))
+                    return self._build_oauth_success_result(
+                        chatgpt_client,
+                        oauth_config,
+                        oauth_completion,
+                        create_account_result=create_account_result,
+                        success_log="OAuth 回退补全成功！",
+                    )
 
                 # 7. 手机号验证需求：按成功返回，但标记为待补全
                 if self._is_phone_required_error(oauth_completion.get("last_error")):

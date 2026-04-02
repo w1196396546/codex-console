@@ -13,7 +13,13 @@ let todayStatsPollingInterval = null;
 let todayStatsResetInterval = null;
 let isBatchMode = false;
 let isOutlookBatchMode = false;
+const outlookSelectorApi = window.OutlookAccountSelector || {};
 let outlookAccounts = [];
+let selectedOutlookAccountIds = new Set();
+let outlookAccountFilters = {
+    keyword: '',
+    status: 'all',
+};
 let taskCompleted = false;  // 标记任务是否已完成
 let batchCompleted = false;  // 标记批量任务是否已完成
 let taskFinalStatus = null;  // 保存任务的最终状态
@@ -91,6 +97,9 @@ const elements = {
     // Outlook 批量注册
     outlookBatchSection: document.getElementById('outlook-batch-section'),
     outlookAccountsContainer: document.getElementById('outlook-accounts-container'),
+    outlookAccountSearch: document.getElementById('outlook-account-search'),
+    outlookAccountStatusFilter: document.getElementById('outlook-account-status-filter'),
+    outlookSelectionSummary: document.getElementById('outlook-selection-summary'),
     outlookIntervalMin: document.getElementById('outlook-interval-min'),
     outlookIntervalMax: document.getElementById('outlook-interval-max'),
     outlookSkipRegistered: document.getElementById('outlook-skip-registered'),
@@ -240,6 +249,20 @@ function initEventListeners() {
     elements.outlookConcurrencyMode.addEventListener('change', () => {
         handleConcurrencyModeChange(elements.outlookConcurrencyMode, elements.outlookConcurrencyHint, elements.outlookIntervalGroup);
     });
+
+    if (elements.outlookAccountSearch) {
+        elements.outlookAccountSearch.addEventListener('input', debounce(() => {
+            outlookAccountFilters.keyword = elements.outlookAccountSearch.value || '';
+            renderOutlookAccountsList();
+        }, 150));
+    }
+
+    if (elements.outlookAccountStatusFilter) {
+        elements.outlookAccountStatusFilter.addEventListener('change', () => {
+            outlookAccountFilters.status = elements.outlookAccountStatusFilter.value || 'all';
+            renderOutlookAccountsList();
+        });
+    }
 }
 
 // 加载可用的邮箱服务
@@ -1332,6 +1355,8 @@ async function loadOutlookAccounts() {
 
         const data = await api.get('/registration/outlook-accounts');
         outlookAccounts = data.accounts || [];
+        selectedOutlookAccountIds = createDefaultOutlookSelection(outlookAccounts);
+        resetOutlookAccountFilters();
 
         renderOutlookAccountsList();
 
@@ -1344,16 +1369,88 @@ async function loadOutlookAccounts() {
     }
 }
 
+function createDefaultOutlookSelection(accounts) {
+    if (typeof outlookSelectorApi.createInitialSelectedIds === 'function') {
+        return outlookSelectorApi.createInitialSelectedIds(accounts);
+    }
+    return new Set((accounts || []).filter((item) => !item.is_registered).map((item) => Number(item.id)));
+}
+
+function resetOutlookAccountFilters() {
+    outlookAccountFilters = {
+        keyword: '',
+        status: 'all',
+    };
+
+    if (elements.outlookAccountSearch) {
+        elements.outlookAccountSearch.value = '';
+    }
+    if (elements.outlookAccountStatusFilter) {
+        elements.outlookAccountStatusFilter.value = 'all';
+    }
+}
+
+function getFilteredOutlookAccounts() {
+    if (typeof outlookSelectorApi.filterAccounts === 'function') {
+        return outlookSelectorApi.filterAccounts(outlookAccounts, outlookAccountFilters);
+    }
+    return outlookAccounts.slice();
+}
+
+function getVisibleSelectedOutlookIds(filteredAccounts) {
+    if (typeof outlookSelectorApi.getVisibleSelectedIds === 'function') {
+        return outlookSelectorApi.getVisibleSelectedIds(selectedOutlookAccountIds, filteredAccounts);
+    }
+
+    const visibleSelectedIds = new Set();
+    filteredAccounts.forEach((account) => {
+        const accountId = Number(account.id);
+        if (selectedOutlookAccountIds.has(accountId)) {
+            visibleSelectedIds.add(accountId);
+        }
+    });
+    return visibleSelectedIds;
+}
+
+function updateOutlookSelectionSummary(filteredAccounts) {
+    if (!elements.outlookSelectionSummary) {
+        return;
+    }
+
+    const visibleSelectedIds = getVisibleSelectedOutlookIds(filteredAccounts);
+
+    if (typeof outlookSelectorApi.buildSelectionSummary === 'function') {
+        elements.outlookSelectionSummary.textContent = outlookSelectorApi.buildSelectionSummary({
+            totalCount: outlookAccounts.length,
+            filteredCount: filteredAccounts.length,
+            selectedIds: selectedOutlookAccountIds,
+            visibleSelectedIds,
+        });
+        return;
+    }
+
+    elements.outlookSelectionSummary.textContent = `已选 ${selectedOutlookAccountIds.size} / ${outlookAccounts.length} 个账户，当前显示 ${filteredAccounts.length} 个`;
+}
+
 // 渲染 Outlook 账户列表
 function renderOutlookAccountsList() {
     if (outlookAccounts.length === 0) {
         elements.outlookAccountsContainer.innerHTML = '<div style="text-align: center; padding: var(--spacing-md); color: var(--text-muted);">没有可用的 Outlook 账户</div>';
+        updateOutlookSelectionSummary([]);
         return;
     }
 
-    const html = outlookAccounts.map(account => `
+    const filteredAccounts = getFilteredOutlookAccounts();
+
+    if (filteredAccounts.length === 0) {
+        elements.outlookAccountsContainer.innerHTML = '<div style="text-align: center; padding: var(--spacing-md); color: var(--text-muted);">当前筛选条件下没有匹配的 Outlook 账户</div>';
+        updateOutlookSelectionSummary(filteredAccounts);
+        return;
+    }
+
+    const html = filteredAccounts.map(account => `
         <label class="outlook-account-item" style="display: flex; align-items: center; padding: var(--spacing-sm); border-bottom: 1px solid var(--border-light); cursor: pointer; ${account.is_registered ? 'opacity: 0.6;' : ''}" data-id="${account.id}" data-registered="${account.is_registered}">
-            <input type="checkbox" class="outlook-account-checkbox" value="${account.id}" ${account.is_registered ? '' : 'checked'} style="margin-right: var(--spacing-sm);">
+            <input type="checkbox" class="outlook-account-checkbox" value="${account.id}" ${selectedOutlookAccountIds.has(Number(account.id)) ? 'checked' : ''} style="margin-right: var(--spacing-sm);">
             <div style="flex: 1;">
                 <div style="font-weight: 500;">${escapeHtml(account.email)}</div>
                 <div style="font-size: 0.75rem; color: var(--text-muted);">
@@ -1368,28 +1465,57 @@ function renderOutlookAccountsList() {
     `).join('');
 
     elements.outlookAccountsContainer.innerHTML = html;
+
+    elements.outlookAccountsContainer.querySelectorAll('.outlook-account-checkbox').forEach((checkbox) => {
+        checkbox.addEventListener('change', (event) => {
+            const accountId = parseInt(event.target.value, 10);
+            if (event.target.checked) {
+                selectedOutlookAccountIds.add(accountId);
+            } else {
+                selectedOutlookAccountIds.delete(accountId);
+            }
+            updateOutlookSelectionSummary(getFilteredOutlookAccounts());
+        });
+    });
+
+    updateOutlookSelectionSummary(filteredAccounts);
 }
 
 // 全选
 function selectAllOutlookAccounts() {
-    const checkboxes = document.querySelectorAll('.outlook-account-checkbox');
-    checkboxes.forEach(cb => cb.checked = true);
+    const filteredAccounts = getFilteredOutlookAccounts();
+    if (typeof outlookSelectorApi.selectVisibleAccounts === 'function') {
+        selectedOutlookAccountIds = outlookSelectorApi.selectVisibleAccounts(selectedOutlookAccountIds, filteredAccounts);
+    } else {
+        filteredAccounts.forEach((account) => selectedOutlookAccountIds.add(Number(account.id)));
+    }
+    renderOutlookAccountsList();
 }
 
 // 只选未注册
 function selectUnregisteredOutlook() {
-    const items = document.querySelectorAll('.outlook-account-item');
-    items.forEach(item => {
-        const checkbox = item.querySelector('.outlook-account-checkbox');
-        const isRegistered = item.dataset.registered === 'true';
-        checkbox.checked = !isRegistered;
-    });
+    const filteredAccounts = getFilteredOutlookAccounts();
+    if (typeof outlookSelectorApi.selectVisibleUnregisteredAccounts === 'function') {
+        selectedOutlookAccountIds = outlookSelectorApi.selectVisibleUnregisteredAccounts(selectedOutlookAccountIds, filteredAccounts);
+    } else {
+        filteredAccounts.forEach((account) => {
+            if (!account.is_registered) {
+                selectedOutlookAccountIds.add(Number(account.id));
+            }
+        });
+    }
+    renderOutlookAccountsList();
 }
 
 // 取消全选
 function deselectAllOutlookAccounts() {
-    const checkboxes = document.querySelectorAll('.outlook-account-checkbox');
-    checkboxes.forEach(cb => cb.checked = false);
+    const filteredAccounts = getFilteredOutlookAccounts();
+    if (typeof outlookSelectorApi.deselectVisibleAccounts === 'function') {
+        selectedOutlookAccountIds = outlookSelectorApi.deselectVisibleAccounts(selectedOutlookAccountIds, filteredAccounts);
+    } else {
+        filteredAccounts.forEach((account) => selectedOutlookAccountIds.delete(Number(account.id)));
+    }
+    renderOutlookAccountsList();
 }
 
 // 处理 Outlook 批量注册
@@ -1401,10 +1527,9 @@ async function handleOutlookBatchRegistration() {
     toastShown = false;  // 重置 toast 标志
 
     // 获取选中的账户
-    const selectedIds = [];
-    document.querySelectorAll('.outlook-account-checkbox:checked').forEach(cb => {
-        selectedIds.push(parseInt(cb.value));
-    });
+    const selectedIds = Array.from(selectedOutlookAccountIds)
+        .map((id) => parseInt(id, 10))
+        .filter((id) => Number.isFinite(id));
 
     if (selectedIds.length === 0) {
         toast.error('请选择至少一个 Outlook 账户');

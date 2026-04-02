@@ -321,6 +321,25 @@
                                 <div id="outlook-batch-section" style="display: none;">
                                     <div class="form-group">
                                         <label>选择账户</label>
+                                        <div style="display: grid; grid-template-columns: minmax(0, 1fr) 170px; gap: var(--spacing-sm); margin-bottom: var(--spacing-sm);">
+                                            <input
+                                                type="text"
+                                                id="outlook-account-search"
+                                                class="form-input"
+                                                placeholder="🔍 搜索 Outlook 邮箱"
+                                            >
+                                            <select id="outlook-account-status-filter" class="form-select">
+                                                <option value="all">全部状态</option>
+                                                <option value="unregistered">仅未注册</option>
+                                                <option value="registered">仅已注册</option>
+                                            </select>
+                                        </div>
+                                        <div
+                                            id="outlook-selection-summary"
+                                            style="margin-bottom: var(--spacing-sm); color: var(--text-muted); font-size: 0.85rem;"
+                                        >
+                                            已选 0 / 0 个账户，当前显示 0 个
+                                        </div>
                                         <div id="outlook-accounts-container" style="max-height: 200px; overflow-y: auto; border: 1px solid var(--border-light); border-radius: var(--radius); padding: var(--spacing-sm);">
                                             <div class="loading-placeholder" style="text-align: center; padding: var(--spacing-md); color: var(--text-muted);">
                                                 加载中...
@@ -331,6 +350,9 @@
                                             <button type="button" class="btn btn-ghost btn-sm" onclick="selectUnregisteredOutlook()">只选未注册</button>
                                             <button type="button" class="btn btn-ghost btn-sm" onclick="deselectAllOutlookAccounts()">取消全选</button>
                                         </div>
+                                        <small style="display: block; margin-top: var(--spacing-xs); color: var(--text-muted);">
+                                            筛选后继续勾选会自动叠加，已选项不会因为切换筛选而丢失；上方快捷按钮只作用于当前筛选结果。
+                                        </small>
                                     </div>
                                     <div class="form-group">
                                         <label for="outlook-concurrency-mode">并发模式</label>
@@ -542,6 +564,7 @@
     </div>
 
     <script src="/static/js/utils.js?v={{ static_version }}"></script>
+    <script src="/static/js/outlook_account_selector.js?v={{ static_version }}"></script>
     <script src="/static/js/app.js?v={{ static_version }}"></script>
 </body>
 </html>

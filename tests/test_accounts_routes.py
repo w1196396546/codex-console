@@ -86,8 +86,6 @@ def _seed_rt_accounts(session, *, prefix: str):
             "missing": missing.email,
         },
     }
-
-
 def _seed_team_relation_accounts(session):
     owner = _seed_account(session, email="owner@example.com")
     member = _seed_account(session, email="member@example.com")

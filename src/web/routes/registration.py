@@ -155,7 +155,6 @@ class OutlookAccountsListResponse(BaseModel):
 class OutlookBatchRegistrationRequest(BaseModel):
     """Outlook 批量注册请求"""
     service_ids: List[int]
-    skip_registered: bool = True
     proxy: Optional[str] = None
     interval_min: int = 5
     interval_max: int = 30
@@ -1507,7 +1506,6 @@ async def get_outlook_accounts_for_registration():
 async def run_outlook_batch_registration(
     batch_id: str,
     service_ids: List[int],
-    skip_registered: bool,
     proxy: Optional[str],
     interval_min: int,
     interval_max: int,
@@ -1574,14 +1572,10 @@ async def start_outlook_batch_registration(
     启动 Outlook 批量注册任务
 
     - service_ids: 选中的 EmailService ID 列表
-    - skip_registered: 是否自动跳过已完整注册邮箱（默认 True）
     - proxy: 代理地址
     - interval_min: 最小间隔秒数
     - interval_max: 最大间隔秒数
     """
-    from ...database.models import EmailService as EmailServiceModel
-    from ...database.models import Account
-
     # 验证参数
     if not request.service_ids:
         raise HTTPException(status_code=400, detail="请选择至少一个 Outlook 账户")
@@ -1595,33 +1589,8 @@ async def start_outlook_batch_registration(
     if request.mode not in ("parallel", "pipeline"):
         raise HTTPException(status_code=400, detail="模式必须为 parallel 或 pipeline")
 
-    # 过滤掉已完整注册的邮箱
-    actual_service_ids = request.service_ids
+    actual_service_ids = list(request.service_ids)
     skipped_count = 0
-
-    if request.skip_registered:
-        actual_service_ids = []
-        with get_db() as db:
-            for service_id in request.service_ids:
-                service = db.query(EmailServiceModel).filter(
-                    EmailServiceModel.id == service_id
-                ).first()
-
-                if not service:
-                    continue
-
-                config = service.config or {}
-                email = config.get("email") or service.name
-
-                # 检查是否已注册
-                existing_account = db.query(Account).filter(
-                    Account.email == email
-                ).first()
-
-                if _derive_outlook_execution_state(existing_account) == "registered_complete":
-                    skipped_count += 1
-                else:
-                    actual_service_ids.append(service_id)
 
     if not actual_service_ids:
         return OutlookBatchRegistrationResponse(
@@ -1654,7 +1623,6 @@ async def start_outlook_batch_registration(
         run_outlook_batch_registration,
         batch_id,
         actual_service_ids,
-        request.skip_registered,
         request.proxy,
         request.interval_min,
         request.interval_max,

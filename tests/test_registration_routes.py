@@ -69,9 +69,10 @@ def test_registration_template_outlook_filter_contract_matches_frontend_helper()
     assert '<option value="registered_needs_token_refresh">已注册待补Token</option>' in template
     assert '<option value="registered_complete">注册已完成</option>' in template
     assert 'onclick="selectExecutableOutlookAccounts()"' in template
+    assert 'id="outlook-skip-registered"' not in template
 
 
-def test_start_outlook_batch_registration_only_skips_registered_complete(monkeypatch):
+def test_start_outlook_batch_registration_allows_registered_complete_accounts(monkeypatch):
     manager = _build_manager("registration_routes_skip_semantics.db")
 
     with manager.session_scope() as session:
@@ -126,7 +127,6 @@ def test_start_outlook_batch_registration_only_skips_registered_complete(monkeyp
 
     request = registration_module.OutlookBatchRegistrationRequest(
         service_ids=[pending_id, complete_id],
-        skip_registered=True,
         interval_min=1,
         interval_max=2,
     )
@@ -137,6 +137,6 @@ def test_start_outlook_batch_registration_only_skips_registered_complete(monkeyp
 
     assert response.batch_id == "batch-id-1"
     assert response.total == 2
-    assert response.skipped == 1
-    assert response.to_register == 1
-    assert response.service_ids == [pending_id]
+    assert response.skipped == 0
+    assert response.to_register == 2
+    assert response.service_ids == [pending_id, complete_id]

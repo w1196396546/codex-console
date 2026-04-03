@@ -128,6 +128,28 @@
                     <div class="team-detail-callout" data-role="team-detail-callout">
                         当前还没有选中的 Team。左侧列表会展示 owner、席位和同步健康度，点击任意 Team 可在这里查看详情。
                     </div>
+                    <section class="team-membership-section">
+                        <div class="team-membership-header">
+                            <div>
+                                <p class="eyebrow">Memberships</p>
+                                <h3>成员动作台</h3>
+                            </div>
+                            <div class="team-membership-toolbar">
+                                <div class="team-tab-list" role="tablist" aria-label="成员视图切换">
+                                    <button type="button" class="team-tab is-active" data-team-tab="active">活跃成员</button>
+                                    <button type="button" class="team-tab" data-team-tab="invited">邀请中</button>
+                                    <button type="button" class="team-tab" data-team-tab="external">外部成员</button>
+                                </div>
+                                <div class="team-membership-actions">
+                                    <span class="team-status-chip muted" data-role="invite-availability">请选择 Team</span>
+                                    <button type="button" class="btn btn-secondary" data-action="open-invite-modal">批量邀请</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="team-membership-list" data-role="membership-list">
+                            <div class="team-empty-state">请选择一个 Team 查看成员关系与可执行动作。</div>
+                        </div>
+                    </section>
                 </article>
 
                 <article class="team-panel card" data-panel="task-center">
@@ -151,6 +173,43 @@
                 </article>
             </section>
         </main>
+    </div>
+
+    <div class="modal" data-role="invite-modal" hidden>
+        <div class="modal-content team-invite-modal">
+            <div class="modal-header">
+                <div>
+                    <h3>批量邀请</h3>
+                    <p class="subtitle" data-role="invite-modal-title">请选择 Team 后再发起邀请。</p>
+                </div>
+                <button type="button" class="modal-close" data-action="close-invite-modal">&times;</button>
+            </div>
+            <div class="modal-body team-invite-modal-body">
+                <div class="team-detail-callout" data-role="invite-feedback">
+                    支持批量邀请本地账号 ID，或直接填写邮箱列表。
+                </div>
+                <div class="team-invite-mode-switch">
+                    <button type="button" class="team-tab is-active" data-invite-mode="accounts">邀请账号</button>
+                    <button type="button" class="team-tab" data-invite-mode="emails">邀请邮箱</button>
+                </div>
+                <section class="team-invite-pane" data-role="invite-pane-accounts">
+                    <label class="team-invite-label" for="invite-account-ids">本地账号 ID</label>
+                    <textarea id="invite-account-ids" class="team-invite-textarea" data-role="invite-account-ids" placeholder="支持逗号、空格或换行分隔，例如：1001,1002,1003"></textarea>
+                    <div class="team-invite-options">
+                        <label><input type="checkbox" data-role="invite-skip-existing" checked> 跳过已存在关系</label>
+                        <label><input type="checkbox" data-role="invite-resend-invited"> 对 invited 关系允许重发</label>
+                    </div>
+                </section>
+                <section class="team-invite-pane" data-role="invite-pane-emails" hidden>
+                    <label class="team-invite-label" for="invite-emails">邮箱列表</label>
+                    <textarea id="invite-emails" class="team-invite-textarea" data-role="invite-emails" placeholder="每行一个邮箱，或使用逗号分隔"></textarea>
+                </section>
+            </div>
+            <div class="modal-footer team-invite-footer">
+                <button type="button" class="btn btn-secondary" data-action="close-invite-modal">取消</button>
+                <button type="button" class="btn btn-primary" data-action="submit-invite">提交邀请</button>
+            </div>
+        </div>
     </div>
 
     <script src="/static/js/utils.js?v={{ static_version }}"></script>

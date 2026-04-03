@@ -5,8 +5,11 @@ import { readFileSync } from 'node:fs';
 import autoTeam from '../../static/js/auto_team.js';
 
 const {
+  afterSuccessfulMembershipAction,
+  buildMembershipActionRequest,
   createAcceptedTaskFlow,
   deriveInitialTeamState,
+  resolveInviteAvailability,
 } = autoTeam;
 
 class FakeWebSocket {
@@ -99,6 +102,69 @@ test('accepted task flow 会在 discover 与 sync-batch 成功后刷新 teams �
   assert.equal(sockets[1].closed, true);
 });
 
+test('membership actions require membership id and refresh detail after success', async () => {
+  const action = buildMembershipActionRequest({ id: 7, action: 'remove' });
+  assert.deepEqual(action, { membershipId: 7, action: 'remove' });
+
+  assert.throws(
+    () => buildMembershipActionRequest({ id: 0, action: 'remove' }),
+    /membership/i,
+  );
+
+  const calls = [];
+  const refreshResult = await afterSuccessfulMembershipAction(12, 'invited', {
+    refreshTeamDetail: async (path) => {
+      calls.push(['detail', path]);
+    },
+    refreshMemberships: async (path) => {
+      calls.push(['memberships', path]);
+    },
+    refreshTasks: async (path) => {
+      calls.push(['tasks', path]);
+    },
+  });
+
+  assert.deepEqual(refreshResult, {
+    detailPath: '/api/team/teams/12',
+    membershipsPath: '/api/team/teams/12/memberships?status=invited',
+    tasksPath: '/api/team/tasks?team_id=12',
+  });
+  assert.deepEqual(calls, [
+    ['detail', '/api/team/teams/12'],
+    ['memberships', '/api/team/teams/12/memberships?status=invited'],
+    ['tasks', '/api/team/tasks?team_id=12'],
+  ]);
+});
+
+test('batch invite modal renders full-team conflict state', () => {
+  assert.deepEqual(
+    resolveInviteAvailability({ status: 'active', syncStatus: 'success' }),
+    {
+      disabled: false,
+      tone: 'ready',
+      reason: '',
+    },
+  );
+
+  assert.deepEqual(
+    resolveInviteAvailability({ status: 'full', syncStatus: 'success' }),
+    {
+      disabled: true,
+      tone: 'warning',
+      reason: '当前 Team 已满，无法继续批量邀请。',
+    },
+  );
+
+  assert.deepEqual(
+    resolveInviteAvailability({ status: 'active', syncStatus: 'failed' }),
+    {
+      disabled: true,
+      tone: 'danger',
+      reason: '同步状态异常，请先完成一次成功同步再继续邀请。',
+    },
+  );
+});
+
 test('auto_team 模板包含 overview/detail/task center 和主操作按钮', () => {
   const template = readFileSync(
     new URL('../../templates/auto_team.html', import.meta.url),
@@ -111,5 +177,8 @@ test('auto_team 模板包含 overview/detail/task center 和主操作按钮', ()
   assert.match(template, /data-panel="task-center"/);
   assert.match(template, />发现母号</);
   assert.match(template, />批量同步</);
+  assert.match(template, /data-role="membership-list"/);
+  assert.match(template, /data-role="invite-modal"/);
+  assert.match(template, />批量邀请</);
   assert.match(template, /\/static\/js\/auto_team\.js\?v=\{\{ static_version \}\}/);
 });

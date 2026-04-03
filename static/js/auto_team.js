@@ -55,6 +55,23 @@
         return query ? `/api/team/teams?${query}` : '/api/team/teams';
     }
 
+    function buildMembershipsPath(teamId, membershipStatus) {
+        const normalizedTeamId = normalizePositiveInt(teamId);
+        if (normalizedTeamId === null) {
+            throw new Error('team id is required');
+        }
+
+        const params = new URLSearchParams();
+        const status = normalizeText(membershipStatus);
+        if (status) {
+            params.set('status', status);
+        }
+
+        const query = params.toString();
+        const basePath = `/api/team/teams/${normalizedTeamId}/memberships`;
+        return query ? `${basePath}?${query}` : basePath;
+    }
+
     function deriveInitialTeamState(query) {
         const source = typeof query === 'string' ? query.replace(/^\?/, '') : '';
         const params = new URLSearchParams(source);
@@ -74,6 +91,81 @@
                 detail: false,
                 tasks: false,
             },
+        };
+    }
+
+    function buildMembershipActionRequest({ id, action }) {
+        const membershipId = normalizePositiveInt(id);
+        if (membershipId === null) {
+            throw new Error('membership id is required');
+        }
+
+        const normalizedAction = normalizeText(action);
+        if (!normalizedAction) {
+            throw new Error('membership action is required');
+        }
+
+        return {
+            membershipId,
+            action: normalizedAction,
+        };
+    }
+
+    async function afterSuccessfulMembershipAction(teamId, membershipStatus, {
+        refreshTeamDetail,
+        refreshMemberships,
+        refreshTasks,
+    } = {}) {
+        const normalizedTeamId = normalizePositiveInt(teamId);
+        if (normalizedTeamId === null) {
+            throw new Error('team id is required');
+        }
+
+        const detailPath = `/api/team/teams/${normalizedTeamId}`;
+        const membershipsPath = buildMembershipsPath(normalizedTeamId, membershipStatus);
+        const tasksPath = `/api/team/tasks?team_id=${normalizedTeamId}`;
+
+        if (typeof refreshTeamDetail === 'function') {
+            await refreshTeamDetail(detailPath);
+        }
+        if (typeof refreshMemberships === 'function') {
+            await refreshMemberships(membershipsPath);
+        }
+        if (typeof refreshTasks === 'function') {
+            await refreshTasks(tasksPath);
+        }
+
+        return {
+            detailPath,
+            membershipsPath,
+            tasksPath,
+        };
+    }
+
+    function resolveInviteAvailability({ status, syncStatus } = {}) {
+        const normalizedStatus = normalizeText(status).toLowerCase();
+        const normalizedSyncStatus = normalizeText(syncStatus).toLowerCase();
+
+        if (normalizedSyncStatus && normalizedSyncStatus !== 'success') {
+            return {
+                disabled: true,
+                tone: 'danger',
+                reason: '同步状态异常，请先完成一次成功同步再继续邀请。',
+            };
+        }
+
+        if (normalizedStatus === 'full') {
+            return {
+                disabled: true,
+                tone: 'warning',
+                reason: '当前 Team 已满，无法继续批量邀请。',
+            };
+        }
+
+        return {
+            disabled: false,
+            tone: 'ready',
+            reason: '',
         };
     }
 
@@ -108,9 +200,9 @@
             }
 
             const socket = socketFactory(wsChannel);
-            const notify = (status, payload) => {
+            const notify = (taskStatus, payload) => {
                 if (typeof onStatusChange === 'function') {
-                    onStatusChange(status, payload);
+                    onStatusChange(taskStatus, payload);
                 }
             };
 
@@ -125,15 +217,15 @@
                     return;
                 }
 
-                const status = normalizeText(payload && payload.status) || 'pending';
-                notify(status, payload);
+                const taskStatus = normalizeText(payload && payload.status) || 'pending';
+                notify(taskStatus, payload);
 
-                if (!FINISHED_TASK_STATUSES.has(status)) {
+                if (!FINISHED_TASK_STATUSES.has(taskStatus)) {
                     return;
                 }
 
                 socket.close();
-                if (status === 'completed') {
+                if (taskStatus === 'completed') {
                     await refreshAfterSuccess(acceptedPayload);
                 }
             });
@@ -450,9 +542,12 @@
     }
 
     return {
+        afterSuccessfulMembershipAction,
+        buildMembershipActionRequest,
         buildTeamsListPath,
         createAcceptedTaskFlow,
         deriveInitialTeamState,
         initPage,
+        resolveInviteAvailability,
     };
 });

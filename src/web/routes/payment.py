@@ -27,6 +27,7 @@ from .accounts import resolve_account_ids
 from ...core.openai.payment import (
     generate_plus_checkout_bundle,
     generate_team_checkout_bundle,
+    generate_business_trial_checkout_bundle,
     generate_aimizy_payment_link,
     open_url_incognito,
     check_subscription_status_detail,
@@ -1889,8 +1890,9 @@ def _generate_checkout_link_for_account(
     request: "CheckoutRequestBase",
     proxy: Optional[str],
 ) -> tuple[str, str, Optional[str], Optional[str], Optional[str], Optional[str]]:
-    if request.plan_type not in ("plus", "team"):
-        raise HTTPException(status_code=400, detail="plan_type 必须为 plus 或 team")
+    request.plan_type = str(request.plan_type or "").strip().lower()
+    if request.plan_type not in ("plus", "team", "business_trial"):
+        raise HTTPException(status_code=400, detail="plan_type 必须为 plus / team / business_trial")
 
     # 优先官方 checkout，保证直接落到 chatgpt.com 绑卡页面。
     source = "openai_checkout"
@@ -1906,6 +1908,14 @@ def _generate_checkout_link_for_account(
                 account=account,
                 proxy=proxy,
                 country=request.country,
+            )
+        elif request.plan_type == "business_trial":
+            source = "openai_checkout_business_trial"
+            bundle = generate_business_trial_checkout_bundle(
+                account=account,
+                proxy=proxy,
+                country=request.country,
+                workspace_name=request.workspace_name,
             )
         else:
             bundle = generate_team_checkout_bundle(
@@ -1932,13 +1942,24 @@ def _generate_checkout_link_for_account(
                 status_code=502,
                 detail=f"官方 checkout 网络连接失败，请检查代理或网络后重试: {direct_err}",
             )
+        if request.plan_type == "business_trial":
+            logger.warning(
+                "Business 试用 checkout 生成失败，不回退 aimizy: account_id=%s email=%s error=%s",
+                account.id,
+                account.email,
+                direct_err,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Business 试用 checkout 生成失败，请稍后重试: {direct_err}",
+            )
         # 官方接口失败时，回退到 aimizy 渠道（仍会尝试归一化为官方 checkout 链接）。
         source = "aimizy_fallback"
         fallback_reason = str(direct_err)
         logger.warning(f"官方 checkout 生成失败，回退 aimizy: {direct_err}")
         link = generate_aimizy_payment_link(
             account=account,
-            plan_type=request.plan_type,
+            plan_type="team" if request.plan_type in ("team", "business_trial") else request.plan_type,
             proxy=proxy,
             country=request.country,
             currency=request.currency,
@@ -1957,7 +1978,7 @@ def _generate_checkout_link_for_account(
 
 class CheckoutRequestBase(BaseModel):
     account_id: int
-    plan_type: str  # 'plus' or 'team'
+    plan_type: str  # 'plus' / 'team' / 'business_trial'
     workspace_name: str = "MyTeam"
     price_interval: str = "month"
     seat_quantity: int = 5
@@ -2254,7 +2275,7 @@ def save_account_session_token(
 
 @router.post("/generate-link")
 def generate_payment_link(request: GenerateLinkRequest):
-    """生成 Plus 或 Team 支付链接，可选自动无痕打开"""
+    """生成 Plus / Team / Business 试用支付链接，可选自动无痕打开"""
     with get_db() as db:
         account = db.query(Account).filter(Account.id == request.account_id).first()
         if not account:
@@ -2353,9 +2374,9 @@ def create_bind_card_task(request: CreateBindCardTaskRequest):
         task = BindCardTask(
             account_id=account.id,
             plan_type=request.plan_type,
-            workspace_name=request.workspace_name if request.plan_type == "team" else None,
-            price_interval=request.price_interval if request.plan_type == "team" else None,
-            seat_quantity=request.seat_quantity if request.plan_type == "team" else None,
+            workspace_name=request.workspace_name if request.plan_type in ("team", "business_trial") else None,
+            price_interval=request.price_interval if request.plan_type == "team" else "month" if request.plan_type == "business_trial" else None,
+            seat_quantity=request.seat_quantity if request.plan_type == "team" else 5 if request.plan_type == "business_trial" else None,
             country=_normalize_checkout_country(request.country),
             currency=_normalize_checkout_currency(_normalize_checkout_country(request.country), request.currency),
             checkout_url=link,

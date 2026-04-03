@@ -865,6 +865,27 @@ def generate_team_checkout_bundle(
     return _request_checkout_bundle(account=account, payload=payload, proxy=proxy)
 
 
+def generate_business_trial_checkout_bundle(
+    account: Account,
+    proxy: Optional[str] = None,
+    country: str = "US",
+    workspace_name: str = "MyTeam",
+) -> Dict[str, Optional[str]]:
+    """
+    生成 Business 免费试用 checkout 信息。
+
+    当前官网链路本质仍是 Team checkout，只是固定为月付 5 席的首月免费活动。
+    """
+    return generate_team_checkout_bundle(
+        account=account,
+        workspace_name=workspace_name,
+        price_interval="month",
+        seat_quantity=5,
+        proxy=proxy,
+        country=country,
+    )
+
+
 def generate_plus_link(
     account: Account,
     proxy: Optional[str] = None,

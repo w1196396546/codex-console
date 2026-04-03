@@ -7,11 +7,12 @@ from src.database import crud
 from src.database.models import Base
 from src.database.session import DatabaseSessionManager
 from src.database.team_crud import upsert_team, upsert_team_membership
+from src.database.team_models import Team, TeamMembership
 from src.services.team.client import TeamClient
 from src.services.team.membership_actions import apply_membership_action
 
 
-def _build_session(db_name: str):
+def _build_session_factory(db_name: str) -> DatabaseSessionManager:
     runtime_dir = Path("tests_runtime")
     runtime_dir.mkdir(exist_ok=True)
 
@@ -21,7 +22,11 @@ def _build_session(db_name: str):
 
     manager = DatabaseSessionManager(f"sqlite:///{db_path}")
     Base.metadata.create_all(bind=manager.engine)
-    return manager.SessionLocal()
+    return manager
+
+
+def _build_session(db_name: str):
+    return _build_session_factory(db_name).SessionLocal()
 
 
 def _make_owner_and_team(session):
@@ -63,6 +68,193 @@ def _make_membership(session, *, team_id: int, email: str, status: str, upstream
     )
 
 
+def test_revoke_action_persists_updates_team_aggregate_and_requires_refresh():
+    manager = _build_session_factory("team_membership_action_revoke_persist.db")
+    session = manager.SessionLocal()
+    try:
+        _, team = _make_owner_and_team(session)
+        membership = _make_membership(
+            session,
+            team_id=team.id,
+            email="invitee-persist@example.com",
+            status="invited",
+        )
+        _make_membership(
+            session,
+            team_id=team.id,
+            email="still-active@example.com",
+            status="joined",
+            upstream_user_id="user-still-active",
+        )
+        team.current_members = 99
+        team.seats_available = 0
+        team_id = team.id
+        membership_id = membership.id
+        session.commit()
+
+        async def fake_transport(*, method, path, access_token="", json=None, **kwargs):
+            assert method == "DELETE"
+            assert path == "/backend-api/accounts/acct-team-membership/invites"
+            assert access_token == "owner-membership-token"
+            assert json == {"email_address": "invitee-persist@example.com"}
+            return {}
+
+        result = asyncio.run(
+            apply_membership_action(
+                session,
+                membership_id=membership_id,
+                action="revoke",
+                client=TeamClient(transport=fake_transport),
+            )
+        )
+
+        assert result["success"] is True
+        assert result["refresh_required"] is True
+        session.close()
+
+        fresh_session = manager.SessionLocal()
+        try:
+            persisted_membership = (
+                fresh_session.query(TeamMembership)
+                .filter(TeamMembership.id == membership_id)
+                .first()
+            )
+            persisted_team = fresh_session.query(Team).filter(Team.id == team_id).first()
+
+            assert persisted_membership is not None
+            assert persisted_membership.membership_status == "revoked"
+            assert persisted_team is not None
+            assert persisted_team.current_members == 1
+            assert persisted_team.seats_available == 5
+        finally:
+            fresh_session.close()
+    finally:
+        session.close()
+
+
+def test_remove_action_persists_updates_team_aggregate_and_requires_refresh():
+    manager = _build_session_factory("team_membership_action_remove_persist.db")
+    session = manager.SessionLocal()
+    try:
+        _, team = _make_owner_and_team(session)
+        membership = _make_membership(
+            session,
+            team_id=team.id,
+            email="joined-remove@example.com",
+            status="joined",
+            upstream_user_id="user-remove-persist",
+        )
+        _make_membership(
+            session,
+            team_id=team.id,
+            email="invite-stays@example.com",
+            status="invited",
+        )
+        team.current_members = 77
+        team.seats_available = 0
+        team_id = team.id
+        membership_id = membership.id
+        session.commit()
+
+        async def fake_transport(*, method, path, access_token="", **kwargs):
+            assert method == "DELETE"
+            assert path == "/backend-api/accounts/acct-team-membership/users/user-remove-persist"
+            assert access_token == "owner-membership-token"
+            return {}
+
+        result = asyncio.run(
+            apply_membership_action(
+                session,
+                membership_id=membership_id,
+                action="remove",
+                client=TeamClient(transport=fake_transport),
+            )
+        )
+
+        assert result["success"] is True
+        assert result["refresh_required"] is True
+        session.close()
+
+        fresh_session = manager.SessionLocal()
+        try:
+            persisted_membership = (
+                fresh_session.query(TeamMembership)
+                .filter(TeamMembership.id == membership_id)
+                .first()
+            )
+            persisted_team = fresh_session.query(Team).filter(Team.id == team_id).first()
+
+            assert persisted_membership is not None
+            assert persisted_membership.membership_status == "removed"
+            assert persisted_team is not None
+            assert persisted_team.current_members == 1
+            assert persisted_team.seats_available == 5
+        finally:
+            fresh_session.close()
+    finally:
+        session.close()
+
+
+def test_bind_local_account_persists_and_recomputes_team_aggregate():
+    manager = _build_session_factory("team_membership_action_bind_persist.db")
+    session = manager.SessionLocal()
+    try:
+        _, team = _make_owner_and_team(session)
+        membership = _make_membership(
+            session,
+            team_id=team.id,
+            email="bind-success@example.com",
+            status="invited",
+        )
+        local_account = crud.create_account(
+            session,
+            email="bind-success@example.com",
+            password="bind-pass",
+            email_service="outlook",
+            status="active",
+            if_exists="raise",
+        )
+        team.current_members = 42
+        team.seats_available = 0
+        team_id = team.id
+        membership_id = membership.id
+        local_account_id = local_account.id
+        session.commit()
+
+        result = asyncio.run(
+            apply_membership_action(
+                session,
+                membership_id=membership_id,
+                action="bind-local-account",
+                account_id=local_account_id,
+            )
+        )
+
+        assert result["success"] is True
+        assert result["refresh_required"] is True
+        session.close()
+
+        fresh_session = manager.SessionLocal()
+        try:
+            persisted_membership = (
+                fresh_session.query(TeamMembership)
+                .filter(TeamMembership.id == membership_id)
+                .first()
+            )
+            persisted_team = fresh_session.query(Team).filter(Team.id == team_id).first()
+
+            assert persisted_membership is not None
+            assert persisted_membership.local_account_id == local_account_id
+            assert persisted_membership.source == "manual_bind"
+            assert persisted_team is not None
+            assert persisted_team.current_members == 1
+            assert persisted_team.seats_available == 5
+        finally:
+            fresh_session.close()
+    finally:
+        session.close()
+
+
 def test_invited_membership_can_be_revoked_and_updates_status():
     session = _build_session("team_membership_action_revoke.db")
     try:
@@ -95,7 +287,7 @@ def test_invited_membership_can_be_revoked_and_updates_status():
         assert result["team_id"] == team.id
         assert result["membership_id"] == membership.id
         assert result["next_status"] == "revoked"
-        assert result["refresh_required"] is False
+        assert result["refresh_required"] is True
         assert membership.membership_status == "revoked"
     finally:
         session.close()
@@ -132,6 +324,7 @@ def test_joined_or_existing_membership_can_be_removed_and_updates_status(status)
         session.refresh(membership)
         assert result["success"] is True
         assert result["next_status"] == "removed"
+        assert result["refresh_required"] is True
         assert membership.membership_status == "removed"
     finally:
         session.close()

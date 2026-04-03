@@ -23,6 +23,11 @@ GHOST_SUCCESS_WINDOW_SECONDS = 12
 GHOST_SUCCESS_POLL_INTERVAL_SECONDS = 0.5
 GHOST_SUCCESS_URL_TOKENS = ("subscribed=true", "success", "/settings/subscription")
 GHOST_SUCCESS_TEXT_MARKERS = ("you're all set", "you’re all set", "subscription active")
+_ABSENT_MEMBERSHIP_STATUS = {
+    "invited": "revoked",
+    "joined": "removed",
+    "already_member": "removed",
+}
 
 class TeamSyncError(Exception):
     """Team 同步基础异常。"""
@@ -97,7 +102,8 @@ def _seed_existing_memberships(team: Team) -> dict[str, dict[str, Any]]:
         records[email] = {
             "email": email,
             "existing": membership,
-            "statuses": [membership.membership_status],
+            "existing_status": membership.membership_status,
+            "statuses": [],
             "local_account_id": membership.local_account_id,
             "upstream_user_id": membership.upstream_user_id,
             "member_role": membership.member_role,
@@ -115,6 +121,7 @@ def _ensure_record(records: dict[str, dict[str, Any]], email: str) -> dict[str, 
         {
             "email": email,
             "existing": None,
+            "existing_status": None,
             "statuses": [],
             "local_account_id": None,
             "upstream_user_id": None,
@@ -125,6 +132,15 @@ def _ensure_record(records: dict[str, dict[str, Any]], email: str) -> dict[str, 
             "source": "sync",
         },
     )
+
+
+def _resolve_snapshot_membership_status(record: dict[str, Any]) -> str:
+    statuses = record["statuses"]
+    if statuses:
+        return resolve_team_member_status(statuses)
+
+    existing_status = str(record.get("existing_status") or "").strip().lower()
+    return _ABSENT_MEMBERSHIP_STATUS.get(existing_status, existing_status or "failed")
 
 
 def _merge_remote_members(records: dict[str, dict[str, Any]], members: list[dict[str, Any]]) -> None:
@@ -167,7 +183,10 @@ def _apply_membership_snapshot(
         record = records[email]
         existing: TeamMembership | None = record["existing"]
         membership = existing or TeamMembership(team_id=team.id, member_email=email)
-        final_status = resolve_team_member_status(record["statuses"])
+        final_status = _resolve_snapshot_membership_status(record)
+        removed_at = record["removed_at"] if final_status in {"removed", "revoked"} else None
+        if final_status in {"removed", "revoked"} and removed_at is None:
+            removed_at = synced_at
 
         membership.member_email = email
         membership.local_account_id = record["local_account_id"] or account_lookup.get(email)
@@ -176,7 +195,7 @@ def _apply_membership_snapshot(
         membership.membership_status = final_status
         membership.invited_at = record["invited_at"]
         membership.joined_at = record["joined_at"]
-        membership.removed_at = record["removed_at"] if final_status in {"removed", "revoked"} else None
+        membership.removed_at = removed_at
         membership.last_seen_at = synced_at
         membership.source = existing.source if existing and existing.source == "manual_bind" else "sync"
         membership.sync_error = None
@@ -261,10 +280,21 @@ async def sync_team_memberships(
         _merge_remote_invites(records, remote_invites)
         return _apply_membership_snapshot(db, team=team, records=records, synced_at=synced_at)
     except Exception as exc:
-        team.sync_status = "failed"
-        team.sync_error = str(exc)
-        team.last_sync_at = synced_at
-        db.add(team)
-        db.commit()
-        db.refresh(team)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+        try:
+            team.sync_status = "failed"
+            team.sync_error = str(exc)
+            team.last_sync_at = synced_at
+            db.add(team)
+            db.commit()
+            db.refresh(team)
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
         raise

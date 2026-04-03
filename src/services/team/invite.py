@@ -6,10 +6,14 @@ from datetime import datetime
 
 from src.database.models import Account, AppLog
 from src.database.team_crud import upsert_team_membership
-from src.database.team_models import Team
+from src.database.team_models import Team, TeamMembership
 
 from .client import TeamClient, TeamClientError
-from .utils import normalize_team_email
+from .utils import (
+    count_current_members,
+    normalize_team_email,
+    seats_available as calculate_seats_available,
+)
 
 _GUARD_LOG_MESSAGES = (
     "未触发子号自动刷新 RT",
@@ -142,6 +146,26 @@ def _persist_membership(
     return membership.id
 
 
+def _refresh_team_summary(db, *, team: Team) -> None:
+    membership_records = (
+        db.query(TeamMembership.member_email, TeamMembership.membership_status)
+        .filter(TeamMembership.team_id == team.id)
+        .all()
+    )
+    current_members = count_current_members(
+        [
+            {"member_email": member_email, "membership_status": membership_status}
+            for member_email, membership_status in membership_records
+        ]
+    )
+    team.current_members = current_members
+    team.seats_available = calculate_seats_available(
+        current_members=current_members,
+        max_members=team.max_members,
+    )
+    db.add(team)
+
+
 def _is_full_error(message: str) -> bool:
     normalized = message.lower()
     return any(token in normalized for token in _FULL_TEAM_TOKENS)
@@ -268,6 +292,7 @@ async def _invite_emails(
                 )
             )
 
+    _refresh_team_summary(db, team=team)
     db.commit()
     return {
         "success": all(item["success"] for item in results),

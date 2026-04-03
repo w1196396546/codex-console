@@ -212,7 +212,7 @@ def test_sync_team_memberships_marks_team_failed_when_upstream_fetch_errors():
         session.close()
 
 
-def test_sync_team_memberships_counts_joined_and_already_member_as_active_members():
+def test_sync_team_memberships_marks_missing_existing_already_member_as_removed():
     session = _build_session("team_sync_active_counts.db")
     try:
         owner = _make_account(
@@ -252,14 +252,120 @@ def test_sync_team_memberships_counts_joined_and_already_member_as_active_member
         )
         session.refresh(team)
 
-        assert summary["active_member_count"] == 2
+        assert summary["active_member_count"] == 1
         assert summary["joined_count"] == 1
         assert summary["invited_count"] == 0
         assert [(item.member_email, item.membership_status) for item in memberships] == [
-            ("existing@example.com", "already_member"),
+            ("existing@example.com", "removed"),
             ("joined@example.com", "joined"),
         ]
-        assert team.current_members == 2
-        assert team.seats_available == 1
+        assert team.current_members == 1
+        assert team.seats_available == 2
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize(
+    ("existing_status", "expected_status"),
+    [
+        ("already_member", "removed"),
+        ("invited", "revoked"),
+    ],
+)
+def test_sync_team_memberships_converges_missing_remote_membership_to_inactive_status(
+    existing_status: str,
+    expected_status: str,
+):
+    session = _build_session(f"team_sync_missing_remote_{existing_status}.db")
+    try:
+        owner = _make_account(
+            session,
+            email="owner@example.com",
+            access_token="owner-token",
+            account_id="acct-owner",
+        )
+        team = _make_team(session, owner_account_id=owner.id, upstream_account_id="acct-team-sync-missing")
+        upsert_team_membership(
+            session,
+            team_id=team.id,
+            member_email="stale@example.com",
+            member_role="member",
+            membership_status=existing_status,
+            source="sync",
+        )
+
+        summary = asyncio.run(sync_team_memberships(session, team_id=team.id, client=FakeTeamSyncClient()))
+
+        membership = session.query(TeamMembership).filter(TeamMembership.team_id == team.id).one()
+        session.refresh(team)
+
+        assert summary["active_member_count"] == 0
+        assert membership.membership_status == expected_status
+        assert membership.removed_at is not None
+        assert team.current_members == 0
+        assert team.seats_available == team.max_members
+    finally:
+        session.close()
+
+
+def test_sync_team_memberships_rolls_back_before_marking_failed_after_snapshot_commit_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session = _build_session("team_sync_snapshot_commit_error.db")
+    try:
+        owner = _make_account(
+            session,
+            email="owner@example.com",
+            access_token="owner-token",
+            account_id="acct-owner",
+        )
+        team = _make_team(session, owner_account_id=owner.id, upstream_account_id="acct-team-sync-commit-error")
+        client = FakeTeamSyncClient(
+            members_payload={
+                "items": [
+                    {
+                        "id": "user-commit-failure",
+                        "email": "joined@example.com",
+                        "role": "member",
+                        "created_time": "2026-04-03T00:00:00Z",
+                    }
+                ]
+            }
+        )
+
+        original_commit = session.commit
+        original_rollback = session.rollback
+        state = {
+            "commit_calls": 0,
+            "failed_commit_seen": False,
+            "rollback_after_failure": False,
+        }
+
+        def guarded_commit():
+            state["commit_calls"] += 1
+            if state["commit_calls"] == 2:
+                state["failed_commit_seen"] = True
+                raise RuntimeError("snapshot commit exploded")
+            if state["failed_commit_seen"] and not state["rollback_after_failure"]:
+                raise AssertionError("commit called again before rollback")
+            return original_commit()
+
+        def guarded_rollback():
+            if state["failed_commit_seen"]:
+                state["rollback_after_failure"] = True
+            return original_rollback()
+
+        monkeypatch.setattr(session, "commit", guarded_commit)
+        monkeypatch.setattr(session, "rollback", guarded_rollback)
+
+        with pytest.raises(RuntimeError, match="snapshot commit exploded"):
+            asyncio.run(sync_team_memberships(session, team_id=team.id, client=client))
+
+        session.refresh(team)
+        assert state["rollback_after_failure"] is True
+        assert state["commit_calls"] == 3
+        assert team.sync_status == "failed"
+        assert "snapshot commit exploded" in (team.sync_error or "")
+        assert team.last_sync_at is not None
     finally:
         session.close()

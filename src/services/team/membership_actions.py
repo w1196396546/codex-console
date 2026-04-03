@@ -11,6 +11,7 @@ from src.database.team_models import Team, TeamMembership
 
 from .client import TeamClient, TeamClientError
 from .relation import bind_local_account
+from .utils import count_current_members, seats_available as calculate_seats_available
 
 
 def _utcnow() -> datetime:
@@ -58,6 +59,45 @@ def _apply_removed_status(membership: TeamMembership, *, next_status: str) -> No
     membership.membership_status = next_status
     membership.removed_at = _utcnow()
     membership.sync_error = None
+
+
+def _recalculate_team_aggregate(session: Session, team: Team) -> None:
+    memberships = (
+        session.query(TeamMembership)
+        .filter(TeamMembership.team_id == team.id)
+        .all()
+    )
+    active_member_count = count_current_members(
+        {
+            "member_email": membership.member_email,
+            "membership_status": membership.membership_status,
+        }
+        for membership in memberships
+    )
+    team.current_members = active_member_count
+    team.seats_available = calculate_seats_available(
+        current_members=active_member_count,
+        max_members=team.max_members,
+    )
+
+
+def _commit_membership_changes(
+    session: Session,
+    *,
+    membership: TeamMembership,
+    team: Team | None = None,
+    refresh_team_aggregate: bool = False,
+) -> TeamMembership:
+    session.add(membership)
+    if team is not None:
+        if refresh_team_aggregate:
+            _recalculate_team_aggregate(session, team)
+        session.add(team)
+    session.commit()
+    session.refresh(membership)
+    if team is not None:
+        session.refresh(team)
+    return membership
 
 
 async def _revoke_invite(
@@ -126,15 +166,22 @@ async def apply_membership_action(
             )
 
         bind_result = bind_local_account(db, membership.id, account_id)
-        db.flush()
         refreshed_membership = _load_membership(db, membership.id) or membership
+        if bind_result.get("success"):
+            bound_team = _load_team(db, refreshed_membership.team_id)
+            refreshed_membership = _commit_membership_changes(
+                db,
+                membership=refreshed_membership,
+                team=bound_team,
+                refresh_team_aggregate=True,
+            )
         return _build_result(
             success=bool(bind_result.get("success")),
             message=str(bind_result.get("message") or ("local account bound" if bind_result.get("success") else "bind local account failed")),
             team_id=refreshed_membership.team_id,
             membership_id=refreshed_membership.id,
             next_status=refreshed_membership.membership_status,
-            refresh_required=False,
+            refresh_required=bool(bind_result.get("success")),
             error_code=bind_result.get("error_code"),
             account_id=bind_result.get("account_id", account_id),
         )
@@ -209,7 +256,7 @@ async def apply_membership_action(
             )
         except TeamClientError as exc:
             membership.sync_error = str(exc)
-            db.flush()
+            _commit_membership_changes(db, membership=membership)
             return _build_result(
                 success=False,
                 message=str(exc),
@@ -221,14 +268,19 @@ async def apply_membership_action(
             )
 
         _apply_removed_status(membership, next_status="revoked")
-        db.flush()
+        membership = _commit_membership_changes(
+            db,
+            membership=membership,
+            team=team,
+            refresh_team_aggregate=True,
+        )
         return _build_result(
             success=True,
             message="membership invite revoked",
             team_id=membership.team_id,
             membership_id=membership.id,
             next_status="revoked",
-            refresh_required=False,
+            refresh_required=True,
         )
 
     if current_status not in {"joined", "already_member"}:
@@ -262,7 +314,7 @@ async def apply_membership_action(
         )
     except TeamClientError as exc:
         membership.sync_error = str(exc)
-        db.flush()
+        _commit_membership_changes(db, membership=membership)
         return _build_result(
             success=False,
             message=str(exc),
@@ -274,12 +326,17 @@ async def apply_membership_action(
         )
 
     _apply_removed_status(membership, next_status="removed")
-    db.flush()
+    membership = _commit_membership_changes(
+        db,
+        membership=membership,
+        team=team,
+        refresh_team_aggregate=True,
+    )
     return _build_result(
         success=True,
         message="membership removed",
         team_id=membership.team_id,
         membership_id=membership.id,
         next_status="removed",
-        refresh_required=False,
+        refresh_required=True,
     )

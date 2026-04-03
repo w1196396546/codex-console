@@ -147,6 +147,58 @@ def test_invite_account_ids_updates_only_team_membership_and_keeps_child_tokens_
         session.close()
 
 
+def test_invite_account_ids_recomputes_team_summary_after_successful_invite():
+    session = _build_session("team_invite_service_team_summary.db")
+    try:
+        _, team = _make_owner_and_team(session)
+        existing = _make_child_account(session, email="existing@example.com")
+        child = _make_child_account(session, email="child@example.com")
+
+        session.add(
+            TeamMembership(
+                team_id=team.id,
+                local_account_id=existing.id,
+                member_email="existing@example.com",
+                member_role="member",
+                membership_status="already_member",
+                source="sync",
+            )
+        )
+        session.commit()
+        session.refresh(team)
+        team.current_members = 0
+        team.seats_available = team.max_members
+        session.commit()
+
+        async def fake_transport(*, method, path, access_token="", json=None, **kwargs):
+            assert method == "POST"
+            assert path == "/backend-api/accounts/acct-team-upstream/invites"
+            assert access_token == "owner-access-token"
+            assert json == {
+                "email_addresses": ["child@example.com"],
+                "role": "standard-user",
+                "resend_emails": True,
+            }
+            return {"ok": True}
+
+        result = asyncio.run(
+            invite_account_ids(
+                session,
+                team_id=team.id,
+                account_ids=[child.id],
+                client=TeamClient(transport=fake_transport),
+            )
+        )
+
+        session.refresh(team)
+
+        assert result["success"] is True
+        assert team.current_members == 2
+        assert team.seats_available == 4
+    finally:
+        session.close()
+
+
 def test_invite_manual_emails_returns_guard_logs_and_does_not_trigger_child_flows(monkeypatch):
     session = _build_session("team_invite_service_manual_emails.db")
     try:

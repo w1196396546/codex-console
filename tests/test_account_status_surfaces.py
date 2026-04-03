@@ -29,3 +29,12 @@ def test_frontend_status_maps_cover_partial_account_states():
     assert "['active', 'token_pending', 'login_incomplete', 'expired', 'banned', 'failed']" in accounts_js
     assert "if (value === 'token_pending') return '#f97316';" in overview_js
     assert "if (value === 'login_incomplete') return '#8b5cf6';" in overview_js
+
+
+def test_accounts_list_exposes_sub2api_upload_column_and_renderer():
+    template = Path("templates/accounts.html").read_text(encoding="utf-8")
+    accounts_js = Path("static/js/accounts.js").read_text(encoding="utf-8")
+
+    assert ">Sub2API</th>" in template
+    assert "account.sub2api_uploaded" in accounts_js
+    assert "format.date(account.sub2api_uploaded_at)" in accounts_js

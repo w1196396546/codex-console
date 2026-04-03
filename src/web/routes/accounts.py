@@ -93,6 +93,8 @@ class AccountResponse(BaseModel):
     proxy_used: Optional[str] = None
     cpa_uploaded: bool = False
     cpa_uploaded_at: Optional[str] = None
+    sub2api_uploaded: bool = False
+    sub2api_uploaded_at: Optional[str] = None
     subscription_type: Optional[str] = None
     subscription_at: Optional[str] = None
     has_refresh_token: bool = False
@@ -279,6 +281,8 @@ def account_to_response(account: Account) -> AccountResponse:
         proxy_used=account.proxy_used,
         cpa_uploaded=account.cpa_uploaded or False,
         cpa_uploaded_at=account.cpa_uploaded_at.isoformat() if account.cpa_uploaded_at else None,
+        sub2api_uploaded=account.sub2api_uploaded or False,
+        sub2api_uploaded_at=account.sub2api_uploaded_at.isoformat() if account.sub2api_uploaded_at else None,
         subscription_type=account.subscription_type,
         subscription_at=account.subscription_at.isoformat() if account.subscription_at else None,
         has_refresh_token=has_refresh_token,
@@ -2273,6 +2277,9 @@ async def upload_account_to_sub2api(account_id: int, request: Optional[Sub2ApiUp
             target_type=locals().get("target_type", "sub2api")
         )
         if success:
+            account.sub2api_uploaded = True
+            account.sub2api_uploaded_at = datetime.utcnow()
+            db.commit()
             return {"success": True, "message": message}
         else:
             return {"success": False, "error": message}

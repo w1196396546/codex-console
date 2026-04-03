@@ -1,5 +1,6 @@
 import json
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -116,6 +117,30 @@ def test_list_accounts_supports_refresh_token_state_and_has_refresh_token(monkey
     assert missing_payload["total"] == 1
     assert missing_payload["accounts"][0]["email"] == "missing-rt@example.com"
     assert missing_payload["accounts"][0]["has_refresh_token"] is False
+
+
+def test_list_accounts_includes_sub2api_upload_state(monkeypatch):
+    client = _create_client(monkeypatch, "accounts_routes_sub2api_state.db")
+
+    uploaded_at = datetime(2026, 4, 3, 12, 0, 0)
+    with accounts_module.get_db() as db:
+        account = _seed_account(
+            db,
+            email="sub2api-visible@example.com",
+            refresh_token="rt-1",
+            status="active",
+        )
+        account.sub2api_uploaded = True
+        account.sub2api_uploaded_at = uploaded_at
+        db.commit()
+
+    response = client.get("/api/accounts")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["accounts"][0]["sub2api_uploaded"] is True
+    assert payload["accounts"][0]["sub2api_uploaded_at"] == uploaded_at.isoformat()
 
 
 def test_list_accounts_treats_whitespace_refresh_token_as_missing(monkeypatch):
@@ -661,6 +686,39 @@ def test_batch_upload_endpoints_support_select_all_with_refresh_token_filter(mon
     assert captured["cpa"] == seeded["has_ids"]
     assert captured["sub2api"] == seeded["has_ids"]
     assert captured["tm"] == seeded["has_ids"]
+
+
+def test_upload_account_to_sub2api_marks_account_uploaded(monkeypatch):
+    client = _create_client(monkeypatch, "accounts_routes_upload_sub2api.db")
+
+    with accounts_module.get_db() as db:
+        account = _seed_account(
+            db,
+            email="single-sub2api@example.com",
+            access_token="access-token",
+        )
+        account_id = account.id
+
+    monkeypatch.setattr(
+        accounts_module,
+        "upload_to_sub2api",
+        lambda accounts, api_url, api_key, concurrency=3, priority=50, target_type="sub2api": (True, "成功上传 1 个账号"),
+    )
+    monkeypatch.setattr(
+        accounts_module.crud,
+        "get_sub2api_services",
+        lambda db, enabled=True: [SimpleNamespace(api_url="https://sub2api.example", api_key="key")],
+    )
+
+    response = client.post(f"/api/accounts/{account_id}/upload-sub2api", json={})
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+
+    with accounts_module.get_db() as db:
+        saved = db.query(Account).filter(Account.id == account_id).first()
+        assert saved.sub2api_uploaded is True
+        assert saved.sub2api_uploaded_at is not None
 
 
 def test_batch_delete_accounts_rejects_invalid_refresh_token_filter(monkeypatch):

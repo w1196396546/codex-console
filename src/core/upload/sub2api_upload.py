@@ -174,9 +174,13 @@ def batch_upload_to_sub2api(
         success, message = upload_to_sub2api(accounts, api_url, api_key, concurrency, priority, target_type)
 
         if success:
+            uploaded_at = datetime.utcnow()
             for acc in accounts:
+                acc.sub2api_uploaded = True
+                acc.sub2api_uploaded_at = uploaded_at
                 results["success_count"] += 1
                 results["details"].append({"id": acc.id, "email": acc.email, "success": True, "message": message})
+            db.commit()
         else:
             for acc in accounts:
                 results["failed_count"] += 1

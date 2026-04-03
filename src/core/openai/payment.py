@@ -874,16 +874,31 @@ def generate_business_trial_checkout_bundle(
     """
     生成 Business 免费试用 checkout 信息。
 
-    当前官网链路本质仍是 Team checkout，只是固定为月付 5 席的首月免费活动。
+    官网 Claim free offer 实际走的是 Team checkout，
+    但需要带上 promo query 场景专用字段，才能稳定命中首月免费试用。
     """
-    return generate_team_checkout_bundle(
-        account=account,
-        workspace_name=workspace_name,
-        price_interval="month",
-        seat_quantity=5,
-        proxy=proxy,
-        country=country,
-    )
+    currency = _COUNTRY_CURRENCY_MAP.get(country, "USD")
+    payload = {
+        "plan_name": "chatgptteamplan",
+        "team_plan_data": {
+            "workspace_name": workspace_name,
+            "price_interval": "month",
+            "seat_quantity": 5,
+        },
+        "billing_details": {"country": country, "currency": currency},
+        "cancel_url": (
+            "https://chatgpt.com/?promo_campaign=team-1-month-free"
+            "&utm_campaign=WEB-team-1-month-free"
+            "&utm_internal_medium=referral#team-pricing"
+        ),
+        "promo_campaign": {
+            "promo_campaign_id": "team-1-month-free",
+            "is_coupon_from_query_param": True,
+        },
+        "entry_point": "team_workspace_purchase_modal",
+        "checkout_ui_mode": "custom",
+    }
+    return _request_checkout_bundle(account=account, payload=payload, proxy=proxy)
 
 
 def generate_plus_link(

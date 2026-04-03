@@ -176,20 +176,17 @@ def test_generate_business_trial_checkout_bundle_uses_fixed_team_trial_defaults(
     )
     captured = {}
 
-    def fake_generate_team_checkout_bundle(account, workspace_name, price_interval, seat_quantity, proxy, country):
+    def fake_request_checkout_bundle(account, payload, proxy):
         captured.update(
             {
                 "account_id": account.id,
-                "workspace_name": workspace_name,
-                "price_interval": price_interval,
-                "seat_quantity": seat_quantity,
+                "payload": payload,
                 "proxy": proxy,
-                "country": country,
             }
         )
         return {"checkout_url": "https://example.com/checkout"}
 
-    monkeypatch.setattr(payment_core, "generate_team_checkout_bundle", fake_generate_team_checkout_bundle)
+    monkeypatch.setattr(payment_core, "_request_checkout_bundle", fake_request_checkout_bundle)
 
     result = payment_core.generate_business_trial_checkout_bundle(
         account=account,
@@ -200,11 +197,23 @@ def test_generate_business_trial_checkout_bundle_uses_fixed_team_trial_defaults(
 
     assert captured == {
         "account_id": account.id,
-        "workspace_name": "BizTrial",
-        "price_interval": "month",
-        "seat_quantity": 5,
+        "payload": {
+            "plan_name": "chatgptteamplan",
+            "team_plan_data": {
+                "workspace_name": "BizTrial",
+                "price_interval": "month",
+                "seat_quantity": 5,
+            },
+            "billing_details": {"country": "SG", "currency": "SGD"},
+            "cancel_url": "https://chatgpt.com/?promo_campaign=team-1-month-free&utm_campaign=WEB-team-1-month-free&utm_internal_medium=referral#team-pricing",
+            "promo_campaign": {
+                "promo_campaign_id": "team-1-month-free",
+                "is_coupon_from_query_param": True,
+            },
+            "entry_point": "team_workspace_purchase_modal",
+            "checkout_ui_mode": "custom",
+        },
         "proxy": "http://127.0.0.1:8080",
-        "country": "SG",
     }
     assert result == {"checkout_url": "https://example.com/checkout"}
 

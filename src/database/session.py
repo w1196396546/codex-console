@@ -11,6 +11,7 @@ import os
 import logging
 
 from .models import Base
+from . import team_models  # noqa: F401  # 确保 Team 模型在建表前注册到同一 metadata
 
 logger = logging.getLogger(__name__)
 

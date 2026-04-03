@@ -11,7 +11,10 @@ let selectedAccounts = new Set();
 let isLoading = false;
 let selectAllPages = false;  // 是否选中了全部页
 let currentFilters = { status: '', email_service: '', refresh_token_state: '', search: '' };  // 当前筛选条件
-const stateActions = window.AccountsStateActions || {};
+const hasWindow = typeof window !== 'undefined';
+const hasDocument = typeof document !== 'undefined';
+const getElement = hasDocument ? (id) => document.getElementById(id) : () => null;
+const stateActions = hasWindow ? (window.AccountsStateActions || {}) : {};
 const accountsListLoader = stateActions.createLatestRequestOrchestrator
     ? stateActions.createLatestRequestOrchestrator({
         fetcher: fetchAccountsPage,
@@ -20,44 +23,53 @@ const accountsListLoader = stateActions.createLatestRequestOrchestrator
     })
     : null;
 
+function buildTeamManagementEntryUrl(ownerAccountId) {
+    if (ownerAccountId == null) {
+        return '/auto-team';
+    }
+    return `/auto-team?owner_account_id=${encodeURIComponent(ownerAccountId)}`;
+}
+
 // DOM 元素
 const elements = {
-    table: document.getElementById('accounts-table'),
-    totalAccounts: document.getElementById('total-accounts'),
-    activeAccounts: document.getElementById('active-accounts'),
-    expiredAccounts: document.getElementById('expired-accounts'),
-    failedAccounts: document.getElementById('failed-accounts'),
-    filterStatus: document.getElementById('filter-status'),
-    filterService: document.getElementById('filter-service'),
-    filterRefreshTokenState: document.getElementById('filter-refresh-token-state'),
-    searchInput: document.getElementById('search-input'),
-    refreshBtn: document.getElementById('refresh-btn'),
-    batchRefreshBtn: document.getElementById('batch-refresh-btn'),
-    batchValidateBtn: document.getElementById('batch-validate-btn'),
-    batchUploadBtn: document.getElementById('batch-upload-btn'),
-    batchCheckSubBtn: document.getElementById('batch-check-sub-btn'),
-    batchStateBtn: document.getElementById('batch-state-btn'),
-    batchStateMenu: document.getElementById('batch-state-menu'),
-    batchDeleteBtn: document.getElementById('batch-delete-btn'),
-    exportBtn: document.getElementById('export-btn'),
-    exportMenu: document.getElementById('export-menu'),
-    selectAll: document.getElementById('select-all'),
-    prevPage: document.getElementById('prev-page'),
-    nextPage: document.getElementById('next-page'),
-    pageInfo: document.getElementById('page-info'),
-    detailModal: document.getElementById('detail-modal'),
-    modalBody: document.getElementById('modal-body'),
-    closeModal: document.getElementById('close-modal')
+    table: getElement('accounts-table'),
+    totalAccounts: getElement('total-accounts'),
+    activeAccounts: getElement('active-accounts'),
+    expiredAccounts: getElement('expired-accounts'),
+    failedAccounts: getElement('failed-accounts'),
+    filterStatus: getElement('filter-status'),
+    filterService: getElement('filter-service'),
+    filterRefreshTokenState: getElement('filter-refresh-token-state'),
+    searchInput: getElement('search-input'),
+    refreshBtn: getElement('refresh-btn'),
+    batchRefreshBtn: getElement('batch-refresh-btn'),
+    batchValidateBtn: getElement('batch-validate-btn'),
+    batchUploadBtn: getElement('batch-upload-btn'),
+    batchCheckSubBtn: getElement('batch-check-sub-btn'),
+    batchStateBtn: getElement('batch-state-btn'),
+    batchStateMenu: getElement('batch-state-menu'),
+    batchDeleteBtn: getElement('batch-delete-btn'),
+    exportBtn: getElement('export-btn'),
+    exportMenu: getElement('export-menu'),
+    selectAll: getElement('select-all'),
+    prevPage: getElement('prev-page'),
+    nextPage: getElement('next-page'),
+    pageInfo: getElement('page-info'),
+    detailModal: getElement('detail-modal'),
+    modalBody: getElement('modal-body'),
+    closeModal: getElement('close-modal')
 };
 
 // 初始化
-document.addEventListener('DOMContentLoaded', () => {
-    loadStats();
-    loadAccounts();
-    initEventListeners();
-    updateBatchButtons();  // 初始化按钮状态
-    renderSelectAllBanner();
-});
+if (hasDocument) {
+    document.addEventListener('DOMContentLoaded', () => {
+        loadStats();
+        loadAccounts();
+        initEventListeners();
+        updateBatchButtons();  // 初始化按钮状态
+        renderSelectAllBanner();
+    });
+}
 
 // 事件监听
 function initEventListeners() {
@@ -1467,4 +1479,10 @@ function showInboxCodeResult(code, email) {
         </div>
     `;
     elements.detailModal.classList.add('active');
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        buildTeamManagementEntryUrl,
+    };
 }

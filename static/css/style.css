@@ -540,6 +540,245 @@ body {
     color: var(--text-primary);
 }
 
+/* ============================================
+   Team 页面
+   ============================================ */
+
+.team-page {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-lg);
+}
+
+.team-page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--spacing-lg);
+}
+
+.team-header-actions {
+    display: flex;
+    gap: var(--spacing-sm);
+    flex-wrap: wrap;
+}
+
+.team-toolbar {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--spacing-md);
+    align-items: end;
+}
+
+.team-toolbar-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+}
+
+.team-toolbar-field label {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.team-toolbar-field input,
+.team-toolbar-field select {
+    min-height: 44px;
+    padding: 0 14px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-primary);
+    transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.team-toolbar-field input:focus,
+.team-toolbar-field select:focus {
+    border-color: var(--primary-color);
+    outline: none;
+    box-shadow: 0 0 0 4px var(--primary-light);
+}
+
+.team-toolbar-search {
+    grid-column: span 2;
+}
+
+.team-toolbar-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.team-shell {
+    display: grid;
+    grid-template-columns: 1.2fr 1fr 1fr;
+    gap: var(--spacing-lg);
+    align-items: start;
+}
+
+.team-panel {
+    min-height: 640px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+}
+
+.team-panel-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--spacing-sm);
+}
+
+.team-panel-heading h3 {
+    font-size: 1.125rem;
+    margin-top: 2px;
+}
+
+.eyebrow {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--primary-color);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.team-status-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 32px;
+    padding: 0 12px;
+    border-radius: var(--radius-full);
+    background: var(--primary-light);
+    color: var(--primary-dark);
+    font-size: 0.8125rem;
+    font-weight: 700;
+}
+
+.team-status-chip.muted {
+    background: var(--surface-hover);
+    color: var(--text-secondary);
+}
+
+.team-metric-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--spacing-sm);
+}
+
+.team-metric-card {
+    padding: var(--spacing-md);
+    border-radius: var(--radius-lg);
+    background: linear-gradient(160deg, var(--surface), var(--surface-hover));
+    border: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.team-metric-card span {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+}
+
+.team-metric-card strong {
+    font-size: 1.6rem;
+    line-height: 1;
+}
+
+.team-list,
+.task-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+}
+
+.team-list-item,
+.task-list-item {
+    width: 100%;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    color: inherit;
+    text-align: left;
+    transition: transform var(--transition), border-color var(--transition), box-shadow var(--transition);
+}
+
+.team-list-item:hover,
+.task-list-item:hover {
+    transform: translateY(-1px);
+    border-color: rgba(16, 163, 127, 0.35);
+    box-shadow: var(--shadow-sm);
+}
+
+.team-list-item.is-active {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px var(--primary-light);
+    background: linear-gradient(180deg, rgba(16, 163, 127, 0.08), rgba(16, 163, 127, 0.02));
+}
+
+.team-list-item-top,
+.task-list-item-top,
+.team-list-item-meta,
+.task-list-item-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--spacing-sm);
+    align-items: center;
+}
+
+.team-list-item-meta,
+.task-list-item-meta {
+    margin-top: 8px;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    flex-wrap: wrap;
+}
+
+.team-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--spacing-sm);
+}
+
+.team-detail-item {
+    padding: 14px;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    background: var(--surface-hover);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.team-detail-item span {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+}
+
+.team-detail-callout,
+.task-live-card,
+.team-empty-state {
+    padding: 16px;
+    border-radius: var(--radius-lg);
+    border: 1px dashed var(--border);
+    background: linear-gradient(180deg, rgba(16, 163, 127, 0.05), rgba(16, 163, 127, 0.01));
+    color: var(--text-secondary);
+}
+
+.task-live-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+}
+
+.task-live-label {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+}
+
 .btn-sm {
     padding: 6px 12px;
     font-size: 0.75rem;
@@ -1356,6 +1595,42 @@ body {
 
     .stats-grid {
         grid-template-columns: repeat(2, 1fr);
+    }
+
+    .team-page-header {
+        flex-direction: column;
+    }
+
+    .team-toolbar,
+    .team-shell {
+        grid-template-columns: 1fr;
+    }
+
+    .team-toolbar-search {
+        grid-column: span 1;
+    }
+
+    .team-toolbar-actions {
+        justify-content: stretch;
+    }
+
+    .team-header-actions,
+    .team-toolbar-actions {
+        width: 100%;
+    }
+
+    .team-header-actions .btn,
+    .team-toolbar-actions .btn {
+        width: 100%;
+    }
+
+    .team-panel {
+        min-height: auto;
+    }
+
+    .team-metric-grid,
+    .team-detail-grid {
+        grid-template-columns: 1fr;
     }
 
     .info-grid {

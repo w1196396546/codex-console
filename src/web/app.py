@@ -216,7 +216,7 @@ def create_app() -> FastAPI:
 
     @app.get("/auto-team", response_class=HTMLResponse)
     async def auto_team_page(request: Request):
-        """自动进 Team 页面（占位）"""
+        """自动进 Team 页面"""
         if not _is_authenticated(request):
             return _redirect_to_login(request)
         return _render_template(request, "auto_team.html")

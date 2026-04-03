@@ -11,6 +11,7 @@ import os
 import logging
 
 from .models import Base
+from . import team_models  # noqa: F401  # 确保 Team 模型在建表前注册到同一 metadata
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,93 @@ class DatabaseSessionManager:
                         logger.info(f"成功添加列 {table_name}.{column_name}")
                 except Exception as e:
                     logger.warning(f"迁移列 {table_name}.{column_name} 时出错: {e}")
+
+            self._migrate_team_tasks_scope_columns(conn)
+
+    def _sqlite_column_exists(self, conn, table_name: str, column_name: str) -> bool:
+        result = conn.execute(
+            text(f"SELECT * FROM pragma_table_info('{table_name}') WHERE name='{column_name}'")
+        )
+        return result.fetchone() is not None
+
+    def _sqlite_index_exists(self, conn, table_name: str, index_name: str) -> bool:
+        result = conn.execute(text(f"PRAGMA index_list('{table_name}')"))
+        return any(row[1] == index_name for row in result.fetchall())
+
+    def _migrate_team_tasks_scope_columns(self, conn) -> None:
+        """为旧版 team_tasks 表补充 scope 字段并建立唯一索引。"""
+        team_task_columns = [
+            ("scope_type", "VARCHAR(20) NOT NULL DEFAULT ''"),
+            ("scope_id", "VARCHAR(100) NOT NULL DEFAULT ''"),
+            ("active_scope_key", "VARCHAR(150)"),
+        ]
+        for column_name, column_type in team_task_columns:
+            try:
+                if not self._sqlite_column_exists(conn, "team_tasks", column_name):
+                    logger.info(f"添加列 team_tasks.{column_name}")
+                    conn.execute(
+                        text(f"ALTER TABLE team_tasks ADD COLUMN {column_name} {column_type}")
+                    )
+                    conn.commit()
+            except Exception as e:
+                logger.warning(f"迁移列 team_tasks.{column_name} 时出错: {e}")
+
+        try:
+            conn.execute(
+                text(
+                    """
+                    UPDATE team_tasks
+                    SET scope_type = CASE
+                        WHEN team_id IS NOT NULL THEN 'team'
+                        WHEN owner_account_id IS NOT NULL THEN 'owner'
+                        ELSE ''
+                    END
+                    WHERE scope_type IS NULL OR TRIM(scope_type) = ''
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    UPDATE team_tasks
+                    SET scope_id = CASE
+                        WHEN team_id IS NOT NULL THEN CAST(team_id AS TEXT)
+                        WHEN owner_account_id IS NOT NULL THEN CAST(owner_account_id AS TEXT)
+                        ELSE ''
+                    END
+                    WHERE scope_id IS NULL OR TRIM(scope_id) = ''
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    UPDATE team_tasks
+                    SET active_scope_key = CASE
+                        WHEN status IN ('completed', 'failed', 'cancelled') THEN NULL
+                        WHEN team_id IS NOT NULL THEN 'team:' || CAST(team_id AS TEXT)
+                        WHEN owner_account_id IS NOT NULL THEN 'owner:' || CAST(owner_account_id AS TEXT)
+                        ELSE NULL
+                    END
+                    WHERE active_scope_key IS NULL OR TRIM(active_scope_key) = ''
+                    """
+                )
+            )
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"回填 team_tasks scope 字段时出错: {e}")
+
+        try:
+            index_name = "ix_team_tasks_active_scope_key"
+            if not self._sqlite_index_exists(conn, "team_tasks", index_name):
+                conn.execute(
+                    text(
+                        f"CREATE UNIQUE INDEX {index_name} ON team_tasks (active_scope_key)"
+                    )
+                )
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"创建 team_tasks.active_scope_key 唯一索引时出错: {e}")
 
 
 # 全局数据库会话管理器实例

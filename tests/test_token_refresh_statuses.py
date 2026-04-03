@@ -6,6 +6,7 @@ from src.core.openai import token_refresh as token_refresh_module
 from src.core.openai.token_refresh import TokenRefreshResult
 from src.database.models import Account, Base
 from src.database.session import DatabaseSessionManager
+from src.web.routes import team as team_module
 
 
 def _build_manager(db_name: str) -> DatabaseSessionManager:
@@ -116,3 +117,8 @@ def test_refresh_account_token_promotes_partial_status_after_refresh_token_is_fi
         assert refreshed.access_token == "access-new"
         assert refreshed.refresh_token == "refresh-new"
         assert refreshed.status == AccountStatus.ACTIVE.value
+
+
+def test_team_routes_exposes_refresh_guard_dependencies():
+    assert callable(team_module.refresh_account_token)
+    assert team_module.RegistrationEngine is not None

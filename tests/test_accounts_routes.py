@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from src.database.models import Account, Base
 from src.database.session import DatabaseSessionManager
+from src.database.team_crud import upsert_team, upsert_team_membership
 from src.web.app import create_app
 from src.web.routes import accounts as accounts_module
 
@@ -83,6 +84,71 @@ def _seed_rt_accounts(session, *, prefix: str):
             "has": [has_first.email, has_second.email],
             "missing": missing.email,
         },
+    }
+
+
+def _seed_team_relation_accounts(session):
+    owner = _seed_account(session, email="owner@example.com")
+    member = _seed_account(session, email="member@example.com")
+    both = _seed_account(session, email="both@example.com")
+    none = _seed_account(session, email="none@example.com")
+    host = _seed_account(session, email="host@example.com")
+
+    member_team = upsert_team(
+        session,
+        owner_account_id=host.id,
+        upstream_account_id="acct-team-member",
+        team_name="Member Team",
+        plan_type="team",
+        subscription_plan="chatgpt-team",
+        account_role_snapshot="account-owner",
+        status="active",
+    )
+    both_team = upsert_team(
+        session,
+        owner_account_id=both.id,
+        upstream_account_id="acct-team-both-owner",
+        team_name="Both Owner Team",
+        plan_type="team",
+        subscription_plan="chatgpt-team",
+        account_role_snapshot="account-owner",
+        status="active",
+    )
+    upsert_team(
+        session,
+        owner_account_id=owner.id,
+        upstream_account_id="acct-team-owner",
+        team_name="Owner Team",
+        plan_type="team",
+        subscription_plan="chatgpt-team",
+        account_role_snapshot="account-owner",
+        status="active",
+    )
+    upsert_team_membership(
+        session,
+        team_id=member_team.id,
+        local_account_id=member.id,
+        member_email=member.email,
+        membership_status="joined",
+        member_role="standard-user",
+        source="sync",
+    )
+    upsert_team_membership(
+        session,
+        team_id=member_team.id,
+        local_account_id=both.id,
+        member_email=both.email,
+        membership_status="already_member",
+        member_role="standard-user",
+        source="sync",
+    )
+
+    return {
+        "owner": owner.id,
+        "member": member.id,
+        "both": both.id,
+        "none": none.id,
+        "both_team": both_team.id,
     }
 
 
@@ -677,3 +743,72 @@ def test_batch_delete_accounts_rejects_invalid_refresh_token_filter(monkeypatch)
 
     assert response.status_code == 400
     assert response.json()["detail"] == "无效的 refresh_token_state_filter"
+
+
+def test_list_accounts_includes_team_relation_fields_for_owner_member_both_none(monkeypatch):
+    client = _create_client(monkeypatch, "accounts_routes_team_relations_list.db")
+
+    with accounts_module.get_db() as db:
+        _seed_team_relation_accounts(db)
+
+    response = client.get("/api/accounts", params={"page_size": 10})
+
+    assert response.status_code == 200
+    payload = response.json()
+    by_email = {item["email"]: item for item in payload["accounts"]}
+
+    assert by_email["owner@example.com"]["team_role_badges"] == ["owner"]
+    assert by_email["owner@example.com"]["team_relation_summary"] == {
+        "owner_count": 1,
+        "member_count": 0,
+        "has_owner_role": True,
+        "has_member_role": False,
+    }
+    assert by_email["owner@example.com"]["team_relation_count"] == 1
+
+    assert by_email["member@example.com"]["team_role_badges"] == ["member"]
+    assert by_email["member@example.com"]["team_relation_summary"] == {
+        "owner_count": 0,
+        "member_count": 1,
+        "has_owner_role": False,
+        "has_member_role": True,
+    }
+    assert by_email["member@example.com"]["team_relation_count"] == 1
+
+    assert by_email["both@example.com"]["team_role_badges"] == ["owner", "member"]
+    assert by_email["both@example.com"]["team_relation_summary"] == {
+        "owner_count": 1,
+        "member_count": 1,
+        "has_owner_role": True,
+        "has_member_role": True,
+    }
+    assert by_email["both@example.com"]["team_relation_count"] == 2
+
+    assert by_email["none@example.com"]["team_role_badges"] == []
+    assert by_email["none@example.com"]["team_relation_summary"] is None
+    assert by_email["none@example.com"]["team_relation_count"] == 0
+
+
+def test_get_account_includes_team_relation_fields_for_owner_member_both_none(monkeypatch):
+    client = _create_client(monkeypatch, "accounts_routes_team_relations_detail.db")
+
+    with accounts_module.get_db() as db:
+        seeded = _seed_team_relation_accounts(db)
+
+    expected = {
+        seeded["owner"]: (["owner"], 1),
+        seeded["member"]: (["member"], 1),
+        seeded["both"]: (["owner", "member"], 2),
+        seeded["none"]: ([], 0),
+    }
+
+    for account_id, (badges, relation_count) in expected.items():
+        response = client.get(f"/api/accounts/{account_id}")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["team_role_badges"] == badges
+        assert payload["team_relation_count"] == relation_count
+        if relation_count == 0:
+            assert payload["team_relation_summary"] is None
+        else:
+            assert payload["team_relation_summary"] is not None

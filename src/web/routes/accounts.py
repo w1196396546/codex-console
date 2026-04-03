@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks, Body
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import func, inspect
 
 from ...config.constants import AccountStatus
 from ...config.settings import get_settings
@@ -30,6 +30,7 @@ from ...core.dynamic_proxy import get_proxy_url_for_task
 from ...database import crud
 from ...database.models import Account
 from ...database.session import get_db
+from ...database.team_models import Team, TeamMembership
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -96,6 +97,9 @@ class AccountResponse(BaseModel):
     subscription_type: Optional[str] = None
     subscription_at: Optional[str] = None
     has_refresh_token: bool = False
+    team_role_badges: List[str] = []
+    team_relation_summary: Optional[dict] = None
+    team_relation_count: int = 0
     cookies: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -260,9 +264,83 @@ def _refresh_token_presence_expression():
     return func.trim(func.coalesce(Account.refresh_token, ""))
 
 
-def account_to_response(account: Account) -> AccountResponse:
+def _empty_team_relation_payload() -> Dict[str, Any]:
+    return {
+        "team_role_badges": [],
+        "team_relation_summary": None,
+        "team_relation_count": 0,
+    }
+
+
+def _build_team_relation_payload(*, owner_count: int, member_count: int) -> Dict[str, Any]:
+    role_badges: List[str] = []
+    if owner_count > 0:
+        role_badges.append("owner")
+    if member_count > 0:
+        role_badges.append("member")
+
+    summary = None
+    if owner_count > 0 or member_count > 0:
+        summary = {
+            "owner_count": owner_count,
+            "member_count": member_count,
+            "has_owner_role": owner_count > 0,
+            "has_member_role": member_count > 0,
+        }
+
+    return {
+        "team_role_badges": role_badges,
+        "team_relation_summary": summary,
+        "team_relation_count": owner_count + member_count,
+    }
+
+
+def _build_team_relation_map(db, account_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    normalized_ids = [int(account_id) for account_id in account_ids if account_id is not None]
+    relation_map = {
+        account_id: _empty_team_relation_payload()
+        for account_id in normalized_ids
+    }
+    if not normalized_ids:
+        return relation_map
+
+    try:
+        inspector = inspect(db.bind)
+        if not inspector.has_table("teams") or not inspector.has_table("team_memberships"):
+            return relation_map
+
+        owner_rows = (
+            db.query(Team.owner_account_id, func.count(Team.id))
+            .filter(Team.owner_account_id.in_(normalized_ids))
+            .group_by(Team.owner_account_id)
+            .all()
+        )
+        member_rows = (
+            db.query(TeamMembership.local_account_id, func.count(TeamMembership.id))
+            .filter(TeamMembership.local_account_id.in_(normalized_ids))
+            .group_by(TeamMembership.local_account_id)
+            .all()
+        )
+    except Exception:
+        return relation_map
+
+    owner_count_map = {int(account_id): int(count) for account_id, count in owner_rows}
+    member_count_map = {int(account_id): int(count) for account_id, count in member_rows}
+    for account_id in normalized_ids:
+        relation_map[account_id] = _build_team_relation_payload(
+            owner_count=owner_count_map.get(account_id, 0),
+            member_count=member_count_map.get(account_id, 0),
+        )
+    return relation_map
+
+
+def account_to_response(
+    account: Account,
+    team_relation_payload: Optional[Dict[str, Any]] = None,
+) -> AccountResponse:
     """转换 Account 模型为响应模型"""
     has_refresh_token = _has_refresh_token_value(account.refresh_token)
+    relation_payload = team_relation_payload or _empty_team_relation_payload()
     return AccountResponse(
         id=account.id,
         email=account.email,
@@ -282,6 +360,9 @@ def account_to_response(account: Account) -> AccountResponse:
         subscription_type=account.subscription_type,
         subscription_at=account.subscription_at.isoformat() if account.subscription_at else None,
         has_refresh_token=has_refresh_token,
+        team_role_badges=list(relation_payload["team_role_badges"]),
+        team_relation_summary=relation_payload["team_relation_summary"],
+        team_relation_count=int(relation_payload["team_relation_count"]),
         cookies=account.cookies,
         created_at=account.created_at.isoformat() if account.created_at else None,
         updated_at=account.updated_at.isoformat() if account.updated_at else None,
@@ -970,10 +1051,11 @@ async def list_accounts(
         # 分页
         offset = (page - 1) * page_size
         accounts = query.order_by(Account.created_at.desc()).offset(offset).limit(page_size).all()
+        team_relation_map = _build_team_relation_map(db, [account.id for account in accounts])
 
         return AccountListResponse(
             total=total,
-            accounts=[account_to_response(acc) for acc in accounts]
+            accounts=[account_to_response(acc, team_relation_map.get(acc.id)) for acc in accounts]
         )
 
 
@@ -1392,7 +1474,8 @@ async def get_account(account_id: int):
         account = crud.get_account_by_id(db, account_id)
         if not account:
             raise HTTPException(status_code=404, detail="账号不存在")
-        return account_to_response(account)
+        team_relation_map = _build_team_relation_map(db, [account.id])
+        return account_to_response(account, team_relation_map.get(account.id))
 
 
 @router.get("/{account_id}/tokens")

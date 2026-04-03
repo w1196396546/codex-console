@@ -16,7 +16,6 @@ from ...database.models import Account
 from ...database.session import get_db
 from ...database.team_models import Team, TeamMembership, TeamTask
 from ...services.team.membership_actions import apply_membership_action
-from ...services.team.tasks import enqueue_team_task
 from ..task_manager import task_manager
 from .accounts import resolve_account_ids
 
@@ -68,6 +67,8 @@ def _enqueue_team_write_task(
     owner_account_id: int | None = None,
     request_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from ...services.team.tasks import enqueue_team_task
+
     task_uuid = _new_task_uuid()
     with get_db() as db:
         try:

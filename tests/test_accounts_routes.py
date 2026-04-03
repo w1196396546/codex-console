@@ -86,6 +86,8 @@ def _seed_rt_accounts(session, *, prefix: str):
             "missing": missing.email,
         },
     }
+
+
 def _seed_team_relation_accounts(session):
     owner = _seed_account(session, email="owner@example.com")
     member = _seed_account(session, email="member@example.com")
@@ -852,19 +854,43 @@ def test_get_account_includes_team_relation_fields_for_owner_member_both_none(mo
         seeded = _seed_team_relation_accounts(db)
 
     expected = {
-        seeded["owner"]: (["owner"], 1),
-        seeded["member"]: (["member"], 1),
-        seeded["both"]: (["owner", "member"], 2),
-        seeded["none"]: ([], 0),
+        seeded["owner"]: (
+            ["owner"],
+            {
+                "owner_count": 1,
+                "member_count": 0,
+                "has_owner_role": True,
+                "has_member_role": False,
+            },
+            1,
+        ),
+        seeded["member"]: (
+            ["member"],
+            {
+                "owner_count": 0,
+                "member_count": 1,
+                "has_owner_role": False,
+                "has_member_role": True,
+            },
+            1,
+        ),
+        seeded["both"]: (
+            ["owner", "member"],
+            {
+                "owner_count": 1,
+                "member_count": 1,
+                "has_owner_role": True,
+                "has_member_role": True,
+            },
+            2,
+        ),
+        seeded["none"]: ([], None, 0),
     }
 
-    for account_id, (badges, relation_count) in expected.items():
+    for account_id, (badges, summary, relation_count) in expected.items():
         response = client.get(f"/api/accounts/{account_id}")
         assert response.status_code == 200
         payload = response.json()
         assert payload["team_role_badges"] == badges
+        assert payload["team_relation_summary"] == summary
         assert payload["team_relation_count"] == relation_count
-        if relation_count == 0:
-            assert payload["team_relation_summary"] is None
-        else:
-            assert payload["team_relation_summary"] is not None

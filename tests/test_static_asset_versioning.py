@@ -27,3 +27,11 @@ def test_index_template_uses_versioned_static_assets():
     assert '/static/js/utils.js?v={{ static_version }}' in template
     assert '/static/js/outlook_account_selector.js?v={{ static_version }}' in template
     assert '/static/js/app.js?v={{ static_version }}' in template
+
+
+def test_auto_team_template_uses_versioned_static_assets():
+    template = Path("templates/auto_team.html").read_text(encoding="utf-8")
+
+    assert '/static/css/style.css?v={{ static_version }}' in template
+    assert '/static/js/utils.js?v={{ static_version }}' in template
+    assert '/static/js/auto_team.js?v={{ static_version }}' in template

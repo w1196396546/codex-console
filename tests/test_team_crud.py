@@ -1,5 +1,9 @@
+import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
+
+import pytest
+from sqlalchemy import text
 
 from src.database.models import Base
 from src.database.session import DatabaseSessionManager
@@ -12,6 +16,8 @@ from src.database.team_crud import (
     upsert_team_task_item,
 )
 from src.database.team_models import Team, TeamMembership, TeamTask, TeamTaskItem
+from src.services.team.tasks import enqueue_team_task
+from src.web.task_manager import task_manager
 
 
 def _build_session(db_name: str):
@@ -455,3 +461,84 @@ def test_upsert_team_task_patch_semantics_preserve_omitted_values_and_clear_expl
         assert cleared.completed_at is None
     finally:
         session.close()
+
+
+def test_migrate_legacy_team_tasks_table_allows_enqueue_and_scope_conflict():
+    runtime_dir = Path("tests_runtime")
+    runtime_dir.mkdir(exist_ok=True)
+
+    db_path = runtime_dir / "team_crud_legacy_team_tasks_upgrade.db"
+    if db_path.exists():
+        db_path.unlink()
+
+    legacy_conn = sqlite3.connect(db_path)
+    try:
+        legacy_conn.execute(
+            """
+            CREATE TABLE team_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                team_id INTEGER,
+                owner_account_id INTEGER,
+                task_uuid VARCHAR(100) NOT NULL,
+                task_type VARCHAR(50) NOT NULL,
+                status VARCHAR(50),
+                request_payload TEXT,
+                result_payload TEXT,
+                error_message TEXT,
+                logs TEXT,
+                created_at DATETIME,
+                started_at DATETIME,
+                completed_at DATETIME,
+                updated_at DATETIME
+            )
+            """
+        )
+        legacy_conn.execute("CREATE UNIQUE INDEX ix_team_tasks_task_uuid ON team_tasks (task_uuid)")
+        legacy_conn.commit()
+    finally:
+        legacy_conn.close()
+
+    manager = DatabaseSessionManager(f"sqlite:///{db_path}")
+    manager.create_tables()
+    manager.migrate_tables()
+    session = manager.SessionLocal()
+    try:
+        payload = enqueue_team_task(
+            session,
+            task_uuid="legacy-team-task-1",
+            task_type="discover_owner_teams",
+            team_id=777,
+            request_payload={"mode": "upgrade-check"},
+        )
+
+        columns = {
+            row[1]: row[2]
+            for row in session.execute(text("PRAGMA table_info('team_tasks')")).fetchall()
+        }
+        indexes = session.execute(text("PRAGMA index_list('team_tasks')")).fetchall()
+        active_scope_index = next(
+            row for row in indexes if row[1] == "ix_team_tasks_active_scope_key"
+        )
+
+        persisted = session.query(TeamTask).filter(TeamTask.task_uuid == "legacy-team-task-1").one()
+
+        assert payload["scope_type"] == "team"
+        assert payload["scope_id"] == "777"
+        assert persisted.active_scope_key == "team:777"
+        assert columns["scope_type"].upper().startswith("VARCHAR")
+        assert columns["scope_id"].upper().startswith("VARCHAR")
+        assert columns["active_scope_key"].upper().startswith("VARCHAR")
+        assert active_scope_index[2] == 1
+
+        with pytest.raises(RuntimeError, match="409"):
+            enqueue_team_task(
+                session,
+                task_uuid="legacy-team-task-2",
+                task_type="discover_owner_teams",
+                team_id=777,
+                request_payload={"mode": "upgrade-conflict"},
+            )
+    finally:
+        session.close()
+        task_manager.cleanup_task("legacy-team-task-1")
+        task_manager.cleanup_task("legacy-team-task-2")

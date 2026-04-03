@@ -42,6 +42,22 @@ _batch_logs: Dict[str, List[str]] = defaultdict(list)
 _batch_locks: Dict[str, threading.Lock] = {}
 
 
+def _derive_scope_fields(
+    *,
+    scope_type: str | None,
+    scope_id: str | None,
+    team_id: int | None,
+    owner_account_id: int | None,
+) -> tuple[str | None, str | None]:
+    if scope_type is not None and scope_id is not None:
+        return scope_type, scope_id
+    if team_id is not None:
+        return "team", str(team_id)
+    if owner_account_id is not None:
+        return "owner", str(owner_account_id)
+    return scope_type, scope_id
+
+
 def _get_log_lock(task_uuid: str) -> threading.Lock:
     """线程安全地获取或创建任务日志锁"""
     if task_uuid not in _log_locks:
@@ -218,6 +234,45 @@ class TaskManager:
         # 只清理取消标志
         if task_uuid in _task_cancelled:
             del _task_cancelled[task_uuid]
+
+    def build_task_ws_path(self, task_uuid: str) -> str:
+        """构造任务日志 WebSocket 路径。"""
+        return f"/api/ws/task/{task_uuid}"
+
+    def build_accepted_response_payload(
+        self,
+        task_uuid: str,
+        *,
+        task_type: str,
+        status: str = "pending",
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        team_id: int | None = None,
+        owner_account_id: int | None = None,
+    ) -> dict:
+        """构造 Team 异步任务 accepted 响应。"""
+        resolved_scope_type, resolved_scope_id = _derive_scope_fields(
+            scope_type=scope_type,
+            scope_id=scope_id,
+            team_id=team_id,
+            owner_account_id=owner_account_id,
+        )
+        payload = {
+            "success": True,
+            "task_uuid": task_uuid,
+            "task_type": task_type,
+            "status": status,
+            "ws_channel": self.build_task_ws_path(task_uuid),
+        }
+        if resolved_scope_type is not None:
+            payload["scope_type"] = resolved_scope_type
+        if resolved_scope_id is not None:
+            payload["scope_id"] = resolved_scope_id
+        if team_id is not None:
+            payload["team_id"] = team_id
+        if owner_account_id is not None:
+            payload["owner_account_id"] = owner_account_id
+        return payload
 
     # ============== 批量任务管理 ==============
 

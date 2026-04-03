@@ -2,11 +2,14 @@ from pathlib import Path
 from contextlib import contextmanager
 from types import SimpleNamespace
 
+import pytest
+
 from src.database import crud
 from src.core import register as register_module
 from src.core.register import RegistrationEngine, RegistrationResult
 from src.database.models import Account, Base
 from src.database.session import DatabaseSessionManager
+from src.database.team_crud import upsert_team, upsert_team_membership
 from src.config.constants import AccountStatus
 
 
@@ -287,5 +290,116 @@ def test_create_account_merge_does_not_downgrade_active_account_to_partial_statu
         assert merged.refresh_token == "refresh-old"
         assert merged.session_token == "session-new"
         assert merged.status == AccountStatus.ACTIVE.value
+    finally:
+        session.close()
+
+
+def test_create_account_backfills_team_membership_local_account_id_by_email():
+    session = _build_session("account_crud_team_membership_backfill.db")
+    try:
+        team = upsert_team(
+            session,
+            owner_account_id=808,
+            upstream_account_id="acct-upstream-account-backfill",
+            team_name="Backfill Team",
+            plan_type="team",
+            subscription_plan="chatgpt-team",
+            account_role_snapshot="owner",
+            status="active",
+        )
+        membership = upsert_team_membership(
+            session,
+            team_id=team.id,
+            local_account_id=None,
+            member_email=" Display <member@example.com> ",
+            member_role="member",
+            membership_status="invited",
+            source="sync",
+        )
+
+        created = crud.create_account(
+            session,
+            email="member@example.com",
+            password="known-pass",
+            email_service="outlook",
+            status="active",
+        )
+        session.refresh(membership)
+
+        assert created.email == "member@example.com"
+        assert membership.local_account_id == created.id
+        assert membership.member_email == "member@example.com"
+    finally:
+        session.close()
+
+
+def test_create_account_merge_backfills_team_membership_local_account_id_by_email():
+    session = _build_session("account_crud_team_membership_backfill_merge.db")
+    try:
+        existing = crud.create_account(
+            session,
+            email="merge-member@example.com",
+            password="known-pass",
+            email_service="outlook",
+            status="active",
+        )
+        team = upsert_team(
+            session,
+            owner_account_id=809,
+            upstream_account_id="acct-upstream-account-backfill-merge",
+            team_name="Backfill Merge Team",
+            plan_type="team",
+            subscription_plan="chatgpt-team",
+            account_role_snapshot="owner",
+            status="active",
+        )
+        membership = upsert_team_membership(
+            session,
+            team_id=team.id,
+            local_account_id=None,
+            member_email=" Merge Member <merge-member@example.com> ",
+            member_role="member",
+            membership_status="invited",
+            source="sync",
+        )
+
+        merged = crud.create_account(
+            session,
+            email="merge-member@example.com",
+            password="new-pass",
+            email_service="outlook",
+            access_token="access-new",
+            status="active",
+            if_exists="merge",
+        )
+        session.refresh(membership)
+
+        assert merged.id == existing.id
+        assert membership.local_account_id == existing.id
+        assert membership.member_email == "merge-member@example.com"
+    finally:
+        session.close()
+
+
+def test_create_account_rolls_back_when_team_backfill_fails(monkeypatch):
+    session = _build_session("account_crud_team_backfill_atomic.db")
+    try:
+        import src.services.team.relation as relation_module
+
+        def failing_relink(*args, **kwargs):
+            raise RuntimeError("backfill boom")
+
+        monkeypatch.setattr(relation_module, "relink_account_memberships", failing_relink)
+
+        with pytest.raises(RuntimeError, match="backfill boom"):
+            crud.create_account(
+                session,
+                email="atomic@example.com",
+                password="pass",
+                email_service="outlook",
+                status="active",
+            )
+
+        assert session.query(Account).filter(Account.email == "atomic@example.com").count() == 0
     finally:
         session.close()

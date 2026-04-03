@@ -13,6 +13,45 @@ from .team_models import Team, TeamMembership, TeamTask, TeamTaskItem
 _UNSET = object()
 
 
+def _normalize_task_uuid(task_uuid: str) -> str:
+    normalized = str(task_uuid or "").strip()
+    if not normalized:
+        raise ValueError("task_uuid is required")
+    return normalized
+
+
+def _derive_task_scope_fields(
+    *,
+    task_type: str,
+    scope_type: str | object,
+    scope_id: str | object,
+    active_scope_key: str | None | object,
+    team_id: int | None | object,
+    owner_account_id: int | None | object,
+) -> tuple[str | object, str | object, str | None | object]:
+    resolved_scope_type = scope_type
+    resolved_scope_id = scope_id
+    resolved_active_scope_key = active_scope_key
+
+    if resolved_scope_type is _UNSET or resolved_scope_id is _UNSET:
+        if team_id is not _UNSET and team_id is not None:
+            resolved_scope_type = "team"
+            resolved_scope_id = str(team_id)
+        elif owner_account_id is not _UNSET and owner_account_id is not None:
+            resolved_scope_type = "owner"
+            resolved_scope_id = str(owner_account_id)
+
+    if (
+        resolved_active_scope_key is _UNSET
+        and task_type == "discover_owner_teams"
+        and resolved_scope_type in {"team", "owner"}
+        and resolved_scope_id not in {_UNSET, None}
+    ):
+        resolved_active_scope_key = f"{resolved_scope_type}:{resolved_scope_id}"
+
+    return resolved_scope_type, resolved_scope_id, resolved_active_scope_key
+
+
 def _apply_updates(model: Any, updates: dict[str, Any]) -> Any:
     for key, value in updates.items():
         if value is not _UNSET:
@@ -130,6 +169,9 @@ def upsert_team_task(
     *,
     task_uuid: str,
     task_type: str,
+    scope_type: str | object = _UNSET,
+    scope_id: str | object = _UNSET,
+    active_scope_key: str | None | object = _UNSET,
     team_id: int | None | object = _UNSET,
     owner_account_id: int | None | object = _UNSET,
     status: str | None | object = _UNSET,
@@ -140,8 +182,20 @@ def upsert_team_task(
     started_at: Any = _UNSET,
     completed_at: Any = _UNSET,
 ) -> TeamTask:
+    task_uuid = _normalize_task_uuid(task_uuid)
+    scope_type, scope_id, active_scope_key = _derive_task_scope_fields(
+        task_type=task_type,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        active_scope_key=active_scope_key,
+        team_id=team_id,
+        owner_account_id=owner_account_id,
+    )
     task = db.query(TeamTask).filter(TeamTask.task_uuid == task_uuid).first()
     values = {
+        "scope_type": scope_type,
+        "scope_id": scope_id,
+        "active_scope_key": active_scope_key,
         "team_id": team_id,
         "owner_account_id": owner_account_id,
         "task_type": task_type,
@@ -154,7 +208,7 @@ def upsert_team_task(
         "completed_at": completed_at,
     }
     if task is None:
-        task = TeamTask(task_uuid=task_uuid, task_type=task_type)
+        task = TeamTask(task_uuid=task_uuid, task_type=task_type, scope_type="", scope_id="")
     _apply_updates(task, values)
     return _persist_and_refresh(db, task)
 

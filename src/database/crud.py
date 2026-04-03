@@ -19,6 +19,16 @@ from ..config.constants import AccountStatus
 AccountConflictMode = Literal["raise", "return", "merge"]
 
 
+def _backfill_team_memberships_for_account(db: Session, account: Account | None) -> None:
+    """账号落库后，按邮箱回填尚未绑定的团队成员关系。"""
+    if account is None:
+        return
+
+    from src.services.team.relation import relink_account_memberships
+
+    relink_account_memberships(db, account.id, account.email)
+
+
 def _has_meaningful_account_value(value: Any) -> bool:
     """判断账号字段值是否值得回写到已有记录。"""
     if value is None:
@@ -139,15 +149,25 @@ def create_account(
     if if_exists != "raise":
         existing = get_account_by_email(db, email)
         if existing is not None:
-            if if_exists == "merge":
-                _merge_account_payload(existing, payload)
-                db.commit()
-                db.refresh(existing)
+            try:
+                if if_exists == "merge":
+                    _merge_account_payload(existing, payload)
+                    _backfill_team_memberships_for_account(db, existing)
+                    db.commit()
+                    db.refresh(existing)
+                else:
+                    _backfill_team_memberships_for_account(db, existing)
+                    db.commit()
+            except Exception:
+                db.rollback()
+                raise
             return existing
 
     db_account = Account(**payload)
     db.add(db_account)
     try:
+        db.flush()
+        _backfill_team_memberships_for_account(db, db_account)
         db.commit()
         db.refresh(db_account)
         return db_account
@@ -160,12 +180,23 @@ def create_account(
         if existing is None:
             raise
 
-        if if_exists == "merge":
-            _merge_account_payload(existing, payload)
-            db.commit()
-            db.refresh(existing)
+        try:
+            if if_exists == "merge":
+                _merge_account_payload(existing, payload)
+                _backfill_team_memberships_for_account(db, existing)
+                db.commit()
+                db.refresh(existing)
+            else:
+                _backfill_team_memberships_for_account(db, existing)
+                db.commit()
+        except Exception:
+            db.rollback()
+            raise
 
         return existing
+    except Exception:
+        db.rollback()
+        raise
 
 
 def get_account_by_id(db: Session, account_id: int) -> Optional[Account]:

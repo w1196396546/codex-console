@@ -373,6 +373,13 @@ function renderAccounts(accounts) {
                 </div>
             </td>
             <td>
+                <div class="cpa-status">
+                    ${account.sub2api_uploaded
+                        ? `<span class="badge uploaded" title="已上传于 ${format.date(account.sub2api_uploaded_at)}">✓</span>`
+                        : `<span class="badge pending">-</span>`}
+                </div>
+            </td>
+            <td>
                 ${renderSubscriptionStatus(account.subscription_type)}
             </td>
             <td>${format.date(account.last_refresh) || '-'}</td>

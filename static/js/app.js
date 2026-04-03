@@ -102,7 +102,6 @@ const elements = {
     outlookSelectionSummary: document.getElementById('outlook-selection-summary'),
     outlookIntervalMin: document.getElementById('outlook-interval-min'),
     outlookIntervalMax: document.getElementById('outlook-interval-max'),
-    outlookSkipRegistered: document.getElementById('outlook-skip-registered'),
     outlookConcurrencyMode: document.getElementById('outlook-concurrency-mode'),
     outlookConcurrencyCount: document.getElementById('outlook-concurrency-count'),
     outlookConcurrencyHint: document.getElementById('outlook-concurrency-hint'),
@@ -1363,7 +1362,7 @@ async function loadOutlookAccounts() {
 
         renderOutlookAccountsList();
 
-        addLog('info', `[系统] 已加载 ${data.total} 个 Outlook 账户 (账号已存在: ${data.registered_count}, 可执行: ${executableCount})`);
+        addLog('info', `[系统] 已加载 ${data.total} 个 Outlook 账户 (账号已存在: ${data.registered_count}, 默认勾选待处理: ${executableCount})`);
 
     } catch (error) {
         console.error('加载 Outlook 账户列表失败:', error);
@@ -1594,7 +1593,6 @@ async function handleOutlookBatchRegistration() {
 
     const intervalMin = parseInt(elements.outlookIntervalMin.value) || 5;
     const intervalMax = parseInt(elements.outlookIntervalMax.value) || 30;
-    const skipRegistered = elements.outlookSkipRegistered.checked;
     const concurrency = parseInt(elements.outlookConcurrencyCount.value) || 3;
     const mode = elements.outlookConcurrencyMode.value || 'pipeline';
 
@@ -1607,7 +1605,6 @@ async function handleOutlookBatchRegistration() {
 
     const requestData = {
         service_ids: selectedIds,
-        skip_registered: skipRegistered,
         interval_min: intervalMin,
         interval_max: intervalMax,
         concurrency: Math.min(50, Math.max(1, concurrency)),
@@ -1626,8 +1623,8 @@ async function handleOutlookBatchRegistration() {
         const data = await api.post('/registration/outlook-batch', requestData);
 
         if (data.to_register === 0) {
-            addLog('warning', '[警告] 所有选中的邮箱都已注册完成，无需重复执行');
-            toast.warning('所有选中的邮箱都已注册完成');
+            addLog('warning', '[警告] 所有选中的邮箱均未进入待执行队列');
+            toast.warning('所有选中的邮箱均未进入待执行队列');
             resetButtons();
             return;
         }

@@ -1302,6 +1302,8 @@ function getCheckoutPayload() {
         payload.workspace_name = document.getElementById("workspace-name")?.value || "MyTeam";
         payload.seat_quantity = Number(document.getElementById("seat-quantity")?.value || 5) || 5;
         payload.price_interval = document.getElementById("price-interval")?.value || "month";
+    } else if (selectedPlan === "business_trial") {
+        payload.workspace_name = "MyTeam";
     }
     return payload;
 }
@@ -1420,6 +1422,7 @@ function onCountryChange() {
 function selectPlan(plan) {
     selectedPlan = plan;
     document.getElementById("plan-plus")?.classList.toggle("selected", plan === "plus");
+    document.getElementById("plan-business-trial")?.classList.toggle("selected", plan === "business_trial");
     document.getElementById("plan-team")?.classList.toggle("selected", plan === "team");
     document.getElementById("team-options")?.classList.toggle("show", plan === "team");
 

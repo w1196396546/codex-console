@@ -10,6 +10,9 @@
     }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
     const FINISHED_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+    const runtime = typeof globalThis !== 'undefined'
+        ? globalThis
+        : (typeof window !== 'undefined' ? window : (typeof self !== 'undefined' ? self : {}));
 
     function normalizeText(value) {
         return String(value || '').trim();
@@ -243,9 +246,17 @@
     }
 
     function resolveWsUrl(path) {
-        const origin = global.location && global.location.origin ? global.location.origin : 'http://localhost';
+        const origin = runtime.location && runtime.location.origin ? runtime.location.origin : 'http://localhost';
         const base = origin.replace(/^http/, 'ws');
         return `${base}${path}`;
+    }
+
+    function showAlert(message) {
+        if (typeof runtime.alert === 'function') {
+            runtime.alert(message);
+            return;
+        }
+        console.warn(message);
     }
 
     async function fetchJson(path, options) {
@@ -388,7 +399,7 @@
     }
 
     async function initPage(root) {
-        const state = deriveInitialTeamState(global.location && global.location.search);
+        const state = deriveInitialTeamState(runtime.location && runtime.location.search);
         const elements = collectElements(root);
 
         elements.ownerFilter.value = state.filters.ownerAccountId || '';
@@ -473,7 +484,7 @@
                     const ownerAccountId = normalizePositiveInt(elements.ownerFilter.value)
                         || normalizePositiveInt((state.teams.find((item) => item.id === state.selectedTeamId) || {}).owner_account_id);
                     if (!ownerAccountId) {
-                        global.alert('请先输入母号 ID，或先从已有 Team 中选择一个母号。');
+                        showAlert('请先输入母号 ID，或先从已有 Team 中选择一个母号。');
                         return;
                     }
                     await triggerAcceptedTask('/api/team/discovery/run', { ids: [ownerAccountId] });
@@ -482,7 +493,7 @@
                 if (actionName === 'sync-batch') {
                     const selectedIds = state.selectedTeamId ? [state.selectedTeamId] : state.teams.slice(0, 5).map((item) => item.id);
                     if (!selectedIds.length) {
-                        global.alert('当前没有可同步的 Team。');
+                        showAlert('当前没有可同步的 Team。');
                         return;
                     }
                     await triggerAcceptedTask('/api/team/teams/sync-batch', { ids: selectedIds });

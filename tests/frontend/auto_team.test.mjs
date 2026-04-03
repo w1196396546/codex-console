@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 
 import autoTeam from '../../static/js/auto_team.js';
 
@@ -37,6 +38,92 @@ class FakeWebSocket {
   }
 }
 
+function createStubElement() {
+  return {
+    value: '',
+    textContent: '',
+    innerHTML: '',
+    hidden: false,
+    disabled: false,
+    classList: {
+      add() {},
+      remove() {},
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    querySelector() {
+      return null;
+    },
+    closest() {
+      return null;
+    },
+    getAttribute() {
+      return null;
+    },
+    setAttribute() {},
+  };
+}
+
+function createBrowserLikeAutoTeamContext() {
+  const selectorMap = new Map();
+  const requiredSelectors = [
+    '[data-role="owner-filter"]',
+    '[data-role="status-filter"]',
+    '[data-role="search-filter"]',
+    '[data-role="team-list"]',
+    '[data-role="teams-status"]',
+    '[data-role="metric-total-teams"]',
+    '[data-role="metric-total-seats"]',
+    '[data-role="metric-active-tasks"]',
+    '[data-role="team-detail-title"]',
+    '[data-role="team-detail-status"]',
+    '[data-role="detail-owner-email"]',
+    '[data-role="detail-owner-id"]',
+    '[data-role="detail-members"]',
+    '[data-role="detail-sync-status"]',
+    '[data-role="detail-last-sync"]',
+    '[data-role="detail-seats"]',
+    '[data-role="team-detail-callout"]',
+    '[data-role="task-live-status"]',
+    '[data-role="task-current-uuid"]',
+    '[data-role="task-current-summary"]',
+    '[data-role="task-list"]',
+  ];
+
+  for (const selector of requiredSelectors) {
+    selectorMap.set(selector, createStubElement());
+  }
+
+  const root = createStubElement();
+  root.querySelector = (selector) => selectorMap.get(selector) || null;
+
+  const browserContext = {
+    console,
+    Date,
+    URLSearchParams,
+    fetch: async () => ({
+      ok: true,
+      json: async () => ({ items: [] }),
+    }),
+    setTimeout,
+    clearTimeout,
+  };
+  browserContext.globalThis = browserContext;
+  browserContext.window = browserContext;
+
+  vm.createContext(browserContext);
+  const source = readFileSync(
+    new URL('../../static/js/auto_team.js', import.meta.url),
+    'utf8',
+  );
+  vm.runInContext(source, browserContext);
+
+  return {
+    autoTeamPage: browserContext.AutoTeamPage,
+    root,
+  };
+}
+
 test('deriveInitialTeamState 会从 query 解析 Team 页面初始状态', () => {
   const state = deriveInitialTeamState('?team_id=42&owner_account_id=9&status=active&search=alpha');
 
@@ -56,6 +143,12 @@ test('deriveInitialTeamState 会从 query 解析 Team 页面初始状态', () =>
       tasks: false,
     },
   });
+});
+
+test('initPage 在浏览器上下文不会依赖 Node global', async () => {
+  const { autoTeamPage, root } = createBrowserLikeAutoTeamContext();
+
+  await autoTeamPage.initPage(root);
 });
 
 test('accepted task flow 会在 discover 与 sync-batch 成功后刷新 teams 列表', async () => {

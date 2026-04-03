@@ -139,6 +139,15 @@ class FakeOpenAIClient:
             raise AssertionError("no sentinel token queued")
         return self._sentinel_tokens.pop(0)
 
+    def build_sentinel_header_token(self, did, challenge_token, *, flow):
+        return json.dumps({
+            "p": "fake-pow",
+            "t": "",
+            "c": challenge_token,
+            "id": did,
+            "flow": flow,
+        })
+
     def close(self):
         if self._session_index + 1 < len(self._sessions):
             self._session_index += 1
@@ -187,6 +196,132 @@ def test_check_sentinel_sends_non_empty_pow(monkeypatch):
     assert body["id"] == "device-1"
     assert body["flow"] == "authorize_continue"
     assert body["p"] == "gAAAAACpow-token"
+
+
+def _assert_complete_sentinel_header(headers, *, expected_device_id, expected_flow, expected_challenge):
+    sentinel_header = headers.get("openai-sentinel-token")
+    assert sentinel_header
+    sentinel_payload = json.loads(sentinel_header)
+    assert sentinel_payload == {
+        "p": "gAAAAACpow-token",
+        "t": "",
+        "c": expected_challenge,
+        "id": expected_device_id,
+        "flow": expected_flow,
+    }
+
+
+def test_native_auth_start_sends_complete_sentinel_header(monkeypatch):
+    session = QueueSession([
+        (
+            "POST",
+            OPENAI_API_ENDPOINTS["signup"],
+            DummyResponse(payload={"page": {"type": OPENAI_PAGE_TYPES["PASSWORD_REGISTRATION"]}}),
+        ),
+        (
+            "POST",
+            OPENAI_API_ENDPOINTS["signup"],
+            DummyResponse(payload={"page": {"type": OPENAI_PAGE_TYPES["LOGIN_PASSWORD"]}}),
+        ),
+    ])
+    engine = RegistrationEngine(FakeEmailService([]))
+    engine.session = session
+    engine.email = "tester@example.com"
+
+    monkeypatch.setattr(
+        "src.core.http_client.build_sentinel_pow_token",
+        lambda user_agent: "gAAAAACpow-token",
+    )
+
+    signup_result = engine._submit_signup_form("device-auth", "challenge-signup")
+    login_result = engine._submit_login_start("device-auth", "challenge-login")
+
+    assert signup_result.success is True
+    assert login_result.success is True
+
+    signup_headers = session.calls[0]["kwargs"]["headers"]
+    login_headers = session.calls[1]["kwargs"]["headers"]
+    _assert_complete_sentinel_header(
+        signup_headers,
+        expected_device_id="device-auth",
+        expected_flow="authorize_continue",
+        expected_challenge="challenge-signup",
+    )
+    _assert_complete_sentinel_header(
+        login_headers,
+        expected_device_id="device-auth",
+        expected_flow="authorize_continue",
+        expected_challenge="challenge-login",
+    )
+
+
+def test_native_register_password_sends_device_id_and_complete_sentinel_header(monkeypatch):
+    session = QueueSession([
+        ("POST", OPENAI_API_ENDPOINTS["register"], DummyResponse(payload={})),
+    ])
+    engine = RegistrationEngine(FakeEmailService([]))
+    engine.session = session
+    engine.email = "tester@example.com"
+
+    monkeypatch.setattr(engine, "_generate_password", lambda: "Passw0rd!123")
+    monkeypatch.setattr(
+        "src.core.http_client.build_sentinel_pow_token",
+        lambda user_agent: "gAAAAACpow-token",
+    )
+
+    success, password = engine._register_password("device-register", "challenge-register")
+
+    assert success is True
+    assert password == "Passw0rd!123"
+
+    headers = session.calls[0]["kwargs"]["headers"]
+    assert headers["oai-device-id"] == "device-register"
+    _assert_complete_sentinel_header(
+        headers,
+        expected_device_id="device-register",
+        expected_flow="username_password_create",
+        expected_challenge="challenge-register",
+    )
+
+
+def test_native_password_verify_sends_device_id_and_complete_sentinel_header(monkeypatch):
+    session = QueueSession([
+        (
+            "POST",
+            OPENAI_API_ENDPOINTS["signup"],
+            DummyResponse(payload={"page": {"type": OPENAI_PAGE_TYPES["LOGIN_PASSWORD"]}}),
+        ),
+        (
+            "POST",
+            OPENAI_API_ENDPOINTS["password_verify"],
+            DummyResponse(payload={"page": {"type": OPENAI_PAGE_TYPES["LOGIN_PASSWORD"]}}),
+        ),
+    ])
+    engine = RegistrationEngine(FakeEmailService([]))
+    engine.session = session
+    engine.email = "tester@example.com"
+    engine.password = "known-pass"
+    engine.device_id = "device-login"
+
+    monkeypatch.setattr(
+        "src.core.http_client.build_sentinel_pow_token",
+        lambda user_agent: "gAAAAACpow-token",
+    )
+
+    start_result = engine._submit_login_start("device-login", "challenge-login")
+    verify_result = engine._submit_login_password()
+
+    assert start_result.success is True
+    assert verify_result.success is True
+
+    headers = session.calls[1]["kwargs"]["headers"]
+    assert headers["oai-device-id"] == "device-login"
+    _assert_complete_sentinel_header(
+        headers,
+        expected_device_id="device-login",
+        expected_flow="password_verify",
+        expected_challenge="challenge-login",
+    )
 
 
 def test_run_registers_then_relogs_to_fetch_token():

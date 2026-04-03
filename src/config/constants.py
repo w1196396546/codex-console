@@ -15,6 +15,8 @@ from typing import Dict, List, Tuple
 class AccountStatus(str, Enum):
     """账户状态"""
     ACTIVE = "active"
+    TOKEN_PENDING = "token_pending"
+    LOGIN_INCOMPLETE = "login_incomplete"
     EXPIRED = "expired"
     BANNED = "banned"
     FAILED = "failed"

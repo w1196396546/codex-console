@@ -337,6 +337,8 @@ const format = {
 const statusMap = {
     account: {
         active: { text: '活跃', class: 'active' },
+        token_pending: { text: '待补 RT', class: 'warning' },
+        login_incomplete: { text: '登录待补全', class: 'warning' },
         expired: { text: '过期', class: 'expired' },
         banned: { text: '封禁', class: 'banned' },
         failed: { text: '失败', class: 'failed' }
@@ -375,6 +377,8 @@ function getServiceTypeText(type) {
 
 const accountStatusIconMap = {
     active:  { icon: '🟢', title: '活跃' },
+    token_pending: { icon: '🟠', title: '待补 RT' },
+    login_incomplete: { icon: '🟣', title: '登录待补全' },
     expired: { icon: '🟡', title: '过期' },
     banned:  { icon: '🔴', title: '封禁' },
     failed:  { icon: '❌', title: '失败' },

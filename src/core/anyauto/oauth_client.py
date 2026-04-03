@@ -5,6 +5,7 @@ OAuth 客户端模块 - 处理 Codex OAuth 登录流程
 import time
 import secrets
 from urllib.parse import urlparse, parse_qs
+from email.utils import parsedate_to_datetime
 
 try:
     from curl_cffi import requests as curl_requests
@@ -80,6 +81,54 @@ class OAuthClient:
         """在 headed 模式下注入轻微延迟，模拟真实浏览器操作节奏。"""
         if self.browser_mode == "headed":
             random_delay(low, high)
+
+    @staticmethod
+    def _parse_retry_after_seconds(headers, default_seconds=5.0):
+        retry_after = ""
+        if headers:
+            retry_after = str(
+                headers.get("Retry-After")
+                or headers.get("retry-after")
+                or ""
+            ).strip()
+        if not retry_after:
+            return float(default_seconds)
+        try:
+            return max(float(retry_after), 0.0)
+        except ValueError:
+            try:
+                retry_time = parsedate_to_datetime(retry_after)
+                return max(retry_time.timestamp() - time.time(), 0.0)
+            except Exception:
+                return float(default_seconds)
+
+    def _request_with_rate_limit_retry(
+        self,
+        method_name,
+        url,
+        *,
+        request_label,
+        max_attempts=2,
+        **kwargs,
+    ):
+        response = None
+        for attempt in range(max(1, int(max_attempts or 1))):
+            self._browser_pause()
+            response = getattr(self.session, method_name)(url, **kwargs)
+            if response.status_code != 429 or attempt >= max_attempts - 1:
+                return response
+
+            wait_seconds = self._parse_retry_after_seconds(
+                getattr(response, "headers", {}) or {},
+                default_seconds=min(5.0 * (2 ** attempt), 30.0),
+            )
+            self._log(
+                f"{request_label} 命中限流 429（第 {attempt + 1}/{max_attempts} 次），"
+                f"{wait_seconds:.1f}s 后重试..."
+            )
+            time.sleep(wait_seconds)
+
+        return response
 
     @staticmethod
     def _iter_text_fragments(value):
@@ -483,8 +532,13 @@ class OAuthClient:
             if impersonate:
                 kwargs["impersonate"] = impersonate
 
-            self._browser_pause()
-            r = self.session.post(request_url, **kwargs)
+            r = self._request_with_rate_limit_retry(
+                "post",
+                request_url,
+                request_label="提交邮箱",
+                max_attempts=2,
+                **kwargs,
+            )
             self._log(f"/authorize/continue -> {r.status_code}")
 
             if r.status_code == 400 and "invalid_auth_step" in (r.text or "") and authorize_url and authorize_params:
@@ -508,8 +562,13 @@ class OAuthClient:
                 kwargs = {"json": payload, "headers": headers, "timeout": 30, "allow_redirects": False}
                 if impersonate:
                     kwargs["impersonate"] = impersonate
-                self._browser_pause()
-                r = self.session.post(request_url, **kwargs)
+                r = self._request_with_rate_limit_retry(
+                    "post",
+                    request_url,
+                    request_label="提交邮箱",
+                    max_attempts=2,
+                    **kwargs,
+                )
                 self._log(f"/authorize/continue(重试) -> {r.status_code}")
 
             if r.status_code != 200:

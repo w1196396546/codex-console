@@ -350,6 +350,47 @@ class OpenAIHTTPClient(HTTPClient):
         except cffi_requests.RequestsError as e:
             raise HTTPClientError(f"OpenAI 请求失败: {endpoint} - {e}")
 
+    def build_sentinel_header_token(
+        self,
+        did: str,
+        challenge_token: Optional[str],
+        *,
+        flow: str,
+    ) -> Optional[str]:
+        """
+        构造业务请求使用的 openai-sentinel-token 头。
+
+        Args:
+            did: Device ID
+            challenge_token: Sentinel 接口返回的 challenge token
+            flow: 业务 flow 名称
+
+        Returns:
+            完整的 sentinel header JSON，或 None
+        """
+        did_text = str(did or "").strip()
+        challenge_text = str(challenge_token or "").strip()
+        flow_text = str(flow or "").strip()
+        if not did_text or not challenge_text or not flow_text:
+            return None
+
+        try:
+            pow_token = build_sentinel_pow_token(self.default_headers.get("User-Agent", ""))
+        except SentinelPOWError as e:
+            logger.error(f"Sentinel header POW 求解失败: {e}")
+            return None
+
+        return json.dumps(
+            {
+                "p": pow_token,
+                "t": "",
+                "c": challenge_text,
+                "id": did_text,
+                "flow": flow_text,
+            },
+            separators=(",", ":"),
+        )
+
     def check_sentinel(self, did: str, proxies: Optional[Dict] = None) -> Optional[str]:
         """
         检查 Sentinel 拦截

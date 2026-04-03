@@ -9,6 +9,7 @@ from sqlalchemy import and_, or_, desc, asc, func
 from sqlalchemy.exc import IntegrityError
 
 from .models import Account, EmailService, RegistrationTask, Setting, Proxy, CpaService, Sub2ApiService
+from ..config.constants import AccountStatus
 
 
 # ============================================================================
@@ -31,6 +32,8 @@ def _has_meaningful_account_value(value: Any) -> bool:
 
 def _merge_account_payload(existing: Account, payload: Dict[str, Any]) -> None:
     """将新账号载荷中的有效字段合并到已有账号记录。"""
+    original_status = str(getattr(existing, "status", "") or "").strip()
+    original_refresh_token = str(getattr(existing, "refresh_token", "") or "").strip()
     merge_fields = (
         "password",
         "access_token",
@@ -54,10 +57,32 @@ def _merge_account_payload(existing: Account, payload: Dict[str, Any]) -> None:
         if _has_meaningful_account_value(value):
             setattr(existing, field, value)
 
+    incoming_status = str(payload.get("status") or "").strip()
+    incoming_refresh_token = str(payload.get("refresh_token") or "").strip()
+    partial_statuses = {
+        AccountStatus.TOKEN_PENDING.value,
+        AccountStatus.LOGIN_INCOMPLETE.value,
+    }
+    if (
+        original_refresh_token
+        and not incoming_refresh_token
+        and incoming_status in partial_statuses
+        and original_status
+    ):
+        existing.status = original_status
+
     incoming_extra_data = payload.get("extra_data")
     if _has_meaningful_account_value(incoming_extra_data):
         merged_extra_data = dict(existing.extra_data or {})
         merged_extra_data.update(incoming_extra_data)
+        if (
+            original_refresh_token
+            and not incoming_refresh_token
+            and incoming_status in partial_statuses
+        ):
+            merged_extra_data.pop("token_pending", None)
+            merged_extra_data.pop("login_incomplete", None)
+            merged_extra_data.pop("account_status_reason", None)
         existing.extra_data = merged_extra_data
 
     incoming_registered_at = payload.get("registered_at")

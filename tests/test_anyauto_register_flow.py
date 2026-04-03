@@ -140,6 +140,21 @@ def _patch_saved_account(monkeypatch, password):
     )
 
 
+def _patch_saved_account_with_metadata(monkeypatch, password, extra_data):
+    @contextmanager
+    def fake_get_db():
+        yield object()
+
+    account = SimpleNamespace(password=password, extra_data=extra_data)
+    monkeypatch.setattr(register_flow_module, "get_db", fake_get_db, raising=False)
+    monkeypatch.setattr(
+        register_flow_module,
+        "crud",
+        SimpleNamespace(get_account_by_email=lambda db, email: account),
+        raising=False,
+    )
+
+
 def test_run_uses_create_account_refresh_token_before_oauth(monkeypatch):
     FakeChatGPTClient.reuse_result = (
         True,
@@ -323,3 +338,48 @@ def test_run_existing_account_direct_otp_uses_saved_password_for_oauth(monkeypat
     assert FakeOAuthClient.last_login_password == "known-pass-otp"
     assert result["metadata"]["existing_account_detected"] is True
     assert result["metadata"]["login_password_source"] == "database"
+
+
+def test_run_skips_oauth_completion_when_cooldown_is_active(monkeypatch):
+    FakeChatGPTClient.reuse_result = (
+        True,
+        {
+            "access_token": "session-access-cooldown",
+            "session_token": "session-token-cooldown",
+            "account_id": "acct-session-cooldown",
+            "workspace_id": "ws-session-cooldown",
+        },
+    )
+    FakeChatGPTClient.create_account_refresh_token = ""
+    FakeChatGPTClient.create_account_account_id = ""
+    FakeChatGPTClient.create_account_workspace_id = ""
+    FakeOAuthClient.plans = []
+    FakeOAuthClient.call_count = 0
+    _patch_saved_account_with_metadata(
+        monkeypatch,
+        "known-pass",
+        {"refresh_token_cooldown_until": "2999-01-01T00:00:00"},
+    )
+
+    engine = _build_engine(monkeypatch)
+    result = engine.run()
+
+    assert result["success"] is True
+    assert result["refresh_token"] == ""
+    assert result["metadata"]["refresh_token_retry_deferred"] is True
+    assert "冷却中" in result["metadata"]["refresh_token_error"]
+    assert FakeOAuthClient.call_count == 0
+
+
+def test_oauth_completion_slot_rejects_duplicate_inflight_attempts(monkeypatch):
+    engine = _build_engine(monkeypatch)
+    email = "dedupe@example.com"
+
+    first = engine._try_acquire_refresh_token_completion_slot(email)
+    second = engine._try_acquire_refresh_token_completion_slot(email)
+
+    try:
+        assert first is True
+        assert second is False
+    finally:
+        engine._release_refresh_token_completion_slot(email)

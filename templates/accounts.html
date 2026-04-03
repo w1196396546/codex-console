@@ -60,6 +60,12 @@
         .account-status-dot.active {
             background: var(--success-color);
         }
+        .account-status-dot.token_pending {
+            background: #f97316;
+        }
+        .account-status-dot.login_incomplete {
+            background: #8b5cf6;
+        }
         .account-status-dot.expired {
             background: var(--warning-color);
         }
@@ -163,6 +169,8 @@
                         <select id="filter-status" class="form-select">
                             <option value="">全部状态</option>
                             <option value="active">活跃</option>
+                            <option value="token_pending">待补 RT</option>
+                            <option value="login_incomplete">登录待补全</option>
                             <option value="expired">过期</option>
                             <option value="banned">封禁</option>
                             <option value="failed">失败</option>
@@ -205,6 +213,8 @@
                             </button>
                             <div class="dropdown-menu" id="batch-state-menu">
                                 <a href="#" class="dropdown-item" data-status="active">设为 active</a>
+                                <a href="#" class="dropdown-item" data-status="token_pending">设为 token_pending</a>
+                                <a href="#" class="dropdown-item" data-status="login_incomplete">设为 login_incomplete</a>
                                 <a href="#" class="dropdown-item" data-status="expired">设为 expired</a>
                                 <a href="#" class="dropdown-item" data-status="banned">设为 banned</a>
                                 <a href="#" class="dropdown-item" data-status="failed">设为 failed</a>

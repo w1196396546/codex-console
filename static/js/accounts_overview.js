@@ -69,6 +69,8 @@ function getDistributionBarColor(containerId, key, index) {
 
     if (containerId === 'dist-status') {
         if (value === 'active') return '#f59e0b'; // active: orange
+        if (value === 'token_pending') return '#f97316';
+        if (value === 'login_incomplete') return '#8b5cf6';
         if (value === 'failed' || value === 'banned') return '#ef4444';
         if (value === 'expired') return '#64748b';
         return '#3b82f6';

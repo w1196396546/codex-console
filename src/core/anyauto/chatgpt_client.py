@@ -16,6 +16,7 @@ except ImportError:
     sys.exit(1)
 
 from .sentinel_token import build_sentinel_token
+from ..openai.auth_cloudflare import try_warm_auth_cloudflare_cookies
 from .utils import (
     FlowState,
     build_browser_headers,
@@ -514,11 +515,17 @@ class ChatGPTClient:
         Returns:
             str: 最终重定向的 URL
         """
+        preserve_session_for_retry = False
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
                     self._log(f"访问 authorize URL... (尝试 {attempt + 1}/{max_retries})")
                     time.sleep(1)  # 重试前等待
+                    if preserve_session_for_retry:
+                        self._log("保留当前 session 重试 authorize，以复用刚回灌的 auth Cloudflare cookies")
+                        preserve_session_for_retry = False
+                    else:
+                        self._reset_session()
                 else:
                     self._log("访问 authorize URL...")
 
@@ -537,6 +544,19 @@ class ChatGPTClient:
                 
                 final_url = str(r.url)
                 self._log(f"重定向到: {final_url}")
+                final_path = urlparse(final_url).path
+                if "api/accounts/authorize" in final_path or final_path == "/error":
+                    self._log(f"检测到 Cloudflare/SPA 中间页，尝试浏览器 warmup: {final_url[:160]}...")
+                    warmed = try_warm_auth_cloudflare_cookies(
+                        self.session,
+                        url,
+                        device_id=self.device_id,
+                        proxy=self.proxy,
+                        user_agent=self.ua,
+                    )
+                    if warmed and attempt < max_retries - 1:
+                        preserve_session_for_retry = True
+                        continue
                 return final_url
                 
             except Exception as e:
@@ -571,7 +591,16 @@ class ChatGPTClient:
         """
         self._log(f"注册用户: {email}")
         url = f"{self.AUTH}/api/accounts/user/register"
-        
+
+        sentinel_token = build_sentinel_token(
+            self.session,
+            self.device_id,
+            flow="username_password_create",
+            user_agent=self.ua,
+            sec_ch_ua=self.sec_ch_ua,
+            impersonate=self.impersonate,
+        )
+
         headers = self._headers(
             url,
             accept="application/json",
@@ -579,7 +608,12 @@ class ChatGPTClient:
             origin=self.AUTH,
             content_type="application/json",
             fetch_site="same-origin",
+            extra_headers={
+                "oai-device-id": self.device_id,
+            },
         )
+        if sentinel_token:
+            headers["openai-sentinel-token"] = sentinel_token
         headers.update(generate_datadog_trace())
         
         payload = {

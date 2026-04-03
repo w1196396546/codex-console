@@ -347,6 +347,36 @@ class TokenRefreshManager:
             return False, f"验证异常: {str(e)}"
 
 
+def _resolve_partial_account_status(account: Account) -> str:
+    refresh_token = str(getattr(account, "refresh_token", "") or "").strip()
+    if refresh_token:
+        return AccountStatus.ACTIVE.value
+
+    password = str(getattr(account, "password", "") or "").strip()
+    source = str(getattr(account, "source", "") or "").strip().lower()
+    extra_data = dict(getattr(account, "extra_data", {}) or {})
+    if source == "login" and not password:
+        return AccountStatus.LOGIN_INCOMPLETE.value
+    if extra_data.get("existing_account_detected") and not password:
+        return AccountStatus.LOGIN_INCOMPLETE.value
+    return AccountStatus.TOKEN_PENDING.value
+
+
+def _build_account_status_update(account: Account, next_status: str) -> Dict[str, Any]:
+    extra_data = dict(getattr(account, "extra_data", {}) or {})
+    if next_status == AccountStatus.ACTIVE.value:
+        extra_data.pop("account_status_reason", None)
+        extra_data.pop("token_pending", None)
+        extra_data.pop("login_incomplete", None)
+    else:
+        extra_data["token_pending"] = next_status == AccountStatus.TOKEN_PENDING.value
+        extra_data["login_incomplete"] = next_status == AccountStatus.LOGIN_INCOMPLETE.value
+    return {
+        "status": next_status,
+        "extra_data": extra_data,
+    }
+
+
 def refresh_account_token(account_id: int, proxy_url: Optional[str] = None) -> TokenRefreshResult:
     """
     刷新指定账号的 Token 并更新数据库
@@ -375,6 +405,17 @@ def refresh_account_token(account_id: int, proxy_url: Optional[str] = None) -> T
 
             if result.refresh_token:
                 update_data["refresh_token"] = result.refresh_token
+                update_data.update(_build_account_status_update(account, AccountStatus.ACTIVE.value))
+            elif account.status in {
+                AccountStatus.TOKEN_PENDING.value,
+                AccountStatus.LOGIN_INCOMPLETE.value,
+            }:
+                update_data.update(
+                    _build_account_status_update(
+                        account,
+                        _resolve_partial_account_status(account),
+                    )
+                )
 
             if result.expires_at:
                 update_data["expires_at"] = result.expires_at
@@ -412,7 +453,7 @@ def validate_account_token(account_id: int, proxy_url: Optional[str] = None) -> 
         # 验证后回写账号状态，确保前端筛选（active/expired/banned/failed）与验证结果一致。
         error_text = str(error or "").lower()
         if is_valid:
-            next_status = AccountStatus.ACTIVE.value
+            next_status = _resolve_partial_account_status(account)
         elif (
             "过期" in error_text
             or "expired" in error_text
@@ -431,6 +472,10 @@ def validate_account_token(account_id: int, proxy_url: Optional[str] = None) -> 
             next_status = AccountStatus.FAILED.value
 
         if account.status != next_status:
-            crud.update_account(db, account_id, status=next_status)
+            crud.update_account(
+                db,
+                account_id,
+                **_build_account_status_update(account, next_status),
+            )
 
         return is_valid, error

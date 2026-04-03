@@ -446,7 +446,7 @@ function hasActiveSubscription(subscriptionType) {
 
 function renderAccountStatusDot(status) {
     const normalized = String(status || '').trim().toLowerCase();
-    const dotClass = ['active', 'expired', 'banned', 'failed'].includes(normalized)
+    const dotClass = ['active', 'token_pending', 'login_incomplete', 'expired', 'banned', 'failed'].includes(normalized)
         ? normalized
         : 'unknown';
     const title = getStatusText('account', normalized) || normalized || '-';

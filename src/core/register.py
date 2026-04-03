@@ -144,6 +144,7 @@ class RegistrationEngine:
         self.session: Optional[cffi_requests.Session] = None
         self.session_token: Optional[str] = None  # 会话令牌
         self.device_id: Optional[str] = None  # oai-did
+        self._last_sentinel_token: Optional[str] = None  # 最近一次 Sentinel challenge token
         self.logs: list = []
         self._otp_sent_at: Optional[float] = None  # OTP 发送时间戳
         self._is_existing_account: bool = False  # 是否为已注册账号（用于自动登录）
@@ -484,12 +485,15 @@ class RegistrationEngine:
         try:
             sen_token = self.http_client.check_sentinel(did)
             if sen_token:
+                self._last_sentinel_token = str(sen_token).strip()
                 self._log(f"Sentinel token 获取成功")
                 return sen_token
+            self._last_sentinel_token = None
             self._log("Sentinel 检查失败: 未获取到 token", "warning")
             return None
 
         except Exception as e:
+            self._last_sentinel_token = None
             self._log(f"Sentinel 检查异常: {e}", "warning")
             return None
 
@@ -512,6 +516,8 @@ class RegistrationEngine:
         max_attempts = 3
         current_did = str(did or "").strip()
         current_sen_token = str(sen_token or "").strip() if sen_token else None
+        if current_sen_token:
+            self._last_sentinel_token = current_sen_token
         for attempt in range(1, max_attempts + 1):
             try:
                 request_body = json.dumps({
@@ -529,14 +535,13 @@ class RegistrationEngine:
                 }
 
                 if current_sen_token:
-                    sentinel = json.dumps({
-                        "p": "",
-                        "t": "",
-                        "c": current_sen_token,
-                        "id": current_did,
-                        "flow": "authorize_continue",
-                    })
-                    headers["openai-sentinel-token"] = sentinel
+                    sentinel = self.http_client.build_sentinel_header_token(
+                        current_did,
+                        current_sen_token,
+                        flow="authorize_continue",
+                    )
+                    if sentinel:
+                        headers["openai-sentinel-token"] = sentinel
 
                 response = self.session.post(
                     OPENAI_API_ENDPOINTS["signup"],
@@ -568,6 +573,7 @@ class RegistrationEngine:
                         refreshed = self._check_sentinel(current_did)
                         if refreshed:
                             current_sen_token = refreshed
+                            self._last_sentinel_token = str(refreshed).strip()
                     except Exception:
                         pass
                     # 预热一次授权页，帮助服务端重建登录上下文。
@@ -692,13 +698,29 @@ class RegistrationEngine:
 
         for attempt in range(1, max_attempts + 1):
             try:
+                did = self._get_device_id_for_headers()
+                sentinel_token = str(self._last_sentinel_token or "").strip()
+                if not sentinel_token and did:
+                    sentinel_token = str(self._check_sentinel(did) or "").strip()
+
+                headers = {
+                    "referer": "https://auth.openai.com/log-in/password",
+                    "accept": "application/json",
+                    "content-type": "application/json",
+                    "oai-device-id": did,
+                }
+                if sentinel_token:
+                    sentinel = self.http_client.build_sentinel_header_token(
+                        did,
+                        sentinel_token,
+                        flow="password_verify",
+                    )
+                    if sentinel:
+                        headers["openai-sentinel-token"] = sentinel
+
                 response = self.session.post(
                     OPENAI_API_ENDPOINTS["password_verify"],
-                    headers={
-                        "referer": "https://auth.openai.com/log-in/password",
-                        "accept": "application/json",
-                        "content-type": "application/json",
-                    },
+                    headers=headers,
                     data=json.dumps({"password": self.password}),
                 )
 
@@ -2073,13 +2095,29 @@ class RegistrationEngine:
                 "username": self.email
             })
 
+            current_did = str(did or self._get_device_id_for_headers() or "").strip()
+            current_sen_token = str(sen_token or self._last_sentinel_token or "").strip()
+            if not current_sen_token and current_did:
+                current_sen_token = str(self._check_sentinel(current_did) or "").strip()
+
+            headers = {
+                "referer": "https://auth.openai.com/create-account/password",
+                "accept": "application/json",
+                "content-type": "application/json",
+                "oai-device-id": current_did,
+            }
+            if current_sen_token:
+                sentinel = self.http_client.build_sentinel_header_token(
+                    current_did,
+                    current_sen_token,
+                    flow="username_password_create",
+                )
+                if sentinel:
+                    headers["openai-sentinel-token"] = sentinel
+
             response = self.session.post(
                 OPENAI_API_ENDPOINTS["register"],
-                headers={
-                    "referer": "https://auth.openai.com/create-account/password",
-                    "accept": "application/json",
-                    "content-type": "application/json",
-                },
+                headers=headers,
                 data=register_body,
             )
 
@@ -3007,6 +3045,8 @@ class RegistrationEngine:
         try:
             # 获取默认 client_id
             settings = get_settings()
+            metadata = dict(result.metadata or {})
+            status = self._resolve_persisted_account_status(result, metadata)
 
             with get_db() as db:
                 # 保存账户信息
@@ -3025,7 +3065,8 @@ class RegistrationEngine:
                     refresh_token=result.refresh_token,
                     id_token=result.id_token,
                     proxy_used=self.proxy_url,
-                    extra_data=result.metadata,
+                    extra_data=metadata,
+                    status=status,
                     source=result.source,
                     if_exists="merge",
                 )
@@ -3036,3 +3077,36 @@ class RegistrationEngine:
         except Exception as e:
             self._log(f"保存到数据库失败: {e}", "error")
             return False
+
+    @staticmethod
+    def _resolve_persisted_account_status(
+        result: RegistrationResult,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """根据当前结果决定账号落库状态，避免半成品账号进入 active。"""
+        meta = metadata if metadata is not None else {}
+        explicit_status = str(meta.get("persisted_status") or "").strip().lower()
+        if explicit_status in {item.value for item in AccountStatus}:
+            status = explicit_status
+        elif str(result.refresh_token or "").strip():
+            status = AccountStatus.ACTIVE.value
+        elif (
+            str(result.source or "").strip().lower() == "login"
+            and not str(result.password or "").strip()
+        ) or (
+            bool(meta.get("existing_account_detected"))
+            and not str(result.password or "").strip()
+        ):
+            status = AccountStatus.LOGIN_INCOMPLETE.value
+        else:
+            status = AccountStatus.TOKEN_PENDING.value
+
+        meta["token_pending"] = status == AccountStatus.TOKEN_PENDING.value
+        meta["login_incomplete"] = status == AccountStatus.LOGIN_INCOMPLETE.value
+        if status == AccountStatus.LOGIN_INCOMPLETE.value:
+            meta["account_status_reason"] = "missing_login_password"
+        elif status == AccountStatus.TOKEN_PENDING.value:
+            meta["account_status_reason"] = "missing_refresh_token"
+        else:
+            meta.pop("account_status_reason", None)
+        return status

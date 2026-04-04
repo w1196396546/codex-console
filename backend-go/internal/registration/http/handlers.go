@@ -119,8 +119,10 @@ func (h *Handler) GetTask(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 
 	writeJSON(w, nethttp.StatusOK, map[string]any{
-		"task_uuid": job.JobID,
-		"status":    job.Status,
+		"task_uuid":     job.JobID,
+		"status":        job.Status,
+		"email":         nil,
+		"email_service": nil,
 	})
 }
 
@@ -151,10 +153,17 @@ func (h *Handler) GetTaskLogs(w nethttp.ResponseWriter, r *nethttp.Request) {
 		offset = len(logs)
 	}
 	incrementalLogs := logs[offset:]
+	logMessages := make([]string, 0, len(incrementalLogs))
+	for _, item := range incrementalLogs {
+		logMessages = append(logMessages, item.Message)
+	}
 
 	writeJSON(w, nethttp.StatusOK, map[string]any{
+		"task_uuid":       job.JobID,
 		"status":          job.Status,
-		"logs":            incrementalLogs,
+		"email":           nil,
+		"email_service":   nil,
+		"logs":            logMessages,
 		"log_offset":      offset,
 		"log_next_offset": len(logs),
 	})

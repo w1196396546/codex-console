@@ -25,17 +25,10 @@ func TestRegistrationStartAndTaskReadback(t *testing.T) {
 	taskUUID := startRegistration(t, server.URL)
 
 	task := getRegistrationTask(t, server.URL, taskUUID)
-	if task["task_uuid"] != taskUUID {
-		t.Fatalf("expected task uuid %q, got %#v", taskUUID, task["task_uuid"])
-	}
-	if task["status"] != jobs.StatusPending {
-		t.Fatalf("expected pending status, got %#v", task["status"])
-	}
+	assertRegistrationTaskFrontendFields(t, task, taskUUID, jobs.StatusPending)
 
 	initialLogs := getRegistrationLogs(t, server.URL, taskUUID, 0)
-	if initialLogs["status"] != jobs.StatusPending {
-		t.Fatalf("expected initial pending status, got %#v", initialLogs["status"])
-	}
+	assertRegistrationLogFrontendFields(t, initialLogs, taskUUID, jobs.StatusPending, 0, 0)
 	initialLogItems, ok := initialLogs["logs"].([]any)
 	if !ok {
 		t.Fatalf("expected initial logs array, got %#v", initialLogs["logs"])
@@ -43,22 +36,13 @@ func TestRegistrationStartAndTaskReadback(t *testing.T) {
 	if len(initialLogItems) != 0 {
 		t.Fatalf("expected no initial logs, got %#v", initialLogItems)
 	}
-	if initialLogs["log_offset"] != float64(0) {
-		t.Fatalf("expected initial log_offset=0, got %#v", initialLogs["log_offset"])
-	}
-	if initialLogs["log_next_offset"] != float64(0) {
-		t.Fatalf("expected initial log_next_offset=0, got %#v", initialLogs["log_next_offset"])
-	}
-
 	worker := jobs.NewWorker(jobService)
 	if err := worker.HandleTask(context.Background(), queue.task); err != nil {
 		t.Fatalf("unexpected worker error: %v", err)
 	}
 
 	logs := getRegistrationLogs(t, server.URL, taskUUID, 0)
-	if logs["status"] != jobs.StatusCompleted {
-		t.Fatalf("expected completed status, got %#v", logs["status"])
-	}
+	assertRegistrationLogFrontendFields(t, logs, taskUUID, jobs.StatusCompleted, 0, 2)
 
 	logItems, ok := logs["logs"].([]any)
 	if !ok {
@@ -66,12 +50,6 @@ func TestRegistrationStartAndTaskReadback(t *testing.T) {
 	}
 	if len(logItems) != 2 {
 		t.Fatalf("expected two log items, got %#v", logs["logs"])
-	}
-	if logs["log_offset"] != float64(0) {
-		t.Fatalf("expected log_offset=0, got %#v", logs["log_offset"])
-	}
-	if logs["log_next_offset"] != float64(2) {
-		t.Fatalf("expected log_next_offset=2, got %#v", logs["log_next_offset"])
 	}
 }
 
@@ -91,6 +69,7 @@ func TestRegistrationLogsRespectsOffset(t *testing.T) {
 	}
 
 	logs := getRegistrationLogs(t, server.URL, taskUUID, 1)
+	assertRegistrationLogFrontendFields(t, logs, taskUUID, jobs.StatusCompleted, 1, 2)
 	logItems, ok := logs["logs"].([]any)
 	if !ok {
 		t.Fatalf("expected logs array, got %#v", logs["logs"])
@@ -98,14 +77,9 @@ func TestRegistrationLogsRespectsOffset(t *testing.T) {
 	if len(logItems) != 1 {
 		t.Fatalf("expected one incremental log item, got %#v", logs["logs"])
 	}
-	if logs["log_offset"] != float64(1) {
-		t.Fatalf("expected log_offset=1, got %#v", logs["log_offset"])
-	}
-	if logs["log_next_offset"] != float64(2) {
-		t.Fatalf("expected log_next_offset=2, got %#v", logs["log_next_offset"])
-	}
 
 	clampedLogs := getRegistrationLogs(t, server.URL, taskUUID, 999)
+	assertRegistrationLogFrontendFields(t, clampedLogs, taskUUID, jobs.StatusCompleted, 2, 2)
 	clampedItems, ok := clampedLogs["logs"].([]any)
 	if !ok {
 		t.Fatalf("expected clamped logs array, got %#v", clampedLogs["logs"])
@@ -113,11 +87,72 @@ func TestRegistrationLogsRespectsOffset(t *testing.T) {
 	if len(clampedItems) != 0 {
 		t.Fatalf("expected no logs after clamped offset, got %#v", clampedItems)
 	}
-	if clampedLogs["log_offset"] != float64(2) {
-		t.Fatalf("expected clamped log_offset=2, got %#v", clampedLogs["log_offset"])
+}
+
+func TestRegistrationTaskResponseIncludesFrontendFields(t *testing.T) {
+	repo := jobs.NewInMemoryRepository()
+	queue := &fakeQueue{}
+	jobService := jobs.NewService(repo, queue)
+	registrationService := registration.NewService(jobService)
+	server := httptest.NewServer(internalhttp.NewRouter(jobService, registrationService))
+	defer server.Close()
+
+	taskUUID := startRegistration(t, server.URL)
+
+	task := getRegistrationTask(t, server.URL, taskUUID)
+	assertRegistrationTaskFrontendFields(t, task, taskUUID, jobs.StatusPending)
+
+	logs := getRegistrationLogs(t, server.URL, taskUUID, 0)
+	assertRegistrationLogFrontendFields(t, logs, taskUUID, jobs.StatusPending, 0, 0)
+}
+
+func assertRegistrationTaskFrontendFields(t *testing.T, payload map[string]any, taskUUID string, status string) {
+	t.Helper()
+
+	if payload["task_uuid"] != taskUUID {
+		t.Fatalf("expected task uuid %q, got %#v", taskUUID, payload["task_uuid"])
 	}
-	if clampedLogs["log_next_offset"] != float64(2) {
-		t.Fatalf("expected clamped log_next_offset=2, got %#v", clampedLogs["log_next_offset"])
+	if payload["status"] != status {
+		t.Fatalf("expected status %q, got %#v", status, payload["status"])
+	}
+	if value, ok := payload["email"]; !ok {
+		t.Fatalf("expected email field, got %#v", payload)
+	} else if value != nil {
+		t.Fatalf("expected email to be null, got %#v", value)
+	}
+	if value, ok := payload["email_service"]; !ok {
+		t.Fatalf("expected email_service field, got %#v", payload)
+	} else if value != nil {
+		t.Fatalf("expected email_service to be null, got %#v", value)
+	}
+}
+
+func assertRegistrationLogFrontendFields(
+	t *testing.T,
+	payload map[string]any,
+	taskUUID string,
+	status string,
+	offset float64,
+	nextOffset float64,
+) {
+	t.Helper()
+
+	assertRegistrationTaskFrontendFields(t, payload, taskUUID, status)
+	if _, ok := payload["logs"]; !ok {
+		t.Fatalf("expected logs field, got %#v", payload)
+	}
+	if logs, ok := payload["logs"].([]any); ok {
+		for _, item := range logs {
+			if _, ok := item.(string); !ok {
+				t.Fatalf("expected log item to be string, got %#v", item)
+			}
+		}
+	}
+	if payload["log_offset"] != offset {
+		t.Fatalf("expected log_offset=%v, got %#v", offset, payload["log_offset"])
+	}
+	if payload["log_next_offset"] != nextOffset {
+		t.Fatalf("expected log_next_offset=%v, got %#v", nextOffset, payload["log_next_offset"])
 	}
 }
 

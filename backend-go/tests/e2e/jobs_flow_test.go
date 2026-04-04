@@ -66,17 +66,10 @@ func TestRegistrationCompatibilityFlow(t *testing.T) {
 	taskUUID := startRegistrationThroughCompatAPI(t, server.URL)
 
 	task := getRegistrationTaskThroughCompatAPI(t, server.URL, taskUUID)
-	if task["task_uuid"] != taskUUID {
-		t.Fatalf("expected task uuid %q, got %#v", taskUUID, task["task_uuid"])
-	}
-	if task["status"] != jobs.StatusPending {
-		t.Fatalf("expected pending status, got %#v", task["status"])
-	}
+	assertRegistrationCompatTaskFields(t, task, taskUUID, jobs.StatusPending)
 
 	initialLogs := getRegistrationLogsThroughCompatAPI(t, server.URL, taskUUID, 0)
-	if initialLogs["status"] != jobs.StatusPending {
-		t.Fatalf("expected initial pending status, got %#v", initialLogs["status"])
-	}
+	assertRegistrationCompatLogFields(t, initialLogs, taskUUID, jobs.StatusPending, 0, 0)
 	initialLogItems, ok := initialLogs["logs"].([]any)
 	if !ok {
 		t.Fatalf("expected initial logs array, got %#v", initialLogs["logs"])
@@ -84,22 +77,13 @@ func TestRegistrationCompatibilityFlow(t *testing.T) {
 	if len(initialLogItems) != 0 {
 		t.Fatalf("expected no initial logs, got %#v", initialLogItems)
 	}
-	if initialLogs["log_offset"] != float64(0) {
-		t.Fatalf("expected initial log_offset=0, got %#v", initialLogs["log_offset"])
-	}
-	if initialLogs["log_next_offset"] != float64(0) {
-		t.Fatalf("expected initial log_next_offset=0, got %#v", initialLogs["log_next_offset"])
-	}
-
 	worker := jobs.NewWorker(jobService)
 	if err := worker.HandleTask(context.Background(), queue.task); err != nil {
 		t.Fatalf("unexpected worker error: %v", err)
 	}
 
 	logs := getRegistrationLogsThroughCompatAPI(t, server.URL, taskUUID, 1)
-	if logs["status"] != jobs.StatusCompleted {
-		t.Fatalf("expected completed status, got %#v", logs["status"])
-	}
+	assertRegistrationCompatLogFields(t, logs, taskUUID, jobs.StatusCompleted, 1, 2)
 
 	logItems, ok := logs["logs"].([]any)
 	if !ok {
@@ -108,14 +92,9 @@ func TestRegistrationCompatibilityFlow(t *testing.T) {
 	if len(logItems) != 1 {
 		t.Fatalf("expected one incremental log item, got %#v", logs["logs"])
 	}
-	if logs["log_offset"] != float64(1) {
-		t.Fatalf("expected log_offset=1, got %#v", logs["log_offset"])
-	}
-	if logs["log_next_offset"] != float64(2) {
-		t.Fatalf("expected log_next_offset=2, got %#v", logs["log_next_offset"])
-	}
 
 	clampedLogs := getRegistrationLogsThroughCompatAPI(t, server.URL, taskUUID, 999)
+	assertRegistrationCompatLogFields(t, clampedLogs, taskUUID, jobs.StatusCompleted, 2, 2)
 	clampedItems, ok := clampedLogs["logs"].([]any)
 	if !ok {
 		t.Fatalf("expected clamped logs array, got %#v", clampedLogs["logs"])
@@ -123,11 +102,55 @@ func TestRegistrationCompatibilityFlow(t *testing.T) {
 	if len(clampedItems) != 0 {
 		t.Fatalf("expected no clamped logs, got %#v", clampedItems)
 	}
-	if clampedLogs["log_offset"] != float64(2) {
-		t.Fatalf("expected clamped log_offset=2, got %#v", clampedLogs["log_offset"])
+}
+
+func assertRegistrationCompatTaskFields(t *testing.T, payload map[string]any, taskUUID string, status string) {
+	t.Helper()
+
+	if payload["task_uuid"] != taskUUID {
+		t.Fatalf("expected task uuid %q, got %#v", taskUUID, payload["task_uuid"])
 	}
-	if clampedLogs["log_next_offset"] != float64(2) {
-		t.Fatalf("expected clamped log_next_offset=2, got %#v", clampedLogs["log_next_offset"])
+	if payload["status"] != status {
+		t.Fatalf("expected status %q, got %#v", status, payload["status"])
+	}
+	if value, ok := payload["email"]; !ok {
+		t.Fatalf("expected email field, got %#v", payload)
+	} else if value != nil {
+		t.Fatalf("expected email to be null, got %#v", value)
+	}
+	if value, ok := payload["email_service"]; !ok {
+		t.Fatalf("expected email_service field, got %#v", payload)
+	} else if value != nil {
+		t.Fatalf("expected email_service to be null, got %#v", value)
+	}
+}
+
+func assertRegistrationCompatLogFields(
+	t *testing.T,
+	payload map[string]any,
+	taskUUID string,
+	status string,
+	offset float64,
+	nextOffset float64,
+) {
+	t.Helper()
+
+	assertRegistrationCompatTaskFields(t, payload, taskUUID, status)
+	if _, ok := payload["logs"]; !ok {
+		t.Fatalf("expected logs field, got %#v", payload)
+	}
+	if logs, ok := payload["logs"].([]any); ok {
+		for _, item := range logs {
+			if _, ok := item.(string); !ok {
+				t.Fatalf("expected log item to be string, got %#v", item)
+			}
+		}
+	}
+	if payload["log_offset"] != offset {
+		t.Fatalf("expected log_offset=%v, got %#v", offset, payload["log_offset"])
+	}
+	if payload["log_next_offset"] != nextOffset {
+		t.Fatalf("expected log_next_offset=%v, got %#v", nextOffset, payload["log_next_offset"])
 	}
 }
 

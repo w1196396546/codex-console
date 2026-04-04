@@ -8,6 +8,7 @@ import (
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/config"
 	internalhttp "github.com/dou-jiang/codex-console/backend-go/internal/http"
+	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
 	postgresplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/postgres"
 	redisplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,7 +30,9 @@ func main() {
 
 	log.Printf("api listening on %s", deps.Config.HTTPAddr)
 
-	if err := http.ListenAndServe(deps.Config.HTTPAddr, internalhttp.NewRouter(deps)); err != nil {
+	jobService := jobs.NewService(jobs.NewRepository(deps.Postgres), nil)
+
+	if err := http.ListenAndServe(deps.Config.HTTPAddr, internalhttp.NewRouter(jobService)); err != nil {
 		log.Fatal(err)
 	}
 }

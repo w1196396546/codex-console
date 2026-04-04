@@ -2,14 +2,42 @@
 数据库 CRUD 操作
 """
 
-from typing import List, Optional, Dict, Any, Union, Literal
+from typing import List, Optional, Dict, Any, Union, Literal, Callable, TypeVar
 from datetime import datetime, timedelta
+import time
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, desc, asc, func
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from .models import Account, EmailService, RegistrationTask, Setting, Proxy, CpaService, Sub2ApiService
 from ..config.constants import AccountStatus
+
+
+_SQLITE_LOCK_MAX_ATTEMPTS = 4
+_SQLITE_LOCK_BASE_DELAY_SECONDS = 0.1
+_T = TypeVar("_T")
+
+
+def _is_sqlite_database_locked_error(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    return "database is locked" in message or "database table is locked" in message
+
+
+def _run_with_sqlite_lock_retry(fn: Callable[[], _T], *, on_retry: Callable[[int, OperationalError], None] | None = None) -> _T:
+    last_error: OperationalError | None = None
+    for attempt in range(1, _SQLITE_LOCK_MAX_ATTEMPTS + 1):
+        try:
+            return fn()
+        except OperationalError as exc:
+            last_error = exc
+            if not _is_sqlite_database_locked_error(exc) or attempt >= _SQLITE_LOCK_MAX_ATTEMPTS:
+                raise
+            if on_retry:
+                on_retry(attempt, exc)
+            time.sleep(_SQLITE_LOCK_BASE_DELAY_SECONDS * attempt)
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("sqlite retry exited unexpectedly")
 
 
 # ============================================================================
@@ -427,32 +455,46 @@ def update_registration_task(
     **kwargs
 ) -> Optional[RegistrationTask]:
     """更新注册任务状态"""
-    db_task = get_registration_task_by_uuid(db, task_uuid)
-    if not db_task:
-        return None
+    def _write_once() -> Optional[RegistrationTask]:
+        db_task = get_registration_task_by_uuid(db, task_uuid)
+        if not db_task:
+            return None
 
-    for key, value in kwargs.items():
-        if hasattr(db_task, key):
-            setattr(db_task, key, value)
+        for key, value in kwargs.items():
+            if hasattr(db_task, key):
+                setattr(db_task, key, value)
 
-    db.commit()
-    db.refresh(db_task)
-    return db_task
+        try:
+            db.commit()
+        except OperationalError:
+            db.rollback()
+            raise
+        db.refresh(db_task)
+        return db_task
+
+    return _run_with_sqlite_lock_retry(_write_once)
 
 
 def append_task_log(db: Session, task_uuid: str, log_message: str) -> bool:
     """追加任务日志"""
-    db_task = get_registration_task_by_uuid(db, task_uuid)
-    if not db_task:
-        return False
+    def _write_once() -> bool:
+        db_task = get_registration_task_by_uuid(db, task_uuid)
+        if not db_task:
+            return False
 
-    if db_task.logs:
-        db_task.logs += f"\n{log_message}"
-    else:
-        db_task.logs = log_message
+        if db_task.logs:
+            db_task.logs += f"\n{log_message}"
+        else:
+            db_task.logs = log_message
 
-    db.commit()
-    return True
+        try:
+            db.commit()
+        except OperationalError:
+            db.rollback()
+            raise
+        return True
+
+    return _run_with_sqlite_lock_retry(_write_once)
 
 
 def delete_registration_task(db: Session, task_uuid: str) -> bool:

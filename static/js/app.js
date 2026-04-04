@@ -27,6 +27,8 @@ let taskFinalStatus = null;  // 保存任务的最终状态
 let batchFinalStatus = null;  // 保存批量任务的最终状态
 let toastShown = false;  // 标记是否已显示过 toast
 let logConsole = null;
+let taskLogOffset = 0;
+let batchLogOffset = 0;
 let availableServices = {
     tempmail: { available: true, services: [] },
     yyds_mail: { available: false, services: [] },
@@ -68,6 +70,7 @@ const elements = {
     intervalMin: document.getElementById('interval-min'),
     intervalMax: document.getElementById('interval-max'),
     startBtn: document.getElementById('start-btn'),
+    pauseBtn: document.getElementById('pause-btn'),
     cancelBtn: document.getElementById('cancel-btn'),
     taskStatusRow: document.getElementById('task-status-row'),
     batchProgressSection: document.getElementById('batch-progress-section'),
@@ -229,6 +232,7 @@ function initEventListeners() {
     elements.emailService.addEventListener('change', handleServiceChange);
 
     // 取消按钮
+    elements.pauseBtn.addEventListener('click', handlePauseResumeTask);
     elements.cancelBtn.addEventListener('click', handleCancelTask);
 
     // 清空日志
@@ -551,6 +555,7 @@ async function handleStartRegistration(e) {
 
     // 禁用开始按钮
     elements.startBtn.disabled = true;
+    setPauseButtonState({ enabled: true, action: 'pause', text: '暂停任务' });
     elements.cancelBtn.disabled = false;
 
     // 清空日志
@@ -584,6 +589,7 @@ async function handleSingleRegistration(requestData) {
     // 重置任务状态
     taskCompleted = false;
     taskFinalStatus = null;
+    taskLogOffset = 0;
     resetLogConsole();
     toastShown = false;  // 重置 toast 标志
 
@@ -599,6 +605,7 @@ async function handleSingleRegistration(requestData) {
         addLog('info', `[系统] 任务已创建: ${data.task_uuid}`);
         showTaskStatus(data);
         updateTaskStatus('running');
+        syncPauseButtonForTaskStatus('running');
 
         // 优先使用 WebSocket
         connectWebSocket(data.task_uuid);
@@ -678,6 +685,94 @@ function startCurrentBatchPolling(batchId) {
     startBatchPolling(batchId);
 }
 
+function appendLogsToConsole(logs) {
+    const entries = Array.isArray(logs) ? logs : [];
+    entries.forEach((log) => {
+        const logType = getLogType(log);
+        addLog(logType, log);
+    });
+}
+
+function getBatchStatusEndpoint(batchId) {
+    const pollingMode = currentBatch && currentBatch.batch_id === batchId
+        ? currentBatch.pollingMode
+        : (isOutlookBatchMode ? 'outlook_batch' : 'batch');
+
+    return pollingMode === 'outlook_batch'
+        ? `/registration/outlook-batch/${batchId}`
+        : `/registration/batch/${batchId}`;
+}
+
+function setPauseButtonState({ enabled, action = 'pause', text = '暂停任务' }) {
+    if (!elements.pauseBtn) return;
+    elements.pauseBtn.disabled = !enabled;
+    elements.pauseBtn.dataset.action = action;
+    elements.pauseBtn.textContent = text;
+}
+
+function syncPauseButtonForTaskStatus(status) {
+    if (['completed', 'failed', 'cancelled', 'cancelling'].includes(status)) {
+        setPauseButtonState({ enabled: false, action: 'pause', text: '暂停任务' });
+        return;
+    }
+    if (status === 'paused') {
+        setPauseButtonState({ enabled: true, action: 'resume', text: '恢复任务' });
+        return;
+    }
+    setPauseButtonState({ enabled: true, action: 'pause', text: '暂停任务' });
+}
+
+function syncPauseButtonForBatch(batch) {
+    const paused = Boolean(batch && (batch.paused || batch.status === 'paused'));
+    const finished = Boolean(batch && batch.finished);
+    if (finished || (batch && batch.cancelled)) {
+        setPauseButtonState({ enabled: false, action: 'pause', text: '暂停任务' });
+        return;
+    }
+    if (paused) {
+        setPauseButtonState({ enabled: true, action: 'resume', text: '恢复任务' });
+        return;
+    }
+    setPauseButtonState({ enabled: true, action: 'pause', text: '暂停任务' });
+}
+
+async function hydrateTaskLogs(taskUuid) {
+    if (!taskUuid) return null;
+
+    const data = await api.get(`/registration/tasks/${taskUuid}/logs?offset=${taskLogOffset}`);
+    appendLogsToConsole(data.logs || []);
+    taskLogOffset = data.log_next_offset || taskLogOffset;
+
+    updateTaskStatus(data.status);
+    if (data.email) {
+        elements.taskEmail.textContent = data.email;
+    }
+    if (data.email_service) {
+        elements.taskService.textContent = getServiceTypeText(data.email_service);
+    }
+    if (currentTask && currentTask.task_uuid === taskUuid) {
+        currentTask.status = data.status;
+    }
+    syncPauseButtonForTaskStatus(data.status);
+
+    return data;
+}
+
+async function hydrateBatchLogs(batchId) {
+    if (!batchId) return null;
+
+    const endpoint = getBatchStatusEndpoint(batchId);
+    const data = await api.get(`${endpoint}?log_offset=${batchLogOffset}`);
+    appendLogsToConsole(data.logs || []);
+    batchLogOffset = data.log_next_offset || batchLogOffset;
+    if (currentBatch && currentBatch.batch_id === batchId) {
+        currentBatch = { ...currentBatch, ...data };
+    }
+    updateBatchProgress(data);
+    syncPauseButtonForBatch(currentBatch || data);
+    return data;
+}
+
 // 连接 WebSocket
 function connectWebSocket(taskUuid) {
     activeTaskUuid = taskUuid;
@@ -706,6 +801,9 @@ function connectWebSocket(taskUuid) {
             clearWebSocketReconnect();
             // 停止轮询（如果有）
             stopLogPolling();
+            hydrateTaskLogs(taskUuid).catch((error) => {
+                console.error('补齐任务日志失败:', error);
+            });
             // 开始心跳
             startWebSocketHeartbeat();
         };
@@ -715,9 +813,13 @@ function connectWebSocket(taskUuid) {
             const data = JSON.parse(event.data);
 
             if (data.type === 'log') {
+                taskLogOffset += 1;
                 const logType = getLogType(data.message);
                 addLog(logType, data.message);
             } else if (data.type === 'status') {
+                if (currentTask && currentTask.task_uuid === taskUuid) {
+                    currentTask.status = data.status;
+                }
                 updateTaskStatus(data.status);
                 if (data.email) {
                     elements.taskEmail.textContent = data.email;
@@ -838,6 +940,7 @@ async function handleBatchRegistration(requestData) {
     // 重置批量任务状态
     batchCompleted = false;
     batchFinalStatus = null;
+    batchLogOffset = 0;
     resetLogConsole();
     toastShown = false;  // 重置 toast 标志
 
@@ -865,6 +968,7 @@ async function handleBatchRegistration(requestData) {
         addLog('info', `[系统] 批量任务已创建: ${data.batch_id}`);
         addLog('info', `[系统] 共 ${data.count} 个任务已加入队列`);
         showBatchStatus(data);
+        syncPauseButtonForBatch(currentBatch);
 
         // 优先使用 WebSocket
         connectBatchWebSocket(data.batch_id);
@@ -879,12 +983,13 @@ async function handleBatchRegistration(requestData) {
 // 取消任务
 async function handleCancelTask() {
     // 禁用取消按钮，防止重复点击
+    setPauseButtonState({ enabled: false, action: 'pause', text: '暂停任务' });
     elements.cancelBtn.disabled = true;
     addLog('info', '[系统] 正在提交取消请求...');
 
     try {
         // 批量任务取消（包括普通批量模式和 Outlook 批量模式）
-        if (currentBatch && (isBatchMode || isOutlookBatchMode)) {
+        if (currentBatch) {
             // 优先通过 WebSocket 取消
             if (batchWebSocket && batchWebSocket.readyState === WebSocket.OPEN) {
                 batchWebSocket.send(JSON.stringify({ type: 'cancel' }));
@@ -892,7 +997,7 @@ async function handleCancelTask() {
                 toast.info('任务取消请求已提交');
             } else {
                 // 降级到 REST API
-                const endpoint = isOutlookBatchMode
+                const endpoint = currentBatch.pollingMode === 'outlook_batch' || isOutlookBatchMode
                     ? `/registration/outlook-batch/${currentBatch.batch_id}/cancel`
                     : `/registration/batch/${currentBatch.batch_id}/cancel`;
 
@@ -927,6 +1032,60 @@ async function handleCancelTask() {
         toast.error(error.message);
         // 恢复取消按钮，允许重试
         elements.cancelBtn.disabled = false;
+        if (currentBatch && (isBatchMode || isOutlookBatchMode)) {
+            syncPauseButtonForBatch(currentBatch);
+        } else if (currentTask) {
+            syncPauseButtonForTaskStatus(currentTask.status || 'running');
+        }
+    }
+}
+
+async function handlePauseResumeTask() {
+    if (!elements.pauseBtn || elements.pauseBtn.disabled) {
+        return;
+    }
+
+    const action = elements.pauseBtn.dataset.action === 'resume' ? 'resume' : 'pause';
+    const isResume = action === 'resume';
+    elements.pauseBtn.disabled = true;
+
+    try {
+        if (currentBatch) {
+            const baseEndpoint = currentBatch.pollingMode === 'outlook_batch' || isOutlookBatchMode
+                ? `/registration/outlook-batch/${currentBatch.batch_id}`
+                : `/registration/batch/${currentBatch.batch_id}`;
+            const response = await api.post(`${baseEndpoint}/${action}`);
+            currentBatch = {
+                ...currentBatch,
+                paused: !isResume,
+                status: response.status || (isResume ? 'running' : 'paused'),
+            };
+            syncPauseButtonForBatch(currentBatch);
+            addLog(isResume ? 'info' : 'warning', `[系统] ${isResume ? '批量任务已恢复' : '批量任务已暂停'}`);
+            toast.info(isResume ? '批量任务已恢复' : '批量任务已暂停');
+            return;
+        }
+
+        if (currentTask) {
+            const response = await api.post(`/registration/tasks/${currentTask.task_uuid}/${action}`);
+            currentTask.status = response.status || (isResume ? 'running' : 'paused');
+            updateTaskStatus(currentTask.status);
+            addLog(isResume ? 'info' : 'warning', `[系统] ${isResume ? '任务已恢复' : '任务已暂停'}`);
+            toast.info(isResume ? '任务已恢复' : '任务已暂停');
+            return;
+        }
+
+        setPauseButtonState({ enabled: false, action: 'pause', text: '暂停任务' });
+    } catch (error) {
+        addLog('error', `[错误] ${isResume ? '恢复' : '暂停'}失败: ${error.message}`);
+        toast.error(error.message);
+        if (currentBatch) {
+            syncPauseButtonForBatch(currentBatch);
+        } else if (currentTask) {
+            syncPauseButtonForTaskStatus(currentTask.status || 'running');
+        } else {
+            setPauseButtonState({ enabled: false, action: 'pause', text: '暂停任务' });
+        }
     }
 }
 
@@ -936,11 +1095,9 @@ function startLogPolling(taskUuid) {
         return;
     }
 
-    let lastLogIndex = 0;
-
     logPollingInterval = setInterval(async () => {
         try {
-            const data = await api.get(`/registration/tasks/${taskUuid}/logs`);
+            const data = await api.get(`/registration/tasks/${taskUuid}/logs?offset=${taskLogOffset}`);
 
             // 更新任务状态
             updateTaskStatus(data.status);
@@ -954,13 +1111,8 @@ function startLogPolling(taskUuid) {
             }
 
             // 添加新日志
-            const logs = data.logs || [];
-            for (let i = lastLogIndex; i < logs.length; i++) {
-                const log = logs[i];
-                const logType = getLogType(log);
-                addLog(logType, log);
-            }
-            lastLogIndex = logs.length;
+            appendLogsToConsole(data.logs || []);
+            taskLogOffset = data.log_next_offset || taskLogOffset;
 
             // 检查任务是否完成
             if (['completed', 'failed', 'cancelled'].includes(data.status)) {
@@ -1005,8 +1157,11 @@ function startBatchPolling(batchId) {
 
     batchPollingInterval = setInterval(async () => {
         try {
-            const data = await api.get(`/registration/batch/${batchId}`);
+            const data = await api.get(`/registration/batch/${batchId}?log_offset=${batchLogOffset}`);
             updateBatchProgress(data);
+
+            appendLogsToConsole(data.logs || []);
+            batchLogOffset = data.log_next_offset || batchLogOffset;
 
             // 检查是否完成
             if (data.finished) {
@@ -1060,6 +1215,7 @@ function updateTaskStatus(status) {
     const statusInfo = {
         pending: { text: '等待中', class: 'pending' },
         running: { text: '运行中', class: 'running' },
+        paused: { text: '已暂停', class: 'warning' },
         cancelling: { text: '取消中', class: 'pending' },
         completed: { text: '已完成', class: 'completed' },
         failed: { text: '失败', class: 'failed' },
@@ -1070,6 +1226,7 @@ function updateTaskStatus(status) {
     elements.taskStatusBadge.textContent = info.text;
     elements.taskStatusBadge.className = `status-badge ${info.class}`;
     elements.taskStatus.textContent = info.text;
+    syncPauseButtonForTaskStatus(status);
 }
 
 // 显示批量状态
@@ -1319,6 +1476,7 @@ function getLogType(log) {
 // 重置按钮状态
 function resetButtons() {
     elements.startBtn.disabled = false;
+    setPauseButtonState({ enabled: false, action: 'pause', text: '暂停任务' });
     elements.cancelBtn.disabled = true;
     stopLogPolling();
     stopBatchPolling();
@@ -1333,6 +1491,8 @@ function resetButtons() {
     // 重置最终状态标志
     taskFinalStatus = null;
     batchFinalStatus = null;
+    taskLogOffset = 0;
+    batchLogOffset = 0;
     // 清除活跃任务标识
     activeTaskUuid = null;
     activeBatchId = null;
@@ -1586,6 +1746,7 @@ async function handleOutlookBatchRegistration() {
     // 重置批量任务状态
     batchCompleted = false;
     batchFinalStatus = null;
+    batchLogOffset = 0;
     resetLogConsole();
     toastShown = false;  // 重置 toast 标志
 
@@ -1606,6 +1767,7 @@ async function handleOutlookBatchRegistration() {
 
     // 禁用开始按钮
     elements.startBtn.disabled = true;
+    setPauseButtonState({ enabled: true, action: 'pause', text: '暂停任务' });
     elements.cancelBtn.disabled = false;
 
     // 清空日志
@@ -1646,6 +1808,7 @@ async function handleOutlookBatchRegistration() {
 
         // 初始化批量状态显示
         showBatchStatus({ count: data.to_register });
+        syncPauseButtonForBatch(currentBatch);
 
         // 优先使用 WebSocket
         connectBatchWebSocket(data.batch_id);
@@ -1686,6 +1849,9 @@ function connectBatchWebSocket(batchId) {
             clearBatchWebSocketReconnect();
             // 停止轮询（如果有）
             stopBatchPolling();
+            hydrateBatchLogs(batchId).catch((error) => {
+                console.error('补齐批量日志失败:', error);
+            });
             // 开始心跳
             startBatchWebSocketHeartbeat();
         };
@@ -1695,9 +1861,13 @@ function connectBatchWebSocket(batchId) {
             const data = JSON.parse(event.data);
 
             if (data.type === 'log') {
+                batchLogOffset += 1;
                 const logType = getLogType(data.message);
                 addLog(logType, data.message);
             } else if (data.type === 'status') {
+                if (currentBatch && currentBatch.batch_id === batchId) {
+                    currentBatch = { ...currentBatch, ...data };
+                }
                 // 更新进度
                 if (data.total !== undefined) {
                     updateBatchProgress({
@@ -1707,6 +1877,7 @@ function connectBatchWebSocket(batchId) {
                         failed: data.failed || 0
                     });
                 }
+                syncPauseButtonForBatch(currentBatch || data);
 
                 // 检查是否完成
                 if (['completed', 'failed', 'cancelled'].includes(data.status)) {
@@ -1823,7 +1994,7 @@ function startOutlookBatchPolling(batchId) {
 
     batchPollingInterval = setInterval(async () => {
         try {
-            const data = await api.get(`/registration/outlook-batch/${batchId}`);
+            const data = await api.get(`/registration/outlook-batch/${batchId}?log_offset=${batchLogOffset}`);
 
             // 更新进度
             updateBatchProgress({
@@ -1833,16 +2004,8 @@ function startOutlookBatchPolling(batchId) {
                 failed: data.failed
             });
 
-            // 输出日志
-            if (data.logs && data.logs.length > 0) {
-                const lastLogIndex = batchPollingInterval.lastLogIndex || 0;
-                for (let i = lastLogIndex; i < data.logs.length; i++) {
-                    const log = data.logs[i];
-                    const logType = getLogType(log);
-                    addLog(logType, log);
-                }
-                batchPollingInterval.lastLogIndex = data.logs.length;
-            }
+            appendLogsToConsole(data.logs || []);
+            batchLogOffset = data.log_next_offset || batchLogOffset;
 
             // 检查是否完成
             if (data.finished) {
@@ -1871,7 +2034,6 @@ function startOutlookBatchPolling(batchId) {
         }
     }, 2000);
 
-    batchPollingInterval.lastLogIndex = 0;
 }
 
 // ============== 页面可见性重连机制 ==============
@@ -1928,6 +2090,7 @@ async function restoreActiveTask() {
             activeTaskUuid = task_uuid;
             taskCompleted = false;
             taskFinalStatus = null;
+            taskLogOffset = 0;
             toastShown = false;
             resetLogConsole();
             elements.startBtn.disabled = true;
@@ -1956,12 +2119,14 @@ async function restoreActiveTask() {
             isOutlookBatchMode = (mode === 'outlook_batch');
             batchCompleted = false;
             batchFinalStatus = null;
+            batchLogOffset = 0;
             toastShown = false;
             resetLogConsole();
             elements.startBtn.disabled = true;
             elements.cancelBtn.disabled = false;
             showBatchStatus({ count: total || data.total });
             updateBatchProgress(data);
+            syncPauseButtonForBatch(currentBatch);
             addLog('info', `[系统] 检测到进行中的批量任务，正在重连监控... (${batch_id.substring(0, 8)})`);
             connectBatchWebSocket(batch_id);
         } catch {

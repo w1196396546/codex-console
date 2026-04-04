@@ -254,6 +254,12 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         category=SettingCategory.REGISTRATION,
         description="注册入口链路（native=原本链路, abcard=ABCard入口链路；Outlook 邮箱会自动走 Outlook 链路）"
     ),
+    "registration_token_completion_max_concurrency": SettingDefinition(
+        db_key="registration.token_completion_max_concurrency",
+        default_value=0,
+        category=SettingCategory.REGISTRATION,
+        description="refresh_token/OAuth 收尾最大并发数（0 表示跟随批量并发）"
+    ),
 
     # 邮箱服务配置
     "email_service_priority": SettingDefinition(
@@ -450,6 +456,7 @@ SETTING_TYPES: Dict[str, Type] = {
     "registration_sleep_min": int,
     "registration_sleep_max": int,
     "registration_entry_flow": str,
+    "registration_token_completion_max_concurrency": int,
     "email_service_priority": dict,
     "tempmail_enabled": bool,
     "tempmail_timeout": int,
@@ -718,6 +725,7 @@ class Settings(BaseModel):
     registration_sleep_min: int = 5
     registration_sleep_max: int = 30
     registration_entry_flow: str = "native"
+    registration_token_completion_max_concurrency: int = 0
 
     # 邮箱服务配置
     email_service_priority: Dict[str, int] = {"tempmail": 0, "yyds_mail": 1, "outlook": 2, "moe_mail": 3}

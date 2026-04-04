@@ -23,11 +23,19 @@ from ...database.session import get_db
 class EmailServiceAdapter:
     """将 codex-console 邮箱服务适配成 any-auto-register 预期接口。"""
 
-    def __init__(self, email_service, email: str, email_id: Optional[str], log_fn: Callable[[str], None]):
+    def __init__(
+        self,
+        email_service,
+        email: str,
+        email_id: Optional[str],
+        log_fn: Callable[[str], None],
+        check_cancelled: Optional[Callable[[], object]] = None,
+    ):
         self.es = email_service
         self.email = email
         self.email_id = email_id
         self.log_fn = log_fn or (lambda _msg: None)
+        self.check_cancelled = check_cancelled or (lambda: False)
         self._used_codes: set[str] = set()
 
     def wait_for_verification_code(self, email, timeout=60, otp_sent_at=None, exclude_codes=None):
@@ -35,17 +43,21 @@ class EmailServiceAdapter:
         exclude.update(self._used_codes)
         deadline = time.time() + max(1, int(timeout))
         sent_at = otp_sent_at or time.time()
+        poll_slice_timeout = 5
 
         while time.time() < deadline:
+            if callable(self.check_cancelled) and self.check_cancelled():
+                raise RuntimeError("任务已取消，停止继续执行")
             remaining = max(1, int(deadline - time.time()))
+            current_timeout = min(poll_slice_timeout, remaining)
             code = self.es.get_verification_code(
                 email=email,
                 email_id=self.email_id,
-                timeout=remaining,
+                timeout=current_timeout,
                 otp_sent_at=sent_at,
             )
             if not code:
-                return None
+                continue
             if code in exclude:
                 exclude.add(code)
                 continue
@@ -61,6 +73,8 @@ class AnyAutoRegistrationEngine:
     _refresh_token_cooldowns: dict[str, float] = {}
     _refresh_token_cooldown_seconds = 15 * 60
     _refresh_token_global_guard = threading.Lock()
+    _refresh_token_global_slot_condition = threading.Condition(threading.Lock())
+    _refresh_token_global_inflight = 0
     _refresh_token_global_next_allowed_at = 0.0
     _refresh_token_global_spacing_seconds = 8.0
     _refresh_token_global_rate_limit_backoff_seconds = 45.0
@@ -82,6 +96,20 @@ class AnyAutoRegistrationEngine:
         self.max_retries = max(1, int(max_retries or 1))
         self.browser_mode = browser_mode or "protocol"
         self.extra_config = dict(extra_config or {})
+        requested_token_completion_concurrency = max(
+            1,
+            int(self.extra_config.get("token_completion_concurrency") or 1),
+        )
+        token_completion_max_concurrency = max(
+            0,
+            int(self.extra_config.get("token_completion_max_concurrency") or 0),
+        )
+        if token_completion_max_concurrency > 0:
+            requested_token_completion_concurrency = min(
+                requested_token_completion_concurrency,
+                token_completion_max_concurrency,
+            )
+        self.token_completion_concurrency = requested_token_completion_concurrency
 
         self.email: Optional[str] = None
         self.inbox_email: Optional[str] = None
@@ -233,14 +261,16 @@ class AnyAutoRegistrationEngine:
         log_fn: Callable[[str], None],
         *,
         reason: str,
+        spacing_seconds: Optional[float] = None,
     ) -> None:
-        wait_seconds = max(0.0, float(cls._refresh_token_global_next_allowed_at) - time.time())
-        if wait_seconds > 0:
-            log_fn(f"{reason} 命中全局 OAuth 补齐节流，等待 {wait_seconds:.1f}s...")
-            time.sleep(wait_seconds)
-        cls._refresh_token_global_next_allowed_at = time.time() + float(
-            cls._refresh_token_global_spacing_seconds
-        )
+        configured_spacing = cls._refresh_token_global_spacing_seconds if spacing_seconds is None else spacing_seconds
+        normalized_spacing = max(0.0, float(configured_spacing or 0.0))
+        with cls._refresh_token_global_guard:
+            wait_seconds = max(0.0, float(cls._refresh_token_global_next_allowed_at) - time.time())
+            if wait_seconds > 0:
+                log_fn(f"{reason} 命中全局 OAuth 补齐节流，等待 {wait_seconds:.1f}s...")
+                time.sleep(wait_seconds)
+            cls._refresh_token_global_next_allowed_at = time.time() + normalized_spacing
 
     @classmethod
     def _extend_global_refresh_token_backoff(
@@ -251,13 +281,38 @@ class AnyAutoRegistrationEngine:
         reason: str,
     ) -> None:
         backoff_until = time.time() + max(0.0, float(seconds or 0.0))
-        cls._refresh_token_global_next_allowed_at = max(
-            float(cls._refresh_token_global_next_allowed_at),
-            backoff_until,
-        )
-        wait_seconds = max(0.0, float(cls._refresh_token_global_next_allowed_at) - time.time())
+        with cls._refresh_token_global_guard:
+            cls._refresh_token_global_next_allowed_at = max(
+                float(cls._refresh_token_global_next_allowed_at),
+                backoff_until,
+            )
+            wait_seconds = max(0.0, float(cls._refresh_token_global_next_allowed_at) - time.time())
         if wait_seconds > 0:
             log_fn(f"{reason} 触发全局 OAuth 退避，后续补齐将至少延后 {wait_seconds:.1f}s")
+
+    @classmethod
+    def _acquire_refresh_token_global_slot(
+        cls,
+        *,
+        limit: int,
+        check_cancelled: Optional[Callable[[], object]] = None,
+    ) -> None:
+        normalized_limit = max(1, int(limit or 1))
+        while True:
+            if callable(check_cancelled):
+                check_cancelled()
+            with cls._refresh_token_global_slot_condition:
+                if cls._refresh_token_global_inflight < normalized_limit:
+                    cls._refresh_token_global_inflight += 1
+                    return
+                cls._refresh_token_global_slot_condition.wait(timeout=0.2)
+
+    @classmethod
+    def _release_refresh_token_global_slot(cls) -> None:
+        with cls._refresh_token_global_slot_condition:
+            if cls._refresh_token_global_inflight > 0:
+                cls._refresh_token_global_inflight -= 1
+            cls._refresh_token_global_slot_condition.notify_all()
 
     @classmethod
     def _set_refresh_token_completion_cooldown(
@@ -359,6 +414,7 @@ class AnyAutoRegistrationEngine:
             proxy=self.proxy_url,
             verbose=False,
             browser_mode=self.browser_mode,
+            check_cancelled=self._raise_if_cancelled,
         )
         oauth_client._log = self._log
         oauth_client.session = chatgpt_client.session
@@ -437,10 +493,24 @@ class AnyAutoRegistrationEngine:
             )
 
         try:
-            with self._refresh_token_global_guard:
+            self._acquire_refresh_token_global_slot(
+                limit=self.token_completion_concurrency,
+                check_cancelled=self._raise_if_cancelled,
+            )
+            try:
+                proactive_spacing_seconds = (
+                    self._refresh_token_global_spacing_seconds
+                    if self.token_completion_concurrency <= 1
+                    else 0.0
+                )
+
                 if allow_passwordless and not password_text:
                     for oauth_round in range(2):
-                        self._wait_for_global_refresh_token_window(self._log, reason=reason)
+                        self._wait_for_global_refresh_token_window(
+                            self._log,
+                            reason=reason,
+                            spacing_seconds=proactive_spacing_seconds,
+                        )
 
                         pwdless = self._passwordless_oauth_reauth(
                             chatgpt_client,
@@ -484,7 +554,11 @@ class AnyAutoRegistrationEngine:
                         }
 
                 for oauth_round in range(2):
-                    self._wait_for_global_refresh_token_window(self._log, reason=reason)
+                    self._wait_for_global_refresh_token_window(
+                        self._log,
+                        reason=reason,
+                        spacing_seconds=proactive_spacing_seconds,
+                    )
 
                     for oauth_attempt in range(2):
                         if oauth_attempt > 0:
@@ -496,6 +570,7 @@ class AnyAutoRegistrationEngine:
                             proxy=self.proxy_url,
                             verbose=False,
                             browser_mode=self.browser_mode,
+                            check_cancelled=self._raise_if_cancelled,
                         )
                         oauth_client._log = self._log
                         oauth_client.session = last_session
@@ -560,6 +635,8 @@ class AnyAutoRegistrationEngine:
                         "last_error": last_error,
                         "source": "",
                     }
+            finally:
+                self._release_refresh_token_global_slot()
         finally:
             self._release_refresh_token_completion_slot(email)
 
@@ -695,6 +772,7 @@ class AnyAutoRegistrationEngine:
                 proxy=self.proxy_url,
                 verbose=False,
                 browser_mode=self.browser_mode,
+                check_cancelled=self._raise_if_cancelled,
             )
             oauth_client.session = self.session
             session_data = oauth_client._decode_oauth_session_cookie()
@@ -807,13 +885,20 @@ class AnyAutoRegistrationEngine:
 
                 # 3. 邮箱适配器
                 email_id = (self.email_info or {}).get("service_id")
-                skymail_adapter = EmailServiceAdapter(self.email_service, normalized_email, email_id, self._log)
+                skymail_adapter = EmailServiceAdapter(
+                    self.email_service,
+                    normalized_email,
+                    email_id,
+                    self._log,
+                    check_cancelled=self._raise_if_cancelled,
+                )
 
                 # 4. 注册状态机
                 chatgpt_client = ChatGPTClient(
                     proxy=self.proxy_url,
                     verbose=False,
                     browser_mode=self.browser_mode,
+                    check_cancelled=self._raise_if_cancelled,
                 )
                 chatgpt_client._log = self._log
 

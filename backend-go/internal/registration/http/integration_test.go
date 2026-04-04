@@ -132,6 +132,50 @@ func TestRegistrationLogsExposeCompletedEmailFromJobResult(t *testing.T) {
 	assertRegistrationLogFrontendFields(t, logs, taskUUID, jobs.StatusCompleted, ptr("alice@example.com"), "tempmail", 0, 2)
 }
 
+func TestRegistrationWorkerUsesRegistrationExecutorBridge(t *testing.T) {
+	repo := jobs.NewInMemoryRepository()
+	queue := &fakeQueue{}
+	jobService := jobs.NewService(repo, queue)
+	registrationService := registration.NewService(jobService)
+	server := httptest.NewServer(internalhttp.NewRouter(jobService, registrationService))
+	defer server.Close()
+
+	taskUUID := startRegistration(t, server.URL)
+
+	worker := jobs.NewWorkerWithIDAndExecutor(
+		jobService,
+		"worker-bridge",
+		registration.NewExecutor(jobService, &fakeRegistrationRunner{
+			result: map[string]any{
+				"email":   "bridge@example.com",
+				"success": true,
+			},
+			logs: []runnerLog{
+				{level: "info", message: "python bridge started"},
+			},
+		}),
+	)
+	if err := worker.HandleTask(context.Background(), queue.task); err != nil {
+		t.Fatalf("unexpected worker error: %v", err)
+	}
+
+	task := getRegistrationTask(t, server.URL, taskUUID)
+	assertRegistrationTaskFrontendFields(t, task, taskUUID, jobs.StatusCompleted, ptr("bridge@example.com"), "tempmail")
+
+	logs := getRegistrationLogs(t, server.URL, taskUUID, 0)
+	assertRegistrationLogFrontendFields(t, logs, taskUUID, jobs.StatusCompleted, ptr("bridge@example.com"), "tempmail", 0, 3)
+	logItems, ok := logs["logs"].([]any)
+	if !ok {
+		t.Fatalf("expected logs array, got %#v", logs["logs"])
+	}
+	if len(logItems) != 3 {
+		t.Fatalf("expected three log items, got %#v", logItems)
+	}
+	if logItems[1] != "python bridge started" {
+		t.Fatalf("expected bridge log in middle, got %#v", logItems)
+	}
+}
+
 func assertRegistrationTaskFrontendFields(t *testing.T, payload map[string]any, taskUUID string, status string, email *string, emailService string) {
 	t.Helper()
 
@@ -190,6 +234,29 @@ func assertRegistrationLogFrontendFields(
 
 func ptr(value string) *string {
 	return &value
+}
+
+type fakeRegistrationRunner struct {
+	result map[string]any
+	logs   []runnerLog
+	err    error
+}
+
+func (f *fakeRegistrationRunner) Run(_ context.Context, _ registration.RunnerRequest, logf func(level string, message string) error) (map[string]any, error) {
+	for _, entry := range f.logs {
+		if err := logf(entry.level, entry.message); err != nil {
+			return nil, err
+		}
+	}
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.result, nil
+}
+
+type runnerLog struct {
+	level   string
+	message string
 }
 
 func startRegistration(t *testing.T, baseURL string) string {

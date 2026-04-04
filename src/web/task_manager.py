@@ -35,12 +35,17 @@ _task_status: Dict[str, dict] = {}
 
 # 任务取消标志
 _task_cancelled: Dict[str, bool] = {}
+_task_paused: Dict[str, bool] = {}
+_task_pause_events: Dict[str, threading.Event] = {}
+_task_resume_status: Dict[str, str] = {}
 
 # 批量任务状态 (batch_id -> dict)
 _batch_status: Dict[str, dict] = {}
 _batch_logs: Dict[str, List[str]] = defaultdict(list)
+_batch_log_start_index: Dict[str, int] = defaultdict(int)
 _batch_locks: Dict[str, threading.Lock] = {}
 _batch_task_map: Dict[str, set[str]] = defaultdict(set)
+_BATCH_LOG_HISTORY_LIMIT = 1000
 
 
 def _derive_scope_fields(
@@ -77,6 +82,17 @@ def _get_batch_lock(batch_id: str) -> threading.Lock:
     return _batch_locks[batch_id]
 
 
+def _get_task_pause_event(task_uuid: str) -> threading.Event:
+    """线程安全地获取或创建任务暂停事件。set=可运行，clear=暂停中。"""
+    if task_uuid not in _task_pause_events:
+        with _meta_lock:
+            if task_uuid not in _task_pause_events:
+                event = threading.Event()
+                event.set()
+                _task_pause_events[task_uuid] = event
+    return _task_pause_events[task_uuid]
+
+
 class TaskManager:
     """任务管理器"""
 
@@ -96,16 +112,56 @@ class TaskManager:
         """检查任务是否已取消"""
         return _task_cancelled.get(task_uuid, False)
 
+    def is_paused(self, task_uuid: str) -> bool:
+        """检查任务是否处于暂停状态。"""
+        return _task_paused.get(task_uuid, False)
+
+    def get_resume_status(self, task_uuid: str, default: str = "running") -> str:
+        """获取任务恢复后应回到的状态。"""
+        return str(_task_resume_status.get(task_uuid) or default)
+
+    def _has_log_subscribers(self, task_uuid: str) -> bool:
+        with _ws_lock:
+            return bool(_ws_connections.get(task_uuid))
+
+    def _has_batch_log_subscribers(self, batch_id: str) -> bool:
+        with _ws_lock:
+            return bool(_ws_connections.get(f"batch_{batch_id}"))
+
     def cancel_task(self, task_uuid: str):
         """取消任务"""
         _task_cancelled[task_uuid] = True
+        _get_task_pause_event(task_uuid).set()
         logger.info(f"任务 {task_uuid} 已标记为取消")
+
+    def pause_task(self, task_uuid: str, *, resume_status: str | None = None):
+        """暂停任务。"""
+        if resume_status:
+            _task_resume_status[task_uuid] = str(resume_status)
+        _task_paused[task_uuid] = True
+        _get_task_pause_event(task_uuid).clear()
+        logger.info(f"任务 {task_uuid} 已标记为暂停")
+
+    def resume_task(self, task_uuid: str, *, resume_status: str | None = None):
+        """恢复任务。"""
+        if resume_status:
+            _task_resume_status[task_uuid] = str(resume_status)
+        _task_paused[task_uuid] = False
+        _get_task_pause_event(task_uuid).set()
+        logger.info(f"任务 {task_uuid} 已恢复执行")
+
+    def wait_if_paused(self, task_uuid: str, timeout: float = 0.2) -> bool:
+        """若任务被暂停，则阻塞等待恢复；取消时立即跳出。"""
+        event = _get_task_pause_event(task_uuid)
+        while self.is_paused(task_uuid) and not self.is_cancelled(task_uuid):
+            event.wait(timeout=timeout)
+        return not self.is_cancelled(task_uuid)
 
     def add_log(self, task_uuid: str, log_message: str):
         """添加日志并推送到 WebSocket（线程安全）"""
         # 先广播到 WebSocket，确保实时推送
         # 然后再添加到队列，这样 get_unsent_logs 不会获取到这条日志
-        if self._loop and self._loop.is_running():
+        if self._loop and self._loop.is_running() and self._has_log_subscribers(task_uuid):
             try:
                 asyncio.run_coroutine_threadsafe(
                     self._broadcast_log(task_uuid, log_message),
@@ -214,6 +270,8 @@ class TaskManager:
 
         _task_status[task_uuid]["status"] = status
         _task_status[task_uuid].update(kwargs)
+        if status in {"pending", "running"}:
+            _task_resume_status[task_uuid] = status
 
         # 与批量任务保持一致：状态变更后主动广播，避免前端只停留在初始 pending。
         if self._loop and self._loop.is_running():
@@ -232,9 +290,9 @@ class TaskManager:
     def cleanup_task(self, task_uuid: str):
         """清理任务数据"""
         # 保留日志队列一段时间，以便后续查询
-        # 只清理取消标志
-        if task_uuid in _task_cancelled:
-            del _task_cancelled[task_uuid]
+        for mapping in (_task_cancelled, _task_paused, _task_resume_status):
+            mapping.pop(task_uuid, None)
+        _task_pause_events.pop(task_uuid, None)
 
     def build_task_ws_path(self, task_uuid: str) -> str:
         """构造任务日志 WebSocket 路径。"""
@@ -287,14 +345,18 @@ class TaskManager:
             "failed": 0,
             "skipped": 0,
             "current_index": 0,
-            "finished": False
+            "finished": False,
+            "paused": False,
         }
+        with _get_batch_lock(batch_id):
+            _batch_logs[batch_id] = []
+            _batch_log_start_index[batch_id] = 0
         logger.info(f"批量任务 {batch_id} 已初始化，总数: {total}")
 
     def add_batch_log(self, batch_id: str, log_message: str):
         """添加批量任务日志并推送"""
         # 先广播到 WebSocket，确保实时推送
-        if self._loop and self._loop.is_running():
+        if self._loop and self._loop.is_running() and self._has_batch_log_subscribers(batch_id):
             try:
                 asyncio.run_coroutine_threadsafe(
                     self._broadcast_batch_log(batch_id, log_message),
@@ -306,6 +368,10 @@ class TaskManager:
         # 广播后再添加到队列
         with _get_batch_lock(batch_id):
             _batch_logs[batch_id].append(log_message)
+            overflow = len(_batch_logs[batch_id]) - _BATCH_LOG_HISTORY_LIMIT
+            if overflow > 0:
+                del _batch_logs[batch_id][:overflow]
+                _batch_log_start_index[batch_id] += overflow
 
     async def _broadcast_batch_log(self, batch_id: str, log_message: str):
         """广播批量任务日志"""
@@ -375,21 +441,53 @@ class TaskManager:
         with _get_batch_lock(batch_id):
             return _batch_logs.get(batch_id, []).copy()
 
+    def get_batch_log_base_index(self, batch_id: str) -> int:
+        """获取当前批量日志窗口的全局起始偏移。"""
+        with _get_batch_lock(batch_id):
+            return int(_batch_log_start_index.get(batch_id, 0) or 0)
+
     def is_batch_cancelled(self, batch_id: str) -> bool:
         """检查批量任务是否已取消"""
         status = _batch_status.get(batch_id, {})
         return status.get("cancelled", False)
 
+    def is_batch_paused(self, batch_id: str) -> bool:
+        """检查批量任务是否处于暂停状态。"""
+        status = _batch_status.get(batch_id, {})
+        return status.get("paused", False)
+
     def cancel_batch(self, batch_id: str):
         """取消批量任务"""
         if batch_id not in _batch_status:
-            _batch_status[batch_id] = {"cancelled": True, "status": "cancelling"}
+            _batch_status[batch_id] = {"cancelled": True, "paused": False, "status": "cancelling"}
         else:
             _batch_status[batch_id]["cancelled"] = True
+            _batch_status[batch_id]["paused"] = False
             _batch_status[batch_id]["status"] = "cancelling"
         logger.info(f"批量任务 {batch_id} 已标记为取消")
         for task_uuid in list(_batch_task_map.get(batch_id, set())):
             self.cancel_task(task_uuid)
+
+    def pause_batch(self, batch_id: str, *, resume_status: str | None = None):
+        """暂停批量任务及其子任务。"""
+        if batch_id not in _batch_status:
+            _batch_status[batch_id] = {"cancelled": False, "paused": True, "status": "paused"}
+        else:
+            _batch_status[batch_id]["paused"] = True
+            _batch_status[batch_id]["status"] = "paused"
+        logger.info(f"批量任务 {batch_id} 已标记为暂停")
+        for task_uuid in list(_batch_task_map.get(batch_id, set())):
+            self.pause_task(task_uuid, resume_status=resume_status)
+
+    def resume_batch(self, batch_id: str):
+        """恢复批量任务及其子任务。"""
+        if batch_id not in _batch_status:
+            return
+        _batch_status[batch_id]["paused"] = False
+        _batch_status[batch_id]["status"] = "running"
+        logger.info(f"批量任务 {batch_id} 已恢复执行")
+        for task_uuid in list(_batch_task_map.get(batch_id, set())):
+            self.resume_task(task_uuid)
 
     def bind_batch_tasks(self, batch_id: str, task_uuids: List[str]):
         """建立批量任务与子任务的映射，供取消级联使用。"""
@@ -444,10 +542,12 @@ class TaskManager:
         logger.info(f"批量任务 WebSocket 连接已注销: {batch_id}")
 
     def create_log_callback(self, task_uuid: str, prefix: str = "", batch_id: str = "") -> Callable[[str], None]:
-        """创建日志回调函数，可附加任务编号前缀。"""
+        """创建日志回调函数，可附加任务编号前缀，并同步到批量频道。"""
         def callback(msg: str):
             full_msg = f"{prefix} {msg}" if prefix else msg
             self.add_log(task_uuid, full_msg)
+            if batch_id:
+                self.add_batch_log(batch_id, full_msg)
         return callback
 
     def create_check_cancelled_callback(self, task_uuid: str) -> Callable[[], bool]:

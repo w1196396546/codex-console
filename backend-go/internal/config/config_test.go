@@ -21,6 +21,7 @@ func TestLoadConfigAppliesDefaultsAndTrimsWhitespace(t *testing.T) {
 		"REDIS_PASSWORD":      "  secret  ",
 		"POSTGRES_MIN_CONNS":  " 3 ",
 		"POSTGRES_MAX_CONNS":  " 15 ",
+		"WORKER_CONCURRENCY":  " 12 ",
 		"REDIS_DIAL_TIMEOUT":  " 4s ",
 		"REDIS_READ_TIMEOUT":  " 5s ",
 		"REDIS_WRITE_TIMEOUT": " 6s ",
@@ -50,6 +51,9 @@ func TestLoadConfigAppliesDefaultsAndTrimsWhitespace(t *testing.T) {
 	if cfg.PostgresMaxConns != 15 {
 		t.Fatalf("expected PostgresMaxConns=15, got %d", cfg.PostgresMaxConns)
 	}
+	if cfg.WorkerConcurrency != 12 {
+		t.Fatalf("expected WorkerConcurrency=12, got %d", cfg.WorkerConcurrency)
+	}
 	if cfg.RedisDialTimeout != 4*time.Second {
 		t.Fatalf("expected RedisDialTimeout=4s, got %s", cfg.RedisDialTimeout)
 	}
@@ -75,6 +79,9 @@ func TestLoadConfigUsesConnectionDefaults(t *testing.T) {
 	}
 	if cfg.PostgresMaxConns != 20 {
 		t.Fatalf("expected default PostgresMaxConns=20, got %d", cfg.PostgresMaxConns)
+	}
+	if cfg.WorkerConcurrency != 50 {
+		t.Fatalf("expected default WorkerConcurrency=50, got %d", cfg.WorkerConcurrency)
 	}
 	if cfg.RedisDialTimeout != 5*time.Second {
 		t.Fatalf("expected default RedisDialTimeout=5s, got %s", cfg.RedisDialTimeout)

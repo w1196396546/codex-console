@@ -9,6 +9,7 @@ import random
 import threading
 from datetime import datetime
 from typing import List, Optional, Dict, Tuple
+from sqlalchemy.exc import OperationalError
 
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -29,6 +30,7 @@ running_tasks: dict = {}
 # 批量任务存储
 batch_tasks: Dict[str, dict] = {}
 _outlook_service_claim_lock = threading.Lock()
+_BATCH_LOG_HISTORY_LIMIT = 1000
 
 
 # ============== Proxy Helper Functions ==============
@@ -85,7 +87,7 @@ def _reserve_available_outlook_service(db, task_uuid: str):
         claimed_rows = db.query(RegistrationTask.email_service_id).filter(
             RegistrationTask.email_service_id.isnot(None),
             RegistrationTask.task_uuid != task_uuid,
-            RegistrationTask.status.in_(("pending", "running")),
+            RegistrationTask.status.in_(("pending", "running", "paused", "cancelling")),
         ).all()
         claimed_service_ids = {int(row[0]) for row in claimed_rows if row and row[0] is not None}
 
@@ -320,6 +322,93 @@ def _snapshot_runtime_logs(task_uuid: str) -> Optional[str]:
     return None
 
 
+def _resolve_log_window(
+    logs: List[str],
+    *,
+    offset: int = 0,
+    base_index: int = 0,
+) -> tuple[List[str], int, int]:
+    """按全局偏移切出增量日志窗口。"""
+    try:
+        safe_base_index = max(0, int(base_index or 0))
+    except (TypeError, ValueError):
+        safe_base_index = 0
+    try:
+        safe_offset = max(0, int(offset or 0))
+    except (TypeError, ValueError):
+        safe_offset = 0
+    safe_offset = max(safe_offset, safe_base_index)
+    window_end = safe_base_index + len(logs)
+    if safe_offset > window_end:
+        safe_offset = window_end
+    slice_start = max(0, safe_offset - safe_base_index)
+    return logs[slice_start:], safe_offset, window_end
+
+
+def _default_resume_status(task: Optional[RegistrationTask]) -> str:
+    """推断暂停后的默认恢复状态。"""
+    if task is None:
+        return "running"
+    if getattr(task, "started_at", None):
+        return "running"
+    return "pending"
+
+
+def _resolve_resume_status(task_uuid: str, task: Optional[RegistrationTask]) -> str:
+    """优先读取运行时记录的恢复目标状态，否则退回数据库推断。"""
+    return task_manager.get_resume_status(task_uuid, default=_default_resume_status(task))
+
+
+def _pause_single_task_record(db, task: RegistrationTask) -> str:
+    """暂停单任务并返回写入后的状态。"""
+    resume_status = task.status if task.status in {"pending", "running"} else _default_resume_status(task)
+    task_manager.pause_task(task.task_uuid, resume_status=resume_status)
+    crud.update_registration_task(db, task.task_uuid, status="paused")
+    task_manager.update_status(task.task_uuid, "paused")
+    return "paused"
+
+
+def _resume_single_task_record(db, task: RegistrationTask) -> str:
+    """恢复单任务并返回写入后的状态。"""
+    resume_status = _resolve_resume_status(task.task_uuid, task)
+    task_manager.resume_task(task.task_uuid, resume_status=resume_status)
+    crud.update_registration_task(db, task.task_uuid, status=resume_status)
+    task_manager.update_status(task.task_uuid, resume_status)
+    return resume_status
+
+
+def _update_batch_child_task_statuses(db, batch_id: str, *, action: str):
+    """批量同步子任务的暂停/恢复状态。"""
+    for task_uuid in batch_tasks.get(batch_id, {}).get("task_uuids", []):
+        task = crud.get_registration_task(db, task_uuid)
+        if task is None:
+            continue
+        if action == "pause":
+            if task.status in {"pending", "running"}:
+                _pause_single_task_record(db, task)
+        elif action == "resume":
+            if task.status == "paused":
+                _resume_single_task_record(db, task)
+
+
+async def _wait_if_batch_paused(batch_id: str):
+    """批量调度器在暂停期间挂起，恢复或取消后继续。"""
+    while batch_tasks.get(batch_id, {}).get("paused") and not task_manager.is_batch_cancelled(batch_id):
+        await asyncio.sleep(0.2)
+
+
+async def _sleep_with_batch_controls(batch_id: str, seconds: float):
+    """带暂停/取消感知的异步等待。"""
+    remaining = max(0.0, float(seconds or 0.0))
+    while remaining > 0:
+        if task_manager.is_batch_cancelled(batch_id):
+            return
+        await _wait_if_batch_paused(batch_id)
+        step = min(0.2, remaining)
+        await asyncio.sleep(step)
+        remaining -= step
+
+
 def _finalize_task_record(
     db,
     task_uuid: str,
@@ -344,7 +433,25 @@ def _finalize_task_record(
     return crud.update_registration_task(db, task_uuid, **payload)
 
 
-def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None):
+def _safe_update_registration_task(
+    db,
+    task_uuid: str,
+    *,
+    context: str,
+    **kwargs,
+):
+    """对非关键元数据更新做锁冲突降级，避免一次写锁把整个注册线程打死。"""
+    try:
+        return crud.update_registration_task(db, task_uuid, **kwargs)
+    except OperationalError as exc:
+        message = str(exc or "").lower()
+        if "database is locked" not in message and "database table is locked" not in message:
+            raise
+        logger.warning("任务 %s 在 %s 时遇到 SQLite 写锁，已跳过本次元数据更新: %s", task_uuid, context, exc)
+        return None
+
+
+def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None, token_completion_concurrency: int = 1):
     """
     在线程池中执行的同步注册任务
 
@@ -352,6 +459,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
     """
     with get_db() as db:
         try:
+            task_manager.wait_if_paused(task_uuid)
             # 检查是否已取消
             if task_manager.is_cancelled(task_uuid):
                 logger.info(f"任务 {task_uuid} 已取消，跳过执行")
@@ -359,19 +467,10 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 task_manager.update_status(task_uuid, "cancelled")
                 return
 
-            # 更新任务状态为运行中
-            task = crud.update_registration_task(
-                db, task_uuid,
-                status="running",
-                started_at=datetime.utcnow()
-            )
-
+            task = crud.get_registration_task(db, task_uuid)
             if not task:
                 logger.error(f"任务不存在: {task_uuid}")
                 return
-
-            # 更新 TaskManager 状态
-            task_manager.update_status(task_uuid, "running")
 
             # 优先使用任务已绑定的邮箱服务，避免批量 Outlook 任务在并发下抢同一邮箱。
             bound_email_service_id = email_service_id or getattr(task, "email_service_id", None)
@@ -387,12 +486,29 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 if actual_proxy_url:
                     logger.info(f"任务 {task_uuid} 使用代理: {actual_proxy_url[:50]}...")
 
-            # 更新任务的代理记录
-            crud.update_registration_task(db, task_uuid, proxy=actual_proxy_url)
+            # 合并早期元数据写入，减少并发下的 SQLite commit 次数
+            updated_task = _safe_update_registration_task(
+                db,
+                task_uuid,
+                context="切换 running 状态并写入 proxy",
+                status="running",
+                started_at=datetime.utcnow(),
+                proxy=actual_proxy_url,
+            )
+            if updated_task is not None:
+                task = updated_task
+
+            # 更新 TaskManager 状态
+            task_manager.update_status(task_uuid, "running")
 
             # 创建邮箱服务
             service_type = EmailServiceType(email_service_type)
             settings = get_settings()
+            requested_token_completion_concurrency = max(1, int(token_completion_concurrency or 1))
+            token_completion_max_concurrency = max(
+                0,
+                int(getattr(settings, "registration_token_completion_max_concurrency", 0) or 0),
+            )
 
             # 优先使用数据库中配置的邮箱服务
             if bound_email_service_id:
@@ -406,7 +522,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                     service_type = EmailServiceType(db_service.service_type)
                     config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
                     # 更新任务关联的邮箱服务
-                    crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
+                    _safe_update_registration_task(db, task_uuid, context="绑定邮箱服务", email_service_id=db_service.id)
                     logger.info(f"使用数据库邮箱服务: {db_service.name} (ID: {db_service.id}, 类型: {service_type.value})")
                 else:
                     raise ValueError(f"邮箱服务不存在或已禁用: {bound_email_service_id}")
@@ -443,7 +559,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
                     if db_service and db_service.config:
                         config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
-                        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
+                        _safe_update_registration_task(db, task_uuid, context="绑定 moe_mail 服务", email_service_id=db_service.id)
                         logger.info(f"使用数据库自定义域名服务: {db_service.name}")
                     elif settings.custom_domain_base_url and settings.custom_domain_api_key:
                         config = {
@@ -470,7 +586,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
                     if db_service and db_service.config:
                         config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
-                        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
+                        _safe_update_registration_task(db, task_uuid, context="绑定 duck_mail 服务", email_service_id=db_service.id)
                         logger.info(f"使用数据库 DuckMail 服务: {db_service.name}")
                     else:
                         raise ValueError("没有可用的 DuckMail 邮箱服务，请先在邮箱服务页面添加服务")
@@ -484,7 +600,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
                     if db_service and db_service.config:
                         config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
-                        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
+                        _safe_update_registration_task(db, task_uuid, context="绑定 freemail 服务", email_service_id=db_service.id)
                         logger.info(f"使用数据库 Freemail 服务: {db_service.name}")
                     else:
                         raise ValueError("没有可用的 Freemail 邮箱服务，请先在邮箱服务页面添加服务")
@@ -498,7 +614,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
                     if db_service and db_service.config:
                         config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
-                        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
+                        _safe_update_registration_task(db, task_uuid, context="绑定 imap_mail 服务", email_service_id=db_service.id)
                         logger.info(f"使用数据库 IMAP 邮箱服务: {db_service.name}")
                     else:
                         raise ValueError("没有可用的 IMAP 邮箱服务，请先在邮箱服务中添加")
@@ -512,7 +628,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
                     if db_service and db_service.config:
                         config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
-                        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
+                        _safe_update_registration_task(db, task_uuid, context="绑定 luckmail 服务", email_service_id=db_service.id)
                         logger.info(f"使用数据库 LuckMail 服务: {db_service.name}")
                     else:
                         config = _normalize_email_service_config(service_type, email_service_config or {}, actual_proxy_url)
@@ -523,19 +639,29 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
             email_service = EmailServiceFactory.create(service_type, config)
 
-            # 创建注册引擎 - 使用 TaskManager 的日志回调
-            log_callback = task_manager.create_log_callback(task_uuid, prefix=log_prefix, batch_id=batch_id)
+            # 创建注册引擎 - 同时把日志写入任务通道和批量任务兜底快照
+            log_callback = _create_registration_log_callback(task_uuid, log_prefix=log_prefix, batch_id=batch_id)
 
             def raise_if_cancelled():
+                task_manager.wait_if_paused(task_uuid)
                 if task_manager.is_cancelled(task_uuid):
                     raise RegistrationCancelledError("任务已取消，停止继续执行")
 
+            engine_kwargs = {
+                "email_service": email_service,
+                "proxy_url": actual_proxy_url,
+                "callback_logger": log_callback,
+                "task_uuid": task_uuid,
+                "check_cancelled": raise_if_cancelled,
+            }
+            if requested_token_completion_concurrency > 1 or token_completion_max_concurrency > 0:
+                engine_kwargs["extra_config"] = {
+                    "token_completion_concurrency": requested_token_completion_concurrency,
+                    "token_completion_max_concurrency": token_completion_max_concurrency,
+                }
+
             engine = RegistrationEngine(
-                email_service=email_service,
-                proxy_url=actual_proxy_url,
-                callback_logger=log_callback,
-                task_uuid=task_uuid,
-                check_cancelled=raise_if_cancelled,
+                **engine_kwargs,
             )
 
             # 执行注册
@@ -732,7 +858,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 pass
 
 
-async def run_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None):
+async def run_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None, token_completion_concurrency: int = 1):
     """
     异步执行注册任务
 
@@ -765,6 +891,7 @@ async def run_registration_task(task_uuid: str, email_service_type: str, proxy: 
             sub2api_service_ids or [],
             auto_upload_tm,
             tm_service_ids or [],
+            token_completion_concurrency,
         )
     except Exception as e:
         logger.error(f"线程池执行异常: {task_uuid}, 错误: {e}")
@@ -776,16 +903,19 @@ def _init_batch_state(batch_id: str, task_uuids: List[str]):
     """初始化批量任务内存状态"""
     existing = batch_tasks.get(batch_id, {})
     preserved_cancelled = bool(existing.get("cancelled"))
+    preserved_paused = bool(existing.get("paused"))
     preserved_logs = list(existing.get("logs", []))
     preserved_skipped = int(existing.get("skipped", 0) or 0)
     task_manager.init_batch(batch_id, len(task_uuids))
     task_manager.bind_batch_tasks(batch_id, task_uuids)
     batch_tasks[batch_id] = {
+        "status": "paused" if preserved_paused else "running",
         "total": len(task_uuids),
         "completed": 0,
         "success": 0,
         "failed": 0,
         "cancelled": preserved_cancelled,
+        "paused": preserved_paused,
         "task_uuids": task_uuids,
         "current_index": 0,
         "logs": preserved_logs,
@@ -794,12 +924,39 @@ def _init_batch_state(batch_id: str, task_uuids: List[str]):
     }
     if preserved_cancelled:
         task_manager.cancel_batch(batch_id)
+    elif preserved_paused:
+        task_manager.pause_batch(batch_id)
+        with get_db() as db:
+            _update_batch_child_task_statuses(db, batch_id, action="pause")
+
+
+def _append_persisted_batch_log(batch_id: str, log_message: str):
+    """把批量日志同步写入 batch_tasks 快照，作为实时日志链路失效时的兜底。"""
+    if not batch_id or batch_id not in batch_tasks:
+        return
+    logs = batch_tasks[batch_id].setdefault("logs", [])
+    logs.append(log_message)
+    overflow = len(logs) - _BATCH_LOG_HISTORY_LIMIT
+    if overflow > 0:
+        del logs[:overflow]
+
+
+def _create_registration_log_callback(task_uuid: str, log_prefix: str = "", batch_id: str = ""):
+    """创建注册日志回调，并把批量日志同步沉淀到批量快照。"""
+    def callback(msg: str):
+        full_msg = f"{log_prefix} {msg}" if log_prefix else msg
+        task_manager.add_log(task_uuid, full_msg)
+        if batch_id:
+            _append_persisted_batch_log(batch_id, full_msg)
+            task_manager.add_batch_log(batch_id, full_msg)
+
+    return callback
 
 
 def _make_batch_helpers(batch_id: str):
     """返回 add_batch_log 和 update_batch_status 辅助函数"""
     def add_batch_log(msg: str):
-        batch_tasks[batch_id]["logs"].append(msg)
+        _append_persisted_batch_log(batch_id, msg)
         task_manager.add_batch_log(batch_id, msg)
 
     def update_batch_status(**kwargs):
@@ -841,17 +998,21 @@ async def run_batch_parallel(
             with get_db() as db:
                 _finalize_task_record(db, uuid, status="cancelled", error_message="批量任务已取消")
             return
+        await _wait_if_batch_paused(batch_id)
         async with semaphore:
+            await _wait_if_batch_paused(batch_id)
             if task_manager.is_batch_cancelled(batch_id):
                 with get_db() as db:
                     _finalize_task_record(db, uuid, status="cancelled", error_message="批量任务已取消")
                 return
+            add_batch_log(f"{prefix} 开始注册...")
             await run_registration_task(
                 uuid, email_service_type, proxy, email_service_config, email_service_id,
                 log_prefix=prefix, batch_id=batch_id,
                 auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids or [],
                 auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids or [],
                 auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids or [],
+                token_completion_concurrency=concurrency,
             )
         with get_db() as db:
             t = crud.get_registration_task(db, uuid)
@@ -918,6 +1079,7 @@ async def run_batch_pipeline(
                 auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids or [],
                 auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids or [],
                 auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids or [],
+                token_completion_concurrency=concurrency,
             )
             with get_db() as db:
                 t = crud.get_registration_task(db, uuid)
@@ -938,6 +1100,7 @@ async def run_batch_pipeline(
 
     try:
         for i, task_uuid in enumerate(task_uuids):
+            await _wait_if_batch_paused(batch_id)
             if task_manager.is_batch_cancelled(batch_id) or batch_tasks[batch_id]["cancelled"]:
                 with get_db() as db:
                     for remaining_uuid in task_uuids[i:]:
@@ -957,7 +1120,7 @@ async def run_batch_pipeline(
             if i < len(task_uuids) - 1 and not task_manager.is_batch_cancelled(batch_id):
                 wait_time = random.randint(interval_min, interval_max)
                 logger.info(f"批量任务 {batch_id}: 等待 {wait_time} 秒后启动下一个任务")
-                await asyncio.sleep(wait_time)
+                await _sleep_with_batch_controls(batch_id, wait_time)
 
         if running_tasks_list:
             await asyncio.gather(*running_tasks_list, return_exceptions=True)
@@ -1119,12 +1282,14 @@ async def start_batch_registration(
         tasks = [crud.get_registration_task(db, uuid) for uuid in task_uuids]
 
     batch_tasks[batch_id] = {
+        "status": "running",
         "total": len(task_uuids),
         "completed": 0,
         "success": 0,
         "failed": 0,
         "skipped": 0,
         "cancelled": False,
+        "paused": False,
         "task_uuids": task_uuids,
         "current_index": 0,
         "logs": [],
@@ -1161,23 +1326,79 @@ async def start_batch_registration(
 
 
 @router.get("/batch/{batch_id}")
-async def get_batch_status(batch_id: str):
+async def get_batch_status(batch_id: str, log_offset: int = Query(0, ge=0)):
     """获取批量任务状态"""
     if batch_id not in batch_tasks:
         raise HTTPException(status_code=404, detail="批量任务不存在")
 
     batch = batch_tasks[batch_id]
+    runtime_logs = task_manager.get_batch_logs(batch_id)
+    log_base_index = task_manager.get_batch_log_base_index(batch_id) if runtime_logs else 0
+    resolved_logs = runtime_logs if runtime_logs else batch.get("logs", [])
+    incremental_logs, normalized_offset, log_next_offset = _resolve_log_window(
+        resolved_logs,
+        offset=log_offset,
+        base_index=log_base_index,
+    )
     return {
         "batch_id": batch_id,
+        "status": batch.get("status", "running"),
         "total": batch["total"],
         "completed": batch["completed"],
         "success": batch["success"],
         "failed": batch["failed"],
         "current_index": batch["current_index"],
         "cancelled": batch["cancelled"],
+        "paused": batch.get("paused", False),
         "finished": batch.get("finished", False),
+        "logs": incremental_logs,
+        "log_base_index": log_base_index,
+        "log_offset": normalized_offset,
+        "log_next_offset": log_next_offset,
         "progress": f"{batch['completed']}/{batch['total']}"
     }
+
+
+@router.post("/batch/{batch_id}/pause")
+async def pause_batch(batch_id: str):
+    """暂停批量任务。"""
+    if batch_id not in batch_tasks:
+        raise HTTPException(status_code=404, detail="批量任务不存在")
+
+    batch = batch_tasks[batch_id]
+    if batch.get("finished"):
+        raise HTTPException(status_code=400, detail="批量任务已完成")
+    if batch.get("paused"):
+        raise HTTPException(status_code=400, detail="批量任务已暂停")
+
+    batch["paused"] = True
+    batch["status"] = "paused"
+    task_manager.pause_batch(batch_id)
+    task_manager.update_batch_status(batch_id, paused=True, status="paused")
+    with get_db() as db:
+        _update_batch_child_task_statuses(db, batch_id, action="pause")
+    return {"success": True, "status": "paused", "message": "批量任务已暂停"}
+
+
+@router.post("/batch/{batch_id}/resume")
+async def resume_batch(batch_id: str):
+    """恢复批量任务。"""
+    if batch_id not in batch_tasks:
+        raise HTTPException(status_code=404, detail="批量任务不存在")
+
+    batch = batch_tasks[batch_id]
+    if batch.get("finished"):
+        raise HTTPException(status_code=400, detail="批量任务已完成")
+    if not batch.get("paused"):
+        raise HTTPException(status_code=400, detail="批量任务未暂停")
+
+    batch["paused"] = False
+    batch["status"] = "running"
+    task_manager.resume_batch(batch_id)
+    task_manager.update_batch_status(batch_id, paused=False, status="running")
+    with get_db() as db:
+        _update_batch_child_task_statuses(db, batch_id, action="resume")
+    return {"success": True, "status": "running", "message": "批量任务已恢复"}
 
 
 @router.post("/batch/{batch_id}/cancel")
@@ -1191,6 +1412,8 @@ async def cancel_batch(batch_id: str):
         raise HTTPException(status_code=400, detail="批量任务已完成")
 
     batch["cancelled"] = True
+    batch["paused"] = False
+    batch["status"] = "cancelling"
     task_manager.bind_batch_tasks(batch_id, batch.get("task_uuids", []))
     task_manager.cancel_batch(batch_id)
     return {"success": True, "message": "批量任务取消请求已提交，正在让它们有序收工"}
@@ -1230,7 +1453,7 @@ async def get_task(task_uuid: str):
 
 
 @router.get("/tasks/{task_uuid}/logs")
-async def get_task_logs(task_uuid: str):
+async def get_task_logs(task_uuid: str, offset: int = Query(0, ge=0)):
     """获取任务日志"""
     with get_db() as db:
         task = crud.get_registration_task(db, task_uuid)
@@ -1240,6 +1463,10 @@ async def get_task_logs(task_uuid: str):
         logs = task.logs or ""
         runtime_logs = task_manager.get_logs(task_uuid)
         resolved_logs = runtime_logs if runtime_logs else (logs.split("\n") if logs else [])
+        incremental_logs, normalized_offset, log_next_offset = _resolve_log_window(
+            resolved_logs,
+            offset=offset,
+        )
         result = task.result if isinstance(task.result, dict) else {}
         email = result.get("email")
         service_type = task.email_service.service_type if task.email_service else None
@@ -1248,8 +1475,38 @@ async def get_task_logs(task_uuid: str):
             "status": task.status,
             "email": email,
             "email_service": service_type,
-            "logs": resolved_logs,
+            "logs": incremental_logs,
+            "log_offset": normalized_offset,
+            "log_next_offset": log_next_offset,
         }
+
+
+@router.post("/tasks/{task_uuid}/pause")
+async def pause_task(task_uuid: str):
+    """暂停任务。"""
+    with get_db() as db:
+        task = crud.get_registration_task(db, task_uuid)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if task.status not in ["pending", "running"]:
+            raise HTTPException(status_code=400, detail="当前状态不支持暂停")
+
+        status = _pause_single_task_record(db, task)
+        return {"success": True, "status": status, "message": "任务已暂停"}
+
+
+@router.post("/tasks/{task_uuid}/resume")
+async def resume_task(task_uuid: str):
+    """恢复任务。"""
+    with get_db() as db:
+        task = crud.get_registration_task(db, task_uuid)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if task.status != "paused":
+            raise HTTPException(status_code=400, detail="任务未暂停")
+
+        status = _resume_single_task_record(db, task)
+        return {"success": True, "status": status, "message": "任务已恢复"}
 
 
 @router.post("/tasks/{task_uuid}/cancel")
@@ -1260,7 +1517,7 @@ async def cancel_task(task_uuid: str):
         if not task:
             raise HTTPException(status_code=404, detail="任务不存在")
 
-        if task.status not in ["pending", "running"]:
+        if task.status not in ["pending", "running", "paused"]:
             raise HTTPException(status_code=400, detail="任务已完成或已取消")
 
         task_manager.cancel_task(task_uuid)
@@ -1677,6 +1934,8 @@ async def run_outlook_batch_registration(
     task_manager.bind_batch_tasks(batch_id, task_uuids)
     if batch_tasks.get(batch_id, {}).get("cancelled"):
         task_manager.cancel_batch(batch_id)
+    elif batch_tasks.get(batch_id, {}).get("paused"):
+        task_manager.pause_batch(batch_id)
 
     # 复用通用并发逻辑（outlook 服务类型，每个任务通过 email_service_id 定位账户）
     await run_batch_registration(
@@ -1742,12 +2001,14 @@ async def start_outlook_batch_registration(
 
     # 初始化批量任务状态
     batch_tasks[batch_id] = {
+        "status": "running",
         "total": len(actual_service_ids),
         "completed": 0,
         "success": 0,
         "failed": 0,
         "skipped": 0,
         "cancelled": False,
+        "paused": False,
         "service_ids": actual_service_ids,
         "current_index": 0,
         "logs": [],
@@ -1782,14 +2043,23 @@ async def start_outlook_batch_registration(
 
 
 @router.get("/outlook-batch/{batch_id}")
-async def get_outlook_batch_status(batch_id: str):
+async def get_outlook_batch_status(batch_id: str, log_offset: int = Query(0, ge=0)):
     """获取 Outlook 批量任务状态"""
     if batch_id not in batch_tasks:
         raise HTTPException(status_code=404, detail="批量任务不存在")
 
     batch = batch_tasks[batch_id]
+    runtime_logs = task_manager.get_batch_logs(batch_id)
+    log_base_index = task_manager.get_batch_log_base_index(batch_id) if runtime_logs else 0
+    resolved_logs = runtime_logs if runtime_logs else batch.get("logs", [])
+    incremental_logs, normalized_offset, log_next_offset = _resolve_log_window(
+        resolved_logs,
+        offset=log_offset,
+        base_index=log_base_index,
+    )
     return {
         "batch_id": batch_id,
+        "status": batch.get("status", "running"),
         "total": batch["total"],
         "completed": batch["completed"],
         "success": batch["success"],
@@ -1797,10 +2067,26 @@ async def get_outlook_batch_status(batch_id: str):
         "skipped": batch.get("skipped", 0),
         "current_index": batch["current_index"],
         "cancelled": batch["cancelled"],
+        "paused": batch.get("paused", False),
         "finished": batch.get("finished", False),
-        "logs": batch.get("logs", []),
+        "logs": incremental_logs,
+        "log_base_index": log_base_index,
+        "log_offset": normalized_offset,
+        "log_next_offset": log_next_offset,
         "progress": f"{batch['completed']}/{batch['total']}"
     }
+
+
+@router.post("/outlook-batch/{batch_id}/pause")
+async def pause_outlook_batch(batch_id: str):
+    """暂停 Outlook 批量任务。"""
+    return await pause_batch(batch_id)
+
+
+@router.post("/outlook-batch/{batch_id}/resume")
+async def resume_outlook_batch(batch_id: str):
+    """恢复 Outlook 批量任务。"""
+    return await resume_batch(batch_id)
 
 
 @router.post("/outlook-batch/{batch_id}/cancel")
@@ -1815,6 +2101,8 @@ async def cancel_outlook_batch(batch_id: str):
 
     # 同时更新两个系统的取消状态
     batch["cancelled"] = True
+    batch["paused"] = False
+    batch["status"] = "cancelling"
     task_manager.bind_batch_tasks(batch_id, batch.get("task_uuids", []))
     task_manager.cancel_batch(batch_id)
 

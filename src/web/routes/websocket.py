@@ -24,6 +24,8 @@ async def task_websocket(websocket: WebSocket, task_uuid: str):
     - 服务端发送: {"type": "log", "task_uuid": "xxx", "message": "...", "timestamp": "..."}
     - 服务端发送: {"type": "status", "task_uuid": "xxx", "status": "running|completed|failed|cancelled", ...}
     - 客户端发送: {"type": "ping"} - 心跳
+    - 客户端发送: {"type": "pause"} - 暂停任务
+    - 客户端发送: {"type": "resume"} - 恢复任务
     - 客户端发送: {"type": "cancel"} - 取消任务
     """
     await websocket.accept()
@@ -64,6 +66,42 @@ async def task_websocket(websocket: WebSocket, task_uuid: str):
                 # 处理心跳
                 if data.get("type") == "ping":
                     await websocket.send_json({"type": "pong"})
+
+                # 处理取消请求
+                elif data.get("type") == "pause":
+                    try:
+                        with get_db() as db:
+                            task = crud.get_registration_task(db, task_uuid)
+                            if task and task.status in {"pending", "running"}:
+                                from .registration import _pause_single_task_record
+                                _pause_single_task_record(db, task)
+                    except Exception as exc:
+                        logger.warning(f"同步任务暂停状态到数据库失败: {exc}")
+                    await websocket.send_json({
+                        "type": "status",
+                        "task_uuid": task_uuid,
+                        "status": "paused",
+                        "message": "任务已暂停，等待继续指令",
+                    })
+
+                elif data.get("type") == "resume":
+                    try:
+                        with get_db() as db:
+                            task = crud.get_registration_task(db, task_uuid)
+                            if task and task.status == "paused":
+                                from .registration import _resume_single_task_record
+                                resumed_status = _resume_single_task_record(db, task)
+                            else:
+                                resumed_status = "running"
+                    except Exception as exc:
+                        logger.warning(f"同步任务恢复状态到数据库失败: {exc}")
+                        resumed_status = "running"
+                    await websocket.send_json({
+                        "type": "status",
+                        "task_uuid": task_uuid,
+                        "status": resumed_status,
+                        "message": "任务已恢复执行",
+                    })
 
                 # 处理取消请求
                 elif data.get("type") == "cancel":
@@ -113,6 +151,8 @@ async def batch_websocket(websocket: WebSocket, batch_id: str):
     - 服务端发送: {"type": "log", "batch_id": "xxx", "message": "...", "timestamp": "..."}
     - 服务端发送: {"type": "status", "batch_id": "xxx", "status": "running|completed|cancelled", ...}
     - 客户端发送: {"type": "ping"} - 心跳
+    - 客户端发送: {"type": "pause"} - 暂停批量任务
+    - 客户端发送: {"type": "resume"} - 恢复批量任务
     - 客户端发送: {"type": "cancel"} - 取消批量任务
     """
     await websocket.accept()
@@ -151,6 +191,45 @@ async def batch_websocket(websocket: WebSocket, batch_id: str):
                 # 处理心跳
                 if data.get("type") == "ping":
                     await websocket.send_json({"type": "pong"})
+
+                # 处理取消请求
+                elif data.get("type") == "pause":
+                    try:
+                        from .registration import _update_batch_child_task_statuses, batch_tasks
+                        if batch_id in batch_tasks:
+                            batch_tasks[batch_id]["paused"] = True
+                        task_manager.pause_batch(batch_id)
+                        task_manager.update_batch_status(batch_id, paused=True, status="paused")
+                        with get_db() as db:
+                            _update_batch_child_task_statuses(db, batch_id, action="pause")
+                    except Exception as exc:
+                        logger.warning(f"同步批量任务暂停状态失败: {exc}")
+                    await websocket.send_json({
+                        "type": "status",
+                        "batch_id": batch_id,
+                        "status": "paused",
+                        "paused": True,
+                        "message": "批量任务已暂停",
+                    })
+
+                elif data.get("type") == "resume":
+                    try:
+                        from .registration import _update_batch_child_task_statuses, batch_tasks
+                        if batch_id in batch_tasks:
+                            batch_tasks[batch_id]["paused"] = False
+                        task_manager.resume_batch(batch_id)
+                        task_manager.update_batch_status(batch_id, paused=False, status="running")
+                        with get_db() as db:
+                            _update_batch_child_task_statuses(db, batch_id, action="resume")
+                    except Exception as exc:
+                        logger.warning(f"同步批量任务恢复状态失败: {exc}")
+                    await websocket.send_json({
+                        "type": "status",
+                        "batch_id": batch_id,
+                        "status": "running",
+                        "paused": False,
+                        "message": "批量任务已恢复",
+                    })
 
                 # 处理取消请求
                 elif data.get("type") == "cancel":

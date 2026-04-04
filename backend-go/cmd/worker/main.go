@@ -2,13 +2,18 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
+	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
 	"github.com/dou-jiang/codex-console/backend-go/internal/config"
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
+	"github.com/dou-jiang/codex-console/backend-go/internal/nativerunner"
 	postgresplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/postgres"
 	redisplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/redis"
+	"github.com/dou-jiang/codex-console/backend-go/internal/registration"
+	"github.com/dou-jiang/codex-console/backend-go/internal/uploader"
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgxpool"
 	redisv9 "github.com/redis/go-redis/v9"
@@ -30,7 +35,23 @@ func main() {
 	}
 	defer closeWorker(deps)
 
-	worker := jobs.NewWorkerWithID(deps.Service, "worker-main")
+	registrationRunner, err := newWorkerRegistrationRunner()
+	if err != nil {
+		log.Fatal(err)
+	}
+	accountService := accounts.NewService(accounts.NewPostgresRepository(deps.Postgres))
+	autoUploadDispatcher := registration.NewAutoUploadDispatcher(
+		uploader.NewPostgresConfigRepository(deps.Postgres),
+		nil,
+	)
+	registrationExecutor := newRegistrationExecutor(
+		deps.Service,
+		registrationRunner,
+		accountService,
+		autoUploadDispatcher,
+		newRegistrationPreparationDependencies(deps.Postgres),
+	)
+	worker := jobs.NewWorkerWithIDAndExecutor(deps.Service, "worker-main", newWorkerExecutor(registrationExecutor))
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(jobs.TypeGenericJob, worker.HandleTask)
 
@@ -71,7 +92,7 @@ func bootstrapWorker(parent context.Context) (workerDependencies, error) {
 		Password: cfg.RedisPass,
 		DB:       cfg.RedisDB,
 	}, asynq.Config{
-		Concurrency: 5,
+		Concurrency: cfg.WorkerConcurrency,
 	})
 
 	return workerDependencies{
@@ -82,6 +103,47 @@ func bootstrapWorker(parent context.Context) (workerDependencies, error) {
 		Server:   server,
 		Service:  service,
 	}, nil
+}
+
+func newRegistrationExecutor(
+	logs *jobs.Service,
+	runner registration.Runner,
+	accountService *accounts.Service,
+	autoUploadDispatcher registration.AutoUploadDispatcher,
+	preparationDeps registration.PreparationDependencies,
+) *registration.Executor {
+	return registration.NewExecutor(
+		logs,
+		runner,
+		registration.WithPreparationDependencies(preparationDeps),
+		registration.WithAccountPersistence(accountService),
+		registration.WithAutoUploadDispatcher(autoUploadDispatcher),
+	)
+}
+
+func newRegistrationPreparationDependencies(pool *pgxpool.Pool) registration.PreparationDependencies {
+	availableServicesRepo := registration.NewAvailableServicesPostgresRepository(pool)
+	return registration.PreparationDependencies{
+		Settings:      availableServicesRepo,
+		EmailServices: availableServicesRepo,
+		Outlook:       registration.NewOutlookPostgresRepository(pool),
+	}
+}
+
+func newWorkerRegistrationRunner() (registration.Runner, error) {
+	return registration.NewNativeRunner(nativerunner.NewDefault(nativerunner.DefaultOptions{})), nil
+}
+
+func newWorkerExecutor(registrationExecutor jobs.Executor) jobs.Executor {
+	return jobs.ExecutorFunc(func(ctx context.Context, job jobs.Job) (map[string]any, error) {
+		if registrationExecutor == nil {
+			return nil, fmt.Errorf("registration executor is required")
+		}
+		if job.JobType != registration.JobTypeSingle {
+			return nil, fmt.Errorf("unsupported worker job type: %s", job.JobType)
+		}
+		return registrationExecutor.Execute(ctx, job)
+	})
 }
 
 func closeWorker(deps workerDependencies) {

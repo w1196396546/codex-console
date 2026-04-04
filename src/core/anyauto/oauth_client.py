@@ -2,6 +2,7 @@
 OAuth 客户端模块 - 处理 Codex OAuth 登录流程
 """
 
+import random
 import time
 import secrets
 from urllib.parse import urlparse, parse_qs
@@ -20,7 +21,6 @@ from .utils import (
     generate_datadog_trace,
     generate_pkce,
     normalize_flow_url,
-    random_delay,
     seed_oai_device_cookie,
 )
 from .sentinel_token import build_sentinel_token
@@ -41,7 +41,7 @@ class OAuthClient:
             return f"https:{raw}".rstrip("/")
         return raw.rstrip("/")
     
-    def __init__(self, config, proxy=None, verbose=True, browser_mode="protocol"):
+    def __init__(self, config, proxy=None, verbose=True, browser_mode="protocol", check_cancelled=None):
         """
         初始化 OAuth 客户端
         
@@ -60,6 +60,7 @@ class OAuthClient:
         self.proxy = proxy
         self.verbose = verbose
         self.browser_mode = browser_mode or "protocol"
+        self.check_cancelled = check_cancelled
         self.last_error = ""
         
         # 创建 session
@@ -108,6 +109,21 @@ class OAuthClient:
             response = getattr(direct_session, method_name)(url, **kwargs)
             self.session = direct_session
             return response
+
+    def _raise_if_cancelled(self):
+        if callable(self.check_cancelled) and self.check_cancelled():
+            raise RuntimeError("任务已取消，停止继续执行")
+
+    def _interruptible_sleep(self, seconds):
+        if not callable(self.check_cancelled):
+            time.sleep(max(0.0, float(seconds or 0.0)))
+            return
+        remaining = max(0.0, float(seconds or 0.0))
+        while remaining > 0:
+            self._raise_if_cancelled()
+            step = min(0.2, remaining)
+            time.sleep(step)
+            remaining -= step
     
     def _log(self, msg):
         """输出日志"""
@@ -121,8 +137,9 @@ class OAuthClient:
 
     def _browser_pause(self, low=0.15, high=0.4):
         """在 headed 模式下注入轻微延迟，模拟真实浏览器操作节奏。"""
+        self._raise_if_cancelled()
         if self.browser_mode == "headed":
-            random_delay(low, high)
+            self._interruptible_sleep(random.uniform(low, high))
 
     @staticmethod
     def _parse_retry_after_seconds(headers, default_seconds=5.0):
@@ -173,7 +190,7 @@ class OAuthClient:
                 f"{request_label} 命中限流 429（第 {attempt + 1}/{max_attempts} 次），"
                 f"{wait_seconds:.1f}s 后重试..."
             )
-            time.sleep(wait_seconds)
+            self._interruptible_sleep(wait_seconds)
 
         return response
 
@@ -1088,7 +1105,7 @@ class OAuthClient:
 
             if attempt < max_retries - 1:
                 self._log(f"无法获取 consent session 数据 (尝试 {attempt + 1}/{max_retries})")
-                time.sleep(0.3)
+                self._interruptible_sleep(0.3)
             else:
                 self._set_error("无法获取 consent session 数据")
                 return None, None
@@ -1727,7 +1744,7 @@ class OAuthClient:
                 if not candidate_codes:
                     elapsed = int(60 - max(0, otp_deadline - time.time()))
                     self._log(f"等待新的 OTP... ({elapsed}s/60s)")
-                    time.sleep(2)
+                    self._interruptible_sleep(2)
                     continue
 
                 for otp_code in candidate_codes:
@@ -1735,7 +1752,7 @@ class OAuthClient:
                     if next_state:
                         return next_state
 
-                time.sleep(2)
+                self._interruptible_sleep(2)
                 if self.last_error:
                     break
 

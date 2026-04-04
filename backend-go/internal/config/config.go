@@ -15,6 +15,7 @@ type Config struct {
 	DatabaseURL       string
 	PostgresMinConns  int32
 	PostgresMaxConns  int32
+	WorkerConcurrency int
 	RedisAddr         string
 	RedisDB           int
 	RedisPass         string
@@ -61,6 +62,12 @@ func LoadFromEnv(env map[string]string) (Config, error) {
 	}
 	cfg.PostgresMaxConns = postgresMaxConns
 
+	workerConcurrency, err := parseInt(env["WORKER_CONCURRENCY"], 50, "WORKER_CONCURRENCY", 1)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.WorkerConcurrency = workerConcurrency
+
 	redisDialTimeout, err := parseDuration(env["REDIS_DIAL_TIMEOUT"], 5*time.Second, "REDIS_DIAL_TIMEOUT")
 	if err != nil {
 		return Config{}, err
@@ -89,6 +96,7 @@ func currentEnv() map[string]string {
 		"DATABASE_URL",
 		"POSTGRES_MIN_CONNS",
 		"POSTGRES_MAX_CONNS",
+		"WORKER_CONCURRENCY",
 		"REDIS_ADDR",
 		"REDIS_PASSWORD",
 		"REDIS_DB",
@@ -145,6 +153,23 @@ func parseInt32(raw string, fallback int32, field string, minValue int32) (int32
 	}
 
 	return int32(parsed), nil
+}
+
+func parseInt(raw string, fallback int, field string, minValue int) (int, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return fallback, nil
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a valid integer", field)
+	}
+	if parsed < minValue {
+		return 0, fmt.Errorf("%s must be greater than or equal to %d", field, minValue)
+	}
+
+	return parsed, nil
 }
 
 func parseDuration(raw string, fallback time.Duration, field string) (time.Duration, error) {

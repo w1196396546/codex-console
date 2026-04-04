@@ -1,10 +1,13 @@
 import asyncio
+import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import BackgroundTasks
+from sqlalchemy.exc import OperationalError
 
+from src.database import crud as database_crud
 from src.database.models import Base, Account, EmailService
 from src.database.session import DatabaseSessionManager
 from src.web.routes import registration as registration_module
@@ -70,6 +73,20 @@ def test_registration_template_outlook_filter_contract_matches_frontend_helper()
     assert '<option value="registered_complete">注册已完成</option>' in template
     assert 'onclick="selectExecutableOutlookAccounts()"' in template
     assert 'id="outlook-skip-registered"' not in template
+
+
+def test_registration_template_exposes_pause_resume_button():
+    template = Path("templates/index.html").read_text(encoding="utf-8")
+
+    assert 'id="pause-btn"' in template
+    assert "暂停任务" in template
+
+
+def test_registration_frontend_status_map_supports_paused():
+    script = Path("static/js/app.js").read_text(encoding="utf-8")
+
+    assert "paused: { text: '已暂停'" in script
+    assert "function handlePauseResumeTask()" in script
 
 
 def test_start_outlook_batch_registration_allows_registered_complete_accounts(monkeypatch):
@@ -176,6 +193,42 @@ def test_cancel_task_marks_runtime_cancel_flag_and_cancelling_status(monkeypatch
     assert registration_module.task_manager.is_cancelled("task-cancel-route") is True
 
 
+def test_pause_and_resume_task_roundtrip_updates_status(monkeypatch):
+    manager = _build_manager("registration_routes_pause_resume_single.db")
+
+    with manager.session_scope() as session:
+        session.add(
+            registration_module.RegistrationTask(
+                task_uuid="task-pause-route",
+                status="running",
+                started_at=registration_module.datetime.utcnow(),
+            )
+        )
+
+    @contextmanager
+    def fake_get_db():
+        session = manager.SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    monkeypatch.setattr(registration_module, "get_db", fake_get_db)
+    registration_module.task_manager.cleanup_task("task-pause-route")
+
+    pause_response = asyncio.run(registration_module.pause_task("task-pause-route"))
+    resume_response = asyncio.run(registration_module.resume_task("task-pause-route"))
+
+    with manager.session_scope() as session:
+        task = registration_module.crud.get_registration_task(session, "task-pause-route")
+        task_status = task.status if task is not None else None
+
+    assert pause_response["success"] is True
+    assert resume_response["success"] is True
+    assert task_status == "running"
+    assert registration_module.task_manager.is_paused("task-pause-route") is False
+
+
 def test_cancel_batch_cascades_to_child_tasks():
     batch_id = "batch-cancel-cascade"
     child_task_ids = ["batch-child-1", "batch-child-2"]
@@ -203,6 +256,69 @@ def test_cancel_batch_cascades_to_child_tasks():
         registration_module.batch_tasks.pop(batch_id, None)
         registration_module.task_manager.cleanup_task("batch-child-1")
         registration_module.task_manager.cleanup_task("batch-child-2")
+
+
+def test_pause_and_resume_batch_cascade_to_child_tasks(monkeypatch):
+    manager = _build_manager("registration_routes_pause_resume_batch.db")
+
+    with manager.session_scope() as session:
+        session.add_all([
+            registration_module.RegistrationTask(
+                task_uuid="batch-pause-child-1",
+                status="running",
+                started_at=registration_module.datetime.utcnow(),
+            ),
+            registration_module.RegistrationTask(
+                task_uuid="batch-pause-child-2",
+                status="pending",
+            ),
+        ])
+
+    @contextmanager
+    def fake_get_db():
+        session = manager.SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    monkeypatch.setattr(registration_module, "get_db", fake_get_db)
+    batch_id = "batch-pause-route"
+    registration_module.batch_tasks[batch_id] = {
+        "total": 2,
+        "completed": 0,
+        "success": 0,
+        "failed": 0,
+        "cancelled": False,
+        "paused": False,
+        "task_uuids": ["batch-pause-child-1", "batch-pause-child-2"],
+        "current_index": 0,
+        "logs": [],
+        "finished": False,
+    }
+    registration_module.task_manager.bind_batch_tasks(batch_id, ["batch-pause-child-1", "batch-pause-child-2"])
+
+    try:
+        pause_response = asyncio.run(registration_module.pause_batch(batch_id))
+        resume_response = asyncio.run(registration_module.resume_batch(batch_id))
+
+        with manager.session_scope() as session:
+            child1 = registration_module.crud.get_registration_task(session, "batch-pause-child-1")
+            child2 = registration_module.crud.get_registration_task(session, "batch-pause-child-2")
+            child1_status = child1.status if child1 is not None else None
+            child2_status = child2.status if child2 is not None else None
+
+        assert pause_response["success"] is True
+        assert resume_response["success"] is True
+        assert child1_status == "running"
+        assert child2_status == "pending"
+        assert registration_module.batch_tasks[batch_id]["paused"] is False
+        assert registration_module.task_manager.is_paused("batch-pause-child-1") is False
+        assert registration_module.task_manager.is_paused("batch-pause-child-2") is False
+    finally:
+        registration_module.batch_tasks.pop(batch_id, None)
+        registration_module.task_manager.cleanup_task("batch-pause-child-1")
+        registration_module.task_manager.cleanup_task("batch-pause-child-2")
 
 
 def test_get_task_logs_prefers_runtime_log_queue(monkeypatch):
@@ -234,3 +350,256 @@ def test_get_task_logs_prefers_runtime_log_queue(monkeypatch):
         registration_module.task_manager.cleanup_task("task-runtime-log")
 
     assert payload["logs"] == ["live-log-1"]
+
+
+def test_get_task_logs_supports_incremental_offset(monkeypatch):
+    manager = _build_manager("registration_routes_incremental_task_logs.db")
+
+    with manager.session_scope() as session:
+        session.add(
+            registration_module.RegistrationTask(
+                task_uuid="task-incremental-log",
+                status="running",
+                logs="persisted-log-0\npersisted-log-1\npersisted-log-2",
+            )
+        )
+
+    @contextmanager
+    def fake_get_db():
+        session = manager.SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    monkeypatch.setattr(registration_module, "get_db", fake_get_db)
+
+    payload = asyncio.run(
+        registration_module.get_task_logs("task-incremental-log", offset=2)
+    )
+
+    assert payload["logs"] == ["persisted-log-2"]
+    assert payload["log_offset"] == 2
+    assert payload["log_next_offset"] == 3
+
+
+def test_get_batch_status_prefers_runtime_batch_logs():
+    batch_id = "batch-runtime-logs"
+    registration_module.batch_tasks[batch_id] = {
+        "total": 2,
+        "completed": 1,
+        "success": 1,
+        "failed": 0,
+        "cancelled": False,
+        "task_uuids": ["task-a", "task-b"],
+        "current_index": 1,
+        "logs": [],
+        "finished": False,
+    }
+    registration_module.task_manager.init_batch(batch_id, 2)
+    registration_module.task_manager.add_batch_log(batch_id, "[任务1] live-batch-log")
+
+    try:
+        payload = asyncio.run(registration_module.get_batch_status(batch_id))
+    finally:
+        registration_module.batch_tasks.pop(batch_id, None)
+
+    assert payload["logs"] == ["[任务1] live-batch-log"]
+
+
+def test_get_batch_status_supports_incremental_offset_after_runtime_window_rotates():
+    batch_id = "batch-runtime-window-rotates"
+    registration_module.batch_tasks[batch_id] = {
+        "total": 1205,
+        "completed": 1000,
+        "success": 1000,
+        "failed": 0,
+        "cancelled": False,
+        "task_uuids": [],
+        "current_index": 1000,
+        "logs": [],
+        "finished": False,
+    }
+    registration_module.task_manager.init_batch(batch_id, 1205)
+
+    try:
+        for index in range(1205):
+            registration_module.task_manager.add_batch_log(batch_id, f"log-{index}")
+
+        payload = asyncio.run(
+            registration_module.get_batch_status(batch_id, log_offset=1000)
+        )
+    finally:
+        registration_module.batch_tasks.pop(batch_id, None)
+        from src.web.task_manager import _batch_logs, _batch_log_start_index  # type: ignore
+        _batch_logs.pop(batch_id, None)
+        _batch_log_start_index.pop(batch_id, None)
+
+    assert payload["log_base_index"] == 205
+    assert payload["log_next_offset"] == 1205
+    assert payload["logs"][0] == "log-1000"
+    assert payload["logs"][-1] == "log-1204"
+
+
+def test_get_outlook_batch_status_prefers_runtime_batch_logs():
+    batch_id = "outlook-batch-runtime-logs"
+    registration_module.batch_tasks[batch_id] = {
+        "total": 2,
+        "completed": 1,
+        "success": 1,
+        "failed": 0,
+        "skipped": 0,
+        "current_index": 1,
+        "cancelled": False,
+        "finished": False,
+        "logs": ["persisted-summary-log"],
+    }
+
+    registration_module.task_manager.add_batch_log(batch_id, "[任务1] 实时日志")
+
+    try:
+        payload = asyncio.run(registration_module.get_outlook_batch_status(batch_id))
+    finally:
+        registration_module.batch_tasks.pop(batch_id, None)
+
+    assert payload["logs"] == ["[任务1] 实时日志"]
+
+
+def test_run_batch_parallel_emits_start_logs_for_each_task(monkeypatch):
+    batch_id = "batch-parallel-start-logs"
+    task_uuids = ["task-a", "task-b"]
+
+    async def fake_run_registration_task(*args, **kwargs):
+        return None
+
+    @contextmanager
+    def fake_get_db():
+        yield None
+
+    monkeypatch.setattr(registration_module, "run_registration_task", fake_run_registration_task)
+    monkeypatch.setattr(registration_module, "get_db", fake_get_db)
+    monkeypatch.setattr(
+        registration_module.crud,
+        "get_registration_task",
+        lambda db, uuid: SimpleNamespace(status="completed", error_message=None),
+    )
+
+    try:
+        asyncio.run(
+            registration_module.run_batch_parallel(
+                batch_id,
+                task_uuids,
+                "tempmail",
+                None,
+                None,
+                None,
+                concurrency=2,
+            )
+        )
+        logs = registration_module.batch_tasks[batch_id]["logs"]
+    finally:
+        registration_module.batch_tasks.pop(batch_id, None)
+        from src.web.task_manager import _batch_logs, _batch_status  # type: ignore
+
+        _batch_logs.pop(batch_id, None)
+        _batch_status.pop(batch_id, None)
+
+    assert "[任务1] 开始注册..." in logs
+    assert "[任务2] 开始注册..." in logs
+
+
+def test_update_registration_task_retries_transient_sqlite_lock(monkeypatch):
+    task = SimpleNamespace(status="pending", proxy=None)
+
+    class FakeBind:
+        dialect = SimpleNamespace(name="sqlite")
+
+    class FakeSession:
+        def __init__(self):
+            self.bind = FakeBind()
+            self.commit_calls = 0
+            self.rollback_calls = 0
+            self.refresh_calls = 0
+
+        def commit(self):
+            self.commit_calls += 1
+            if self.commit_calls == 1:
+                raise OperationalError(
+                    "UPDATE registration_tasks SET proxy=? WHERE registration_tasks.id = ?",
+                    {"proxy": "http://retry-proxy"},
+                    sqlite3.OperationalError("database is locked"),
+                )
+
+        def rollback(self):
+            self.rollback_calls += 1
+
+        def refresh(self, _task):
+            self.refresh_calls += 1
+
+    fake_db = FakeSession()
+
+    monkeypatch.setattr(
+        database_crud,
+        "get_registration_task_by_uuid",
+        lambda db, task_uuid: task if task_uuid == "task-retry-lock" else None,
+    )
+    monkeypatch.setattr(database_crud.time, "sleep", lambda seconds: None)
+
+    updated = database_crud.update_registration_task(
+        fake_db,
+        "task-retry-lock",
+        status="running",
+        proxy="http://retry-proxy",
+    )
+
+    assert updated is task
+    assert task.status == "running"
+    assert task.proxy == "http://retry-proxy"
+    assert fake_db.commit_calls == 2
+    assert fake_db.rollback_calls == 1
+    assert fake_db.refresh_calls == 1
+
+
+def test_safe_update_registration_task_skips_transient_sqlite_lock(monkeypatch):
+    manager = _build_manager("registration_routes_safe_update_locked.db")
+
+    with manager.session_scope() as session:
+        session.add(
+            registration_module.RegistrationTask(
+                task_uuid="task-safe-update-lock",
+                status="running",
+            )
+        )
+
+    @contextmanager
+    def fake_get_db():
+        session = manager.SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    monkeypatch.setattr(registration_module, "get_db", fake_get_db)
+
+    original_update = registration_module.crud.update_registration_task
+
+    def flaky_update(db, task_uuid, **kwargs):
+        if kwargs.get("proxy") == "http://proxy.test":
+            raise OperationalError(
+                "UPDATE registration_tasks SET proxy=? WHERE registration_tasks.id = ?",
+                {"proxy": "http://proxy.test"},
+                sqlite3.OperationalError("database is locked"),
+            )
+        return original_update(db, task_uuid, **kwargs)
+
+    monkeypatch.setattr(registration_module.crud, "update_registration_task", flaky_update)
+
+    with fake_get_db() as db:
+        result = registration_module._safe_update_registration_task(
+            db,
+            "task-safe-update-lock",
+            context="测试 proxy 写入",
+            proxy="http://proxy.test",
+        )
+
+    assert result is None

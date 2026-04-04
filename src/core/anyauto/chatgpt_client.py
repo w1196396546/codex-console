@@ -67,7 +67,7 @@ class ChatGPTClient:
     BASE = "https://chatgpt.com"
     AUTH = "https://auth.openai.com"
     
-    def __init__(self, proxy=None, verbose=True, browser_mode="protocol"):
+    def __init__(self, proxy=None, verbose=True, browser_mode="protocol", check_cancelled=None):
         """
         初始化 ChatGPT 客户端
         
@@ -79,6 +79,7 @@ class ChatGPTClient:
         self.proxy = proxy
         self.verbose = verbose
         self.browser_mode = browser_mode or "protocol"
+        self.check_cancelled = check_cancelled
         self.device_id = str(uuid.uuid4())
         self.accept_language = random.choice([
             "en-US,en;q=0.9",
@@ -119,7 +120,22 @@ class ChatGPTClient:
         self.last_create_account_account_id = ""
         self.last_create_account_workspace_id = ""
         self.last_existing_account_detected = False
-    
+
+    def _raise_if_cancelled(self):
+        if callable(self.check_cancelled) and self.check_cancelled():
+            raise RuntimeError("任务已取消，停止继续执行")
+
+    def _interruptible_sleep(self, seconds):
+        if not callable(self.check_cancelled):
+            time.sleep(max(0.0, float(seconds or 0.0)))
+            return
+        remaining = max(0.0, float(seconds or 0.0))
+        while remaining > 0:
+            self._raise_if_cancelled()
+            step = min(0.2, remaining)
+            time.sleep(step)
+            remaining -= step
+
     def _log(self, msg):
         """输出日志"""
         if self.verbose:
@@ -127,8 +143,9 @@ class ChatGPTClient:
 
     def _browser_pause(self, low=0.15, high=0.45):
         """在 headed 模式下加入轻微停顿，模拟有头浏览器节奏。"""
+        self._raise_if_cancelled()
         if self.browser_mode == "headed":
-            random_delay(low, high)
+            self._interruptible_sleep(random.uniform(low, high))
 
     def _headers(
         self,
@@ -520,7 +537,7 @@ class ChatGPTClient:
             try:
                 if attempt > 0:
                     self._log(f"访问 authorize URL... (尝试 {attempt + 1}/{max_retries})")
-                    time.sleep(1)  # 重试前等待
+                    self._interruptible_sleep(1)  # 重试前等待
                     if preserve_session_for_retry:
                         self._log("保留当前 session 重试 authorize，以复用刚回灌的 auth Cloudflare cookies")
                         preserve_session_for_retry = False

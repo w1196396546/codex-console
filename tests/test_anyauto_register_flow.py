@@ -1,8 +1,12 @@
 from contextlib import contextmanager
 from types import SimpleNamespace
+import threading
+import time
+
+import pytest
 
 import src.core.anyauto.register_flow as register_flow_module
-from src.core.anyauto.register_flow import AnyAutoRegistrationEngine
+from src.core.anyauto.register_flow import AnyAutoRegistrationEngine, EmailServiceAdapter
 
 
 class DummyEmailService:
@@ -26,10 +30,11 @@ class FakeChatGPTClient:
     create_account_callback_url = ""
     create_account_continue_url = ""
 
-    def __init__(self, proxy=None, verbose=True, browser_mode="protocol"):
+    def __init__(self, proxy=None, verbose=True, browser_mode="protocol", check_cancelled=None):
         self.proxy = proxy
         self.verbose = verbose
         self.browser_mode = browser_mode
+        self.check_cancelled = check_cancelled
         self.device_id = "device-1"
         self.ua = "ua"
         self.sec_ch_ua = "sec"
@@ -66,11 +71,12 @@ class FakeOAuthClient:
     last_login_email = None
     last_login_password = None
 
-    def __init__(self, config, proxy=None, verbose=True, browser_mode="protocol"):
+    def __init__(self, config, proxy=None, verbose=True, browser_mode="protocol", check_cancelled=None):
         self.config = config
         self.proxy = proxy
         self.verbose = verbose
         self.browser_mode = browser_mode
+        self.check_cancelled = check_cancelled
         self.session = SimpleNamespace(cookies=SimpleNamespace(jar=[]))
         self.last_error = ""
 
@@ -131,6 +137,8 @@ def _build_engine(monkeypatch, *, reset_global_window=True):
     monkeypatch.setattr("src.core.anyauto.register_flow.OAuthClient", FakeOAuthClient)
     AnyAutoRegistrationEngine._refresh_token_slots = set()
     AnyAutoRegistrationEngine._refresh_token_cooldowns = {}
+    AnyAutoRegistrationEngine._refresh_token_global_inflight = 0
+    AnyAutoRegistrationEngine._refresh_token_global_spacing_seconds = 0.0
     if reset_global_window:
         AnyAutoRegistrationEngine._refresh_token_global_next_allowed_at = 0.0
     return AnyAutoRegistrationEngine(email_service=DummyEmailService(), callback_logger=lambda _msg: None)
@@ -164,6 +172,30 @@ def _patch_saved_account_with_metadata(monkeypatch, password, extra_data):
         SimpleNamespace(get_account_by_email=lambda db, email: account),
         raising=False,
     )
+
+
+def test_email_service_adapter_wait_for_verification_code_honors_cancellation_between_poll_slices():
+    calls = []
+    cancelled = {"value": False}
+
+    class SlowEmailService:
+        def get_verification_code(self, **kwargs):
+            calls.append(kwargs["timeout"])
+            cancelled["value"] = True
+            return None
+
+    adapter = EmailServiceAdapter(
+        SlowEmailService(),
+        "tester@example.com",
+        "mailbox-1",
+        lambda _msg: None,
+        check_cancelled=lambda: cancelled["value"],
+    )
+
+    with pytest.raises(RuntimeError, match="任务已取消"):
+        adapter.wait_for_verification_code("tester@example.com", timeout=30)
+
+    assert calls == [5]
 
 
 def test_run_uses_create_account_refresh_token_before_oauth(monkeypatch):
@@ -597,3 +629,74 @@ def test_oauth_completion_retries_after_global_backoff_until_success(monkeypatch
     assert result["tokens"]["refresh_token"] == "refresh-after-backoff"
     assert 45.0 in sleeps
     assert FakeOAuthClient.call_count == 3
+
+
+def test_oauth_completion_allows_parallel_inflight_when_configured(monkeypatch):
+    AnyAutoRegistrationEngine._refresh_token_slots = set()
+    AnyAutoRegistrationEngine._refresh_token_cooldowns = {}
+    AnyAutoRegistrationEngine._refresh_token_global_next_allowed_at = 0.0
+
+    in_flight = {"count": 0, "max": 0}
+    counter_lock = threading.Lock()
+    first_entered = threading.Event()
+    release = threading.Event()
+
+    def fake_passwordless(self, chatgpt_client, email, skymail_adapter, oauth_config):
+        with counter_lock:
+            in_flight["count"] += 1
+            in_flight["max"] = max(in_flight["max"], in_flight["count"])
+            if in_flight["count"] == 1:
+                first_entered.set()
+        release.wait(timeout=0.5)
+        with counter_lock:
+            in_flight["count"] -= 1
+        return {
+            "access_token": f"access-{email}",
+            "refresh_token": f"refresh-{email}",
+        }
+
+    monkeypatch.setattr(
+        AnyAutoRegistrationEngine,
+        "_passwordless_oauth_reauth",
+        fake_passwordless,
+    )
+
+    engine1 = AnyAutoRegistrationEngine(
+        email_service=DummyEmailService(),
+        callback_logger=lambda _msg: None,
+        extra_config={"token_completion_concurrency": 2},
+    )
+    engine2 = AnyAutoRegistrationEngine(
+        email_service=DummyEmailService(),
+        callback_logger=lambda _msg: None,
+        extra_config={"token_completion_concurrency": 2},
+    )
+    chatgpt_client = FakeChatGPTClient()
+
+    results = []
+
+    def run(engine, email):
+        results.append(
+            engine._run_oauth_token_completion(
+                chatgpt_client,
+                email,
+                "",
+                DummyEmailService(),
+                {"oauth_client_id": "client-1"},
+                reason="并发补齐",
+            )
+        )
+
+    t1 = threading.Thread(target=run, args=(engine1, "first@example.com"))
+    t2 = threading.Thread(target=run, args=(engine2, "second@example.com"))
+
+    t1.start()
+    assert first_entered.wait(timeout=0.2), "first token completion did not start in time"
+    t2.start()
+    time.sleep(0.1)
+    release.set()
+    t1.join()
+    t2.join()
+
+    assert len(results) == 2
+    assert in_flight["max"] == 2

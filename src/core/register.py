@@ -108,6 +108,7 @@ class RegistrationEngine:
         callback_logger: Optional[Callable[[str], None]] = None,
         task_uuid: Optional[str] = None,
         check_cancelled: Optional[Callable[[], bool]] = None,
+        extra_config: Optional[Dict[str, Any]] = None,
     ):
         """
         初始化注册引擎
@@ -118,12 +119,14 @@ class RegistrationEngine:
             callback_logger: 日志回调函数
             task_uuid: 任务 UUID（用于数据库记录）
             check_cancelled: 取消检查回调
+            extra_config: 传给 any-auto 引擎的额外配置
         """
         self.email_service = email_service
         self.proxy_url = proxy_url
         self.callback_logger = callback_logger or (lambda msg: logger.info(msg))
         self.task_uuid = task_uuid
         self.check_cancelled = check_cancelled or (lambda: False)
+        self.extra_config = dict(extra_config or {})
 
         # 创建 HTTP 客户端
         self.http_client = OpenAIHTTPClient(proxy_url=proxy_url)
@@ -2961,7 +2964,7 @@ class RegistrationEngine:
                 check_cancelled=self._raise_if_cancelled,
                 max_retries=max_retries,
                 browser_mode="protocol",
-                extra_config=None,
+                extra_config=self.extra_config,
             )
 
             flow_result = flow_engine.run()

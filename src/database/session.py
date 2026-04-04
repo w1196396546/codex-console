@@ -5,6 +5,7 @@
 from contextlib import contextmanager
 from typing import Generator
 from sqlalchemy import create_engine, text
+from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import SQLAlchemyError
 import os
@@ -44,13 +45,35 @@ class DatabaseSessionManager:
                 database_url = f"sqlite:///{db_path}"
 
         self.database_url = _build_sqlalchemy_url(database_url)
+        connect_args = {}
+        if self.database_url.startswith("sqlite"):
+            connect_args = {
+                "check_same_thread": False,
+                "timeout": 30,
+            }
         self.engine = create_engine(
             self.database_url,
-            connect_args={"check_same_thread": False} if self.database_url.startswith("sqlite") else {},
+            connect_args=connect_args,
             echo=False,  # 设置为 True 可以查看所有 SQL 语句
             pool_pre_ping=True  # 连接池预检查
         )
+        if self.database_url.startswith("sqlite"):
+            self._configure_sqlite_pragmas()
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+
+    def _configure_sqlite_pragmas(self) -> None:
+        """为 SQLite 打开更适合并发场景的 pragma。"""
+
+        @event.listens_for(self.engine, "connect")
+        def _set_sqlite_pragmas(dbapi_connection, _connection_record):
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.execute("PRAGMA busy_timeout=30000")
+                cursor.execute("PRAGMA foreign_keys=ON")
+            finally:
+                cursor.close()
 
     def get_db(self) -> Generator[Session, None, None]:
         """

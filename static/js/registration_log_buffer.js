@@ -6,12 +6,40 @@
     root.RegistrationLogBuffer = api;
 })(typeof window !== 'undefined' ? window : globalThis, function () {
     function defaultScheduleFlush(flush) {
-        if (typeof requestAnimationFrame === 'function') {
-            const id = requestAnimationFrame(flush);
-            return () => cancelAnimationFrame(id);
+        let settled = false;
+        let rafId = null;
+        let timeoutId = null;
+
+        function run() {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            if (rafId !== null && typeof cancelAnimationFrame === 'function') {
+                cancelAnimationFrame(rafId);
+            }
+            if (timeoutId !== null) {
+                clearTimeout(timeoutId);
+            }
+            flush();
         }
-        const id = setTimeout(flush, 16);
-        return () => clearTimeout(id);
+
+        if (typeof requestAnimationFrame === 'function') {
+            rafId = requestAnimationFrame(run);
+        }
+        // 某些桌面容器/后台标签页里 requestAnimationFrame 可能被节流甚至不触发，
+        // 这里补一个超时兜底，避免日志一直卡在队列里不显示。
+        timeoutId = setTimeout(run, 32);
+
+        return () => {
+            settled = true;
+            if (rafId !== null && typeof cancelAnimationFrame === 'function') {
+                cancelAnimationFrame(rafId);
+            }
+            if (timeoutId !== null) {
+                clearTimeout(timeoutId);
+            }
+        };
     }
 
     function createBufferedLogPump(options) {

@@ -5,12 +5,14 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 import traceback
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from sqlalchemy import func
+from sqlalchemy.exc import OperationalError
 
 from ..config.settings import get_settings
 from ..database.models import AppLog
@@ -26,6 +28,13 @@ _SKIP_LOGGER_PREFIXES = (
     "watchfiles",
 )
 
+_HIGH_VOLUME_INFO_PREFIXES = (
+    "src.web.routes.registration",
+    "src.web.task_manager",
+    "src.core.register",
+    "src.core.anyauto",
+)
+
 
 def _should_skip_record(record: logging.LogRecord) -> bool:
     logger_name = str(record.name or "")
@@ -34,7 +43,17 @@ def _should_skip_record(record: logging.LogRecord) -> bool:
     for prefix in _SKIP_LOGGER_PREFIXES:
         if logger_name.startswith(prefix):
             return True
+    if record.levelno <= logging.INFO:
+        for prefix in _HIGH_VOLUME_INFO_PREFIXES:
+            if logger_name.startswith(prefix):
+                return True
     return False
+
+
+def _is_sqlite_locked_error(exc: Exception) -> bool:
+    if isinstance(exc, sqlite3.OperationalError):
+        return "database is locked" in str(exc or "").lower()
+    return "database is locked" in str(exc or "").lower()
 
 
 class DatabaseLogHandler(logging.Handler):
@@ -79,7 +98,13 @@ class DatabaseLogHandler(logging.Handler):
                     )
                 )
                 db.commit()
-        except Exception:
+        except OperationalError as exc:
+            if _is_sqlite_locked_error(exc):
+                return
+            self.handleError(record)
+        except Exception as exc:
+            if _is_sqlite_locked_error(exc):
+                return
             self.handleError(record)
         finally:
             self._local.busy = False
@@ -161,4 +186,3 @@ def cleanup_database_logs(
         "deleted_total": int((deleted_by_age or 0) + (deleted_by_limit or 0)),
         "remaining": int(remaining or 0),
     }
-

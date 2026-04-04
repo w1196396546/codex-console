@@ -212,6 +212,13 @@ def test_sync_team_memberships_marks_team_failed_when_upstream_fetch_errors():
         session.close()
 
 
+def test_team_sync_module_avoids_datetime_utc_import_for_py310_compatibility():
+    source = Path("src/services/team/sync.py").read_text(encoding="utf-8")
+
+    assert "from datetime import UTC" not in source
+    assert "timezone.utc" in source
+
+
 def test_sync_team_memberships_marks_missing_existing_already_member_as_removed():
     session = _build_session("team_sync_active_counts.db")
     try:

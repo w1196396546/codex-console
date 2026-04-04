@@ -24,15 +24,25 @@ type taskService interface {
 	CancelJob(ctx context.Context, jobID string) (jobs.Job, error)
 }
 
-type Handler struct {
-	start startService
-	tasks taskService
+type batchService interface {
+	StartBatch(ctx context.Context, req registration.BatchStartRequest) (registration.BatchStartResponse, error)
+	GetBatch(ctx context.Context, batchID string, logOffset int) (registration.BatchStatusResponse, error)
+	PauseBatch(ctx context.Context, batchID string) (registration.BatchControlResponse, error)
+	ResumeBatch(ctx context.Context, batchID string) (registration.BatchControlResponse, error)
+	CancelBatch(ctx context.Context, batchID string) (registration.BatchControlResponse, error)
 }
 
-func NewHandler(start startService, tasks taskService) *Handler {
+type Handler struct {
+	start   startService
+	tasks   taskService
+	batches batchService
+}
+
+func NewHandler(start startService, tasks taskService, batches batchService) *Handler {
 	return &Handler{
-		start: start,
-		tasks: tasks,
+		start:   start,
+		tasks:   tasks,
+		batches: batches,
 	}
 }
 
@@ -40,6 +50,13 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Route("/api/registration", func(r chi.Router) {
 		r.Get("/available-services", h.GetAvailableServices)
 		r.Post("/start", h.StartRegistration)
+		if h.batches != nil {
+			r.Post("/batch", h.StartBatch)
+			r.Get("/batch/{batchID}", h.GetBatch)
+			r.Post("/batch/{batchID}/pause", h.PauseBatch)
+			r.Post("/batch/{batchID}/resume", h.ResumeBatch)
+			r.Post("/batch/{batchID}/cancel", h.CancelBatch)
+		}
 		r.Get("/tasks/{taskUUID}", h.GetTask)
 		r.Get("/tasks/{taskUUID}/logs", h.GetTaskLogs)
 		r.Post("/tasks/{taskUUID}/pause", h.PauseTask)
@@ -109,6 +126,42 @@ func (h *Handler) StartRegistration(w nethttp.ResponseWriter, r *nethttp.Request
 	}
 
 	writeJSON(w, nethttp.StatusAccepted, resp)
+}
+
+func (h *Handler) StartBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
+	var req registration.BatchStartRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		nethttp.Error(w, "invalid json", nethttp.StatusBadRequest)
+		return
+	}
+
+	resp, err := h.batches.StartBatch(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, nethttp.StatusAccepted, resp)
+}
+
+func (h *Handler) GetBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
+	logOffset := 0
+	if rawOffset := r.URL.Query().Get("log_offset"); rawOffset != "" {
+		parsedOffset, err := strconv.Atoi(rawOffset)
+		if err != nil || parsedOffset < 0 {
+			nethttp.Error(w, "invalid log_offset", nethttp.StatusBadRequest)
+			return
+		}
+		logOffset = parsedOffset
+	}
+
+	resp, err := h.batches.GetBatch(r.Context(), chi.URLParam(r, "batchID"), logOffset)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, nethttp.StatusOK, resp)
 }
 
 func (h *Handler) GetTask(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -181,6 +234,18 @@ func (h *Handler) CancelTask(w nethttp.ResponseWriter, r *nethttp.Request) {
 	h.writeTaskStatusUpdate(w, r, h.tasks.CancelJob)
 }
 
+func (h *Handler) PauseBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
+	h.writeBatchStatusUpdate(w, r, h.batches.PauseBatch)
+}
+
+func (h *Handler) ResumeBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
+	h.writeBatchStatusUpdate(w, r, h.batches.ResumeBatch)
+}
+
+func (h *Handler) CancelBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
+	h.writeBatchStatusUpdate(w, r, h.batches.CancelBatch)
+}
+
 func (h *Handler) writeTaskStatusUpdate(
 	w nethttp.ResponseWriter,
 	r *nethttp.Request,
@@ -198,10 +263,34 @@ func (h *Handler) writeTaskStatusUpdate(
 	})
 }
 
+func (h *Handler) writeBatchStatusUpdate(
+	w nethttp.ResponseWriter,
+	r *nethttp.Request,
+	update func(ctx context.Context, batchID string) (registration.BatchControlResponse, error),
+) {
+	resp, err := update(r.Context(), chi.URLParam(r, "batchID"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, nethttp.StatusOK, resp)
+}
+
 func writeServiceError(w nethttp.ResponseWriter, err error) {
 	status := nethttp.StatusInternalServerError
 	if errors.Is(err, jobs.ErrJobNotFound) {
 		status = nethttp.StatusNotFound
+	} else if errors.Is(err, registration.ErrBatchNotFound) {
+		status = nethttp.StatusNotFound
+	} else if errors.Is(err, registration.ErrInvalidBatchCount) {
+		status = nethttp.StatusBadRequest
+	} else if errors.Is(err, registration.ErrBatchAlreadyPaused) {
+		status = nethttp.StatusBadRequest
+	} else if errors.Is(err, registration.ErrBatchNotPaused) {
+		status = nethttp.StatusBadRequest
+	} else if errors.Is(err, registration.ErrBatchFinished) {
+		status = nethttp.StatusBadRequest
 	} else if errors.Is(err, jobs.ErrControlNotSupported) {
 		status = nethttp.StatusNotImplemented
 	}

@@ -189,6 +189,99 @@ func TestRegistrationWebSocketCompatibility(t *testing.T) {
 	}
 }
 
+func TestRegistrationBatchCompatibilityFlow(t *testing.T) {
+	repo := jobs.NewInMemoryRepository()
+	queue := &capturingQueue{}
+	jobService := jobs.NewService(repo, queue)
+	registrationService := registration.NewService(jobService)
+	server := httptest.NewServer(internalhttp.NewRouter(jobService, registrationService))
+	defer server.Close()
+
+	startResp := startRegistrationBatchThroughCompatAPI(t, server.URL, 2)
+	batchID, ok := startResp["batch_id"].(string)
+	if !ok || batchID == "" {
+		t.Fatalf("expected batch_id, got %#v", startResp["batch_id"])
+	}
+	if startResp["count"] != float64(2) {
+		t.Fatalf("expected count=2, got %#v", startResp["count"])
+	}
+	if len(queue.tasks) != 2 {
+		t.Fatalf("expected 2 queued tasks, got %d", len(queue.tasks))
+	}
+
+	initial := getRegistrationBatchThroughCompatAPI(t, server.URL, batchID, 0)
+	assertRegistrationBatchCompatFields(t, initial, batchID, "running", 2, 0, 0, 0, false, false, false, 0, 0)
+	initialLogs, ok := initial["logs"].([]any)
+	if !ok {
+		t.Fatalf("expected initial batch logs array, got %#v", initial["logs"])
+	}
+	if len(initialLogs) != 0 {
+		t.Fatalf("expected no initial batch logs, got %#v", initialLogs)
+	}
+
+	pauseResp := controlRegistrationBatchThroughCompatAPI(t, server.URL, batchID, "pause")
+	if pauseResp["status"] != jobs.StatusPaused {
+		t.Fatalf("expected pause status paused, got %#v", pauseResp["status"])
+	}
+
+	paused := getRegistrationBatchThroughCompatAPI(t, server.URL, batchID, 0)
+	assertRegistrationBatchCompatFields(t, paused, batchID, jobs.StatusPaused, 2, 0, 0, 0, true, false, false, 0, 0)
+
+	resumeResp := controlRegistrationBatchThroughCompatAPI(t, server.URL, batchID, "resume")
+	if resumeResp["status"] != jobs.StatusRunning {
+		t.Fatalf("expected resume status running, got %#v", resumeResp["status"])
+	}
+
+	worker := jobs.NewWorker(jobService)
+	for _, task := range queue.tasks {
+		if err := worker.HandleTask(context.Background(), task); err != nil {
+			t.Fatalf("unexpected batch worker error: %v", err)
+		}
+	}
+
+	completed := getRegistrationBatchThroughCompatAPI(t, server.URL, batchID, 0)
+	logItems, ok := completed["logs"].([]any)
+	if !ok {
+		t.Fatalf("expected completed batch logs array, got %#v", completed["logs"])
+	}
+	if len(logItems) == 0 {
+		t.Fatalf("expected completed batch logs, got %#v", logItems)
+	}
+	for _, item := range logItems {
+		if _, ok := item.(string); !ok {
+			t.Fatalf("expected batch log item string, got %#v", item)
+		}
+	}
+	nextOffset, ok := completed["log_next_offset"].(float64)
+	if !ok {
+		t.Fatalf("expected numeric log_next_offset, got %#v", completed["log_next_offset"])
+	}
+	assertRegistrationBatchCompatFields(t, completed, batchID, jobs.StatusCompleted, 2, 2, 2, 0, false, false, true, 0, nextOffset)
+
+	clamped := getRegistrationBatchThroughCompatAPI(t, server.URL, batchID, 999)
+	assertRegistrationBatchCompatFields(t, clamped, batchID, jobs.StatusCompleted, 2, 2, 2, 0, false, false, true, nextOffset, nextOffset)
+	clampedLogs, ok := clamped["logs"].([]any)
+	if !ok {
+		t.Fatalf("expected clamped batch logs array, got %#v", clamped["logs"])
+	}
+	if len(clampedLogs) != 0 {
+		t.Fatalf("expected no clamped batch logs, got %#v", clampedLogs)
+	}
+
+	cancelStart := startRegistrationBatchThroughCompatAPI(t, server.URL, 1)
+	cancelBatchID, ok := cancelStart["batch_id"].(string)
+	if !ok || cancelBatchID == "" {
+		t.Fatalf("expected cancel batch_id, got %#v", cancelStart["batch_id"])
+	}
+	cancelResp := controlRegistrationBatchThroughCompatAPI(t, server.URL, cancelBatchID, "cancel")
+	if success, ok := cancelResp["success"].(bool); !ok || !success {
+		t.Fatalf("expected cancel success=true, got %#v", cancelResp["success"])
+	}
+
+	cancelled := getRegistrationBatchThroughCompatAPI(t, server.URL, cancelBatchID, 0)
+	assertRegistrationBatchCompatFields(t, cancelled, cancelBatchID, jobs.StatusCancelled, 1, 1, 0, 0, false, true, true, 0, 0)
+}
+
 func assertRegistrationCompatAvailableServices(t *testing.T, payload map[string]any) {
 	t.Helper()
 
@@ -271,6 +364,61 @@ func assertRegistrationCompatLogFields(
 				t.Fatalf("expected log item to be string, got %#v", item)
 			}
 		}
+	}
+	if payload["log_offset"] != offset {
+		t.Fatalf("expected log_offset=%v, got %#v", offset, payload["log_offset"])
+	}
+	if payload["log_next_offset"] != nextOffset {
+		t.Fatalf("expected log_next_offset=%v, got %#v", nextOffset, payload["log_next_offset"])
+	}
+}
+
+func assertRegistrationBatchCompatFields(
+	t *testing.T,
+	payload map[string]any,
+	batchID string,
+	status string,
+	total float64,
+	completed float64,
+	success float64,
+	failed float64,
+	paused bool,
+	cancelled bool,
+	finished bool,
+	offset float64,
+	nextOffset float64,
+) {
+	t.Helper()
+
+	if payload["batch_id"] != batchID {
+		t.Fatalf("expected batch_id %q, got %#v", batchID, payload["batch_id"])
+	}
+	if payload["status"] != status {
+		t.Fatalf("expected batch status %q, got %#v", status, payload["status"])
+	}
+	if payload["total"] != total {
+		t.Fatalf("expected total=%v, got %#v", total, payload["total"])
+	}
+	if payload["completed"] != completed {
+		t.Fatalf("expected completed=%v, got %#v", completed, payload["completed"])
+	}
+	if payload["success"] != success {
+		t.Fatalf("expected success=%v, got %#v", success, payload["success"])
+	}
+	if payload["failed"] != failed {
+		t.Fatalf("expected failed=%v, got %#v", failed, payload["failed"])
+	}
+	if payload["paused"] != paused {
+		t.Fatalf("expected paused=%v, got %#v", paused, payload["paused"])
+	}
+	if payload["cancelled"] != cancelled {
+		t.Fatalf("expected cancelled=%v, got %#v", cancelled, payload["cancelled"])
+	}
+	if payload["finished"] != finished {
+		t.Fatalf("expected finished=%v, got %#v", finished, payload["finished"])
+	}
+	if payload["progress"] != strconv.Itoa(int(completed))+"/"+strconv.Itoa(int(total)) {
+		t.Fatalf("expected progress=%d/%d, got %#v", int(completed), int(total), payload["progress"])
 	}
 	if payload["log_offset"] != offset {
 		t.Fatalf("expected log_offset=%v, got %#v", offset, payload["log_offset"])
@@ -372,6 +520,27 @@ func startRegistrationThroughCompatAPI(t *testing.T, baseURL string) string {
 	return taskUUID
 }
 
+func startRegistrationBatchThroughCompatAPI(t *testing.T, baseURL string, count int) map[string]any {
+	t.Helper()
+
+	body := []byte(`{"count":` + strconv.Itoa(count) + `,"email_service_type":"tempmail"}`)
+	resp, err := http.Post(baseURL+"/api/registration/batch", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("start batch request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected batch start 202, got %d", resp.StatusCode)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode batch start response: %v", err)
+	}
+	return payload
+}
+
 func getRegistrationTaskThroughCompatAPI(t *testing.T, baseURL string, taskUUID string) map[string]any {
 	t.Helper()
 
@@ -432,12 +601,59 @@ func getRegistrationLogsThroughCompatAPI(t *testing.T, baseURL string, taskUUID 
 	return payload
 }
 
+func getRegistrationBatchThroughCompatAPI(t *testing.T, baseURL string, batchID string, logOffset int) map[string]any {
+	t.Helper()
+
+	resp, err := http.Get(baseURL + "/api/registration/batch/" + batchID + "?log_offset=" + strconv.Itoa(logOffset))
+	if err != nil {
+		t.Fatalf("get registration batch request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected get registration batch 200, got %d", resp.StatusCode)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode registration batch response: %v", err)
+	}
+	return payload
+}
+
+func controlRegistrationBatchThroughCompatAPI(t *testing.T, baseURL string, batchID string, action string) map[string]any {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/registration/batch/"+batchID+"/"+action, nil)
+	if err != nil {
+		t.Fatalf("new batch %s request failed: %v", action, err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("batch %s request failed: %v", action, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected batch %s 200, got %d", action, resp.StatusCode)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode batch %s response: %v", action, err)
+	}
+	return payload
+}
+
 type capturingQueue struct {
-	task *asynq.Task
+	task  *asynq.Task
+	tasks []*asynq.Task
 }
 
 func (q *capturingQueue) Enqueue(_ context.Context, task *asynq.Task) error {
 	q.task = task
+	q.tasks = append(q.tasks, task)
 	return nil
 }
 

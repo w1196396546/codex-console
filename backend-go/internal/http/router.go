@@ -60,7 +60,11 @@ func newRouter(
 		r.Get("/api/ws/task/{task_uuid}", taskSocketHandler.HandleTaskSocket)
 	}
 	if registrationService != nil && jobService != nil {
-		registrationhttp.NewHandler(registrationService, jobService).RegisterRoutes(r)
+		registrationhttp.NewHandler(
+			registrationService,
+			jobService,
+			registration.NewBatchService(jobService),
+		).RegisterRoutes(r)
 	}
 	return r
 }

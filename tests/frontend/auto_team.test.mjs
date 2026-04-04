@@ -39,7 +39,7 @@ class FakeWebSocket {
 }
 
 function createStubElement() {
-  return {
+    return {
     value: '',
     textContent: '',
     innerHTML: '',
@@ -61,10 +61,10 @@ function createStubElement() {
       return null;
     },
     setAttribute() {},
-  };
+    };
 }
 
-function createBrowserLikeAutoTeamContext() {
+function createBrowserLikeAutoTeamContext({ search = '', fetchImpl, WebSocketImpl } = {}) {
   const selectorMap = new Map();
   const requiredSelectors = [
     '[data-role="owner-filter"]',
@@ -101,12 +101,17 @@ function createBrowserLikeAutoTeamContext() {
     console,
     Date,
     URLSearchParams,
-    fetch: async () => ({
+    fetch: fetchImpl || (async () => ({
       ok: true,
       json: async () => ({ items: [] }),
-    }),
+    })),
+    WebSocket: WebSocketImpl,
     setTimeout,
     clearTimeout,
+    location: {
+      origin: 'http://localhost',
+      search,
+    },
   };
   browserContext.globalThis = browserContext;
   browserContext.window = browserContext;
@@ -149,6 +154,49 @@ test('initPage 在浏览器上下文不会依赖 Node global', async () => {
   const { autoTeamPage, root } = createBrowserLikeAutoTeamContext();
 
   await autoTeamPage.initPage(root);
+});
+
+test('initPage 会在 owner_account_id 存在时自动触发 discovery', async () => {
+  const fetchCalls = [];
+  const sockets = [];
+  const { autoTeamPage, root } = createBrowserLikeAutoTeamContext({
+    search: '?owner_account_id=126',
+    fetchImpl: async (path, options = {}) => {
+      fetchCalls.push([path, options.method || 'GET']);
+      if (path === '/api/team/discovery/run') {
+        return {
+          ok: true,
+          json: async () => ({
+            task_uuid: 'task-owner-126',
+            task_type: 'discover_owner_teams',
+            status: 'pending',
+            owner_account_id: 126,
+            scope_type: 'owner',
+            scope_id: '126',
+            ws_channel: '/api/ws/task/task-owner-126',
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ items: [] }),
+      };
+    },
+    WebSocketImpl: class extends FakeWebSocket {
+      constructor(url) {
+        super(url);
+        sockets.push(url);
+      }
+    },
+  });
+
+  await autoTeamPage.initPage(root);
+
+  assert.deepEqual(fetchCalls, [
+    ['/api/team/teams?owner_account_id=126', 'GET'],
+    ['/api/team/discovery/run', 'POST'],
+  ]);
+  assert.deepEqual(sockets, ['ws://localhost/api/ws/task/task-owner-126']);
 });
 
 test('accepted task flow 会在 discover 与 sync-batch 成功后刷新 teams 列表', async () => {

@@ -6,6 +6,7 @@ import asyncio
 import logging
 import uuid
 import random
+import threading
 from datetime import datetime
 from typing import List, Optional, Dict, Tuple
 
@@ -27,6 +28,7 @@ router = APIRouter()
 running_tasks: dict = {}
 # 批量任务存储
 batch_tasks: Dict[str, dict] = {}
+_outlook_service_claim_lock = threading.Lock()
 
 
 # ============== Proxy Helper Functions ==============
@@ -61,6 +63,61 @@ def update_proxy_usage(db, proxy_id: Optional[int]):
     """更新代理的使用时间"""
     if proxy_id:
         crud.update_proxy_last_used(db, proxy_id)
+
+
+def _reserve_available_outlook_service(db, task_uuid: str):
+    """为任务预留一个尚未注册且未被其他执行中任务占用的 Outlook 账户。"""
+    from ...database.models import EmailService as EmailServiceModel, Account
+
+    with _outlook_service_claim_lock:
+        task = crud.get_registration_task_by_uuid(db, task_uuid)
+        if task is None:
+            raise ValueError(f"任务不存在: {task_uuid}")
+
+        if task.email_service_id:
+            db_service = db.query(EmailServiceModel).filter(
+                EmailServiceModel.id == task.email_service_id,
+                EmailServiceModel.enabled == True,
+            ).first()
+            if db_service:
+                return db_service
+
+        claimed_rows = db.query(RegistrationTask.email_service_id).filter(
+            RegistrationTask.email_service_id.isnot(None),
+            RegistrationTask.task_uuid != task_uuid,
+            RegistrationTask.status.in_(("pending", "running")),
+        ).all()
+        claimed_service_ids = {int(row[0]) for row in claimed_rows if row and row[0] is not None}
+
+        outlook_services = db.query(EmailServiceModel).filter(
+            EmailServiceModel.service_type == "outlook",
+            EmailServiceModel.enabled == True,
+        ).order_by(EmailServiceModel.priority.asc()).all()
+
+        if not outlook_services:
+            raise ValueError("没有可用的 Outlook 账户，请先在设置中导入账户")
+
+        for svc in outlook_services:
+            email = svc.config.get("email") if svc.config else None
+            if not email:
+                continue
+
+            if svc.id in claimed_service_ids:
+                logger.info(f"跳过已被其他任务预留的 Outlook 账户: {email} (ID: {svc.id})")
+                continue
+
+            existing = db.query(Account).filter(Account.email == email).first()
+            if existing:
+                logger.info(f"跳过已注册的 Outlook 账户: {email}")
+                continue
+
+            task.email_service_id = svc.id
+            db.commit()
+            db.refresh(task)
+            logger.info(f"预留未注册的 Outlook 账户: {email} (任务: {task_uuid})")
+            return svc
+
+        raise ValueError("所有 Outlook 账户都已注册过 OpenAI 账号或已被其他任务占用，请稍后重试")
 
 
 # ============== Pydantic Models ==============
@@ -363,38 +420,12 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                     else:
                         raise ValueError("没有可用的自定义域名邮箱服务，请先在设置中配置")
                 elif service_type == EmailServiceType.OUTLOOK:
-                    # 检查数据库中是否有可用的 Outlook 账户
-                    from ...database.models import EmailService as EmailServiceModel, Account
-                    # 获取所有启用的 Outlook 服务
-                    outlook_services = db.query(EmailServiceModel).filter(
-                        EmailServiceModel.service_type == "outlook",
-                        EmailServiceModel.enabled == True
-                    ).order_by(EmailServiceModel.priority.asc()).all()
-
-                    if not outlook_services:
-                        raise ValueError("没有可用的 Outlook 账户，请先在设置中导入账户")
-
-                    # 找到一个未注册的 Outlook 账户
-                    selected_service = None
-                    for svc in outlook_services:
-                        email = svc.config.get("email") if svc.config else None
-                        if not email:
-                            continue
-                        # 检查是否已在 accounts 表中注册
-                        existing = db.query(Account).filter(Account.email == email).first()
-                        if not existing:
-                            selected_service = svc
-                            logger.info(f"选择未注册的 Outlook 账户: {email}")
-                            break
-                        else:
-                            logger.info(f"跳过已注册的 Outlook 账户: {email}")
-
+                    selected_service = _reserve_available_outlook_service(db, task_uuid)
                     if selected_service and selected_service.config:
                         config = selected_service.config.copy()
-                        crud.update_registration_task(db, task_uuid, email_service_id=selected_service.id)
                         logger.info(f"使用数据库 Outlook 账户: {selected_service.name}")
                     else:
-                        raise ValueError("所有 Outlook 账户都已注册过 OpenAI 账号，请添加新的 Outlook 账户")
+                        raise ValueError("没有可用的 Outlook 账户，请先在设置中导入账户")
                 elif service_type == EmailServiceType.DUCK_MAIL:
                     from ...database.models import EmailService as EmailServiceModel
 

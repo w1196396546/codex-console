@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from src.database.models import Account, Base
 from src.database.session import DatabaseSessionManager
-from src.database.team_crud import upsert_team, upsert_team_membership
+from src.database.team_crud import upsert_team, upsert_team_membership, upsert_team_task
 from src.web.app import create_app
 from src.web.routes import team as team_module
 
@@ -117,6 +117,70 @@ def test_run_team_discovery_returns_accepted_payload_with_ws_channel(monkeypatch
     assert payload["status"] == "pending"
     assert payload["task_uuid"]
     assert payload["ws_channel"] == f"/api/ws/task/{payload['task_uuid']}"
+
+
+def test_run_team_discovery_schedules_background_task(monkeypatch):
+    client = _create_client(monkeypatch, "team_routes_discovery_schedule.db")
+    scheduled = []
+
+    monkeypatch.setattr(
+        team_module,
+        "_schedule_team_task",
+        lambda task_uuid: scheduled.append(task_uuid),
+        raising=False,
+    )
+
+    response = client.post("/api/team/discovery/run", json={"ids": [1]})
+
+    assert response.status_code == 202
+    assert scheduled == [response.json()["task_uuid"]]
+
+
+def test_sync_teams_batch_schedules_background_task(monkeypatch):
+    client = _create_client(monkeypatch, "team_routes_sync_batch_schedule.db")
+    scheduled = []
+
+    monkeypatch.setattr(
+        team_module,
+        "_schedule_team_task",
+        lambda task_uuid: scheduled.append(task_uuid),
+        raising=False,
+    )
+
+    response = client.post("/api/team/teams/sync-batch", json={"ids": [101, 102]})
+
+    assert response.status_code == 202
+    assert scheduled == [response.json()["task_uuid"]]
+
+
+def test_run_team_discovery_reuses_existing_owner_task(monkeypatch):
+    client = _create_client(monkeypatch, "team_routes_discovery_reuse.db")
+    scheduled = []
+
+    with team_module.get_db() as db:
+        upsert_team_task(
+            db,
+            task_uuid="existing-owner-task",
+            task_type="discover_owner_teams",
+            owner_account_id=126,
+            status="pending",
+            request_payload={"ids": [126]},
+        )
+
+    monkeypatch.setattr(
+        team_module,
+        "_schedule_team_task",
+        lambda task_uuid: scheduled.append(task_uuid),
+        raising=False,
+    )
+
+    response = client.post("/api/team/discovery/run", json={"ids": [126]})
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["task_uuid"] == "existing-owner-task"
+    assert payload["owner_account_id"] == 126
+    assert scheduled == ["existing-owner-task"]
 
 
 def test_list_team_memberships_includes_id(monkeypatch):

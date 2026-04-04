@@ -6,7 +6,12 @@ from src.database.models import Base
 from src.database.team_crud import upsert_team_task
 from src.database.session import DatabaseSessionManager
 from src.database.team_models import TeamTask
-from src.services.team.tasks import complete_team_task, enqueue_team_task
+from src.services.team.tasks import (
+    build_accepted_payload_from_task,
+    complete_team_task,
+    enqueue_team_task,
+    find_active_team_task,
+)
 from src.web.task_manager import task_manager
 
 
@@ -234,6 +239,40 @@ def test_enqueue_team_task_rejects_second_write_task_for_same_owner_scope():
         session.close()
         task_manager.cleanup_task("team-task-owner-1")
         task_manager.cleanup_task("team-task-owner-2")
+
+
+def test_find_active_team_task_returns_existing_owner_task_payload():
+    session = _build_session("team_task_service_owner_existing.db")
+    try:
+        enqueue_team_task(
+            session,
+            task_uuid="team-task-owner-existing",
+            task_type="discover_owner_teams",
+            owner_account_id=818,
+            request_payload={"mode": "discovery"},
+        )
+
+        existing = find_active_team_task(
+            session,
+            owner_account_id=818,
+            task_type="discover_owner_teams",
+        )
+
+        assert existing is not None
+        assert existing.task_uuid == "team-task-owner-existing"
+        assert build_accepted_payload_from_task(existing) == {
+            "success": True,
+            "task_uuid": "team-task-owner-existing",
+            "task_type": "discover_owner_teams",
+            "status": "pending",
+            "owner_account_id": 818,
+            "scope_type": "owner",
+            "scope_id": "818",
+            "ws_channel": "/api/ws/task/team-task-owner-existing",
+        }
+    finally:
+        session.close()
+        task_manager.cleanup_task("team-task-owner-existing")
 
 
 def test_build_accepted_response_payload_infers_scope_from_owner_account():

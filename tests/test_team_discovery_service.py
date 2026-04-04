@@ -252,6 +252,76 @@ def test_discover_teams_from_local_accounts_skips_accounts_without_access_token(
         session.close()
 
 
+def test_discover_teams_from_local_accounts_respects_owner_account_ids_filter():
+    session = _build_session("team_discovery_service_owner_filter.db")
+    try:
+        target_owner = Account(
+            email="target-owner@example.com",
+            password="pass-6",
+            email_service="outlook",
+            account_id="acct-target-owner",
+            access_token="access-target-owner",
+            subscription_type="team",
+            status="active",
+        )
+        other_owner = Account(
+            email="other-owner@example.com",
+            password="pass-7",
+            email_service="outlook",
+            account_id="acct-other-owner",
+            access_token="access-other-owner",
+            subscription_type="team",
+            status="active",
+        )
+        session.add_all([target_owner, other_owner])
+        session.commit()
+        session.refresh(target_owner)
+        session.refresh(other_owner)
+
+        async def fake_transport(*, access_token="", **kwargs):
+            if access_token == "access-target-owner":
+                return {
+                    "accounts": {
+                        "acct-target-team": {
+                            "account": {
+                                "plan_type": "team",
+                                "name": "Target Team",
+                                "account_user_role": "account-owner",
+                            },
+                            "entitlement": {
+                                "subscription_plan": "chatgpt-team",
+                                "expires_at": "2026-12-31T00:00:00Z",
+                            },
+                        }
+                    }
+                }
+
+            if access_token == "access-other-owner":
+                raise AssertionError("filtered owner should not be scanned")
+
+            raise AssertionError(f"unexpected access token: {access_token}")
+
+        summary = asyncio.run(
+            discover_teams_from_local_accounts(
+                session,
+                owner_account_ids=[target_owner.id],
+                client=TeamClient(transport=fake_transport),
+            )
+        )
+
+        teams = session.query(Team).order_by(Team.id.asc()).all()
+        assert len(teams) == 1
+        assert teams[0].owner_account_id == target_owner.id
+        assert teams[0].upstream_account_id == "acct-target-team"
+        assert summary == {
+            "accounts_scanned": 1,
+            "teams_found": 1,
+            "teams_persisted": 1,
+        }
+    finally:
+        session.close()
+
+
 def test_discover_teams_from_local_accounts_skips_failed_accounts():
     session = _build_session("team_discovery_service_failed_status.db")
     try:

@@ -10,6 +10,8 @@ from src.database.team_crud import upsert_team_task
 from src.database.team_models import TeamTask
 from src.web.task_manager import task_manager
 
+_ACTIVE_TASK_STATUSES = {"pending", "running"}
+
 
 def _normalize_task_uuid(task_uuid: str) -> str:
     normalized = str(task_uuid or "").strip()
@@ -24,6 +26,39 @@ def _resolve_task_scope(*, team_id: int | None, owner_account_id: int | None) ->
     if team_id is not None:
         return "team", str(team_id)
     return "owner", str(owner_account_id)
+
+
+def find_active_team_task(
+    db: Session,
+    *,
+    team_id: int | None = None,
+    owner_account_id: int | None = None,
+    task_type: str | None = None,
+) -> TeamTask | None:
+    """按 scope 查询当前活跃 Team 任务。"""
+    scope_type, scope_id = _resolve_task_scope(team_id=team_id, owner_account_id=owner_account_id)
+    query = db.query(TeamTask).filter(
+        TeamTask.active_scope_key == f"{scope_type}:{scope_id}",
+        TeamTask.status.in_(tuple(_ACTIVE_TASK_STATUSES)),
+    )
+    if task_type:
+        query = query.filter(TeamTask.task_type == task_type)
+    return query.order_by(TeamTask.created_at.desc()).first()
+
+
+def build_accepted_payload_from_task(task: TeamTask) -> dict[str, Any]:
+    """基于已存在任务构造 accepted payload。"""
+    runtime_status = task_manager.get_status(task.task_uuid) or {}
+    resolved_status = str(runtime_status.get("status") or task.status or "pending")
+    return task_manager.build_accepted_response_payload(
+        task.task_uuid,
+        task_type=task.task_type,
+        status=resolved_status,
+        scope_type=task.scope_type,
+        scope_id=task.scope_id,
+        team_id=task.team_id,
+        owner_account_id=task.owner_account_id,
+    )
 
 
 def enqueue_team_task(

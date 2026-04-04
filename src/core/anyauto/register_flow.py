@@ -60,6 +60,10 @@ class AnyAutoRegistrationEngine:
     _refresh_token_slots: set[str] = set()
     _refresh_token_cooldowns: dict[str, float] = {}
     _refresh_token_cooldown_seconds = 15 * 60
+    _refresh_token_global_guard = threading.Lock()
+    _refresh_token_global_next_allowed_at = 0.0
+    _refresh_token_global_spacing_seconds = 8.0
+    _refresh_token_global_rate_limit_backoff_seconds = 45.0
 
     def __init__(
         self,
@@ -208,6 +212,38 @@ class AnyAutoRegistrationEngine:
             cls._refresh_token_slots.discard(key)
 
     @classmethod
+    def _wait_for_global_refresh_token_window(
+        cls,
+        log_fn: Callable[[str], None],
+        *,
+        reason: str,
+    ) -> None:
+        wait_seconds = max(0.0, float(cls._refresh_token_global_next_allowed_at) - time.time())
+        if wait_seconds > 0:
+            log_fn(f"{reason} 命中全局 OAuth 补齐节流，等待 {wait_seconds:.1f}s...")
+            time.sleep(wait_seconds)
+        cls._refresh_token_global_next_allowed_at = time.time() + float(
+            cls._refresh_token_global_spacing_seconds
+        )
+
+    @classmethod
+    def _extend_global_refresh_token_backoff(
+        cls,
+        *,
+        seconds: float,
+        log_fn: Callable[[str], None],
+        reason: str,
+    ) -> None:
+        backoff_until = time.time() + max(0.0, float(seconds or 0.0))
+        cls._refresh_token_global_next_allowed_at = max(
+            float(cls._refresh_token_global_next_allowed_at),
+            backoff_until,
+        )
+        wait_seconds = max(0.0, float(cls._refresh_token_global_next_allowed_at) - time.time())
+        if wait_seconds > 0:
+            log_fn(f"{reason} 触发全局 OAuth 退避，后续补齐将至少延后 {wait_seconds:.1f}s")
+
+    @classmethod
     def _set_refresh_token_completion_cooldown(
         cls,
         email: str,
@@ -300,7 +336,7 @@ class AnyAutoRegistrationEngine:
         email: str,
         skymail_adapter: EmailServiceAdapter,
         oauth_config: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         self._log("检测到 add_phone，尝试 passwordless OTP 登录补全 workspace...")
         oauth_client = OAuthClient(
             config=oauth_config,
@@ -325,11 +361,19 @@ class AnyAutoRegistrationEngine:
                 "refresh_token": tokens.get("refresh_token", ""),
                 "id_token": tokens.get("id_token", ""),
                 "session": oauth_client.session,
+                "error_message": "",
             }
 
-        if oauth_client.last_error:
-            self._log(f"Passwordless OAuth 失败: {oauth_client.last_error}")
-        return None
+        error_message = str(getattr(oauth_client, "last_error", "") or "").strip()
+        if error_message:
+            self._log(f"Passwordless OAuth 失败: {error_message}")
+        return {
+            "access_token": "",
+            "refresh_token": "",
+            "id_token": "",
+            "session": oauth_client.session,
+            "error_message": error_message,
+        }
 
     @staticmethod
     def _extract_create_account_result(chatgpt_client: ChatGPTClient) -> Dict[str, Any]:
@@ -355,6 +399,7 @@ class AnyAutoRegistrationEngine:
     ) -> Dict[str, Any]:
         last_error = ""
         last_session = chatgpt_client.session
+        password_text = str(password or "").strip()
         cooldown_until = self._get_local_refresh_token_completion_cooldown(email)
         if cooldown_until is None:
             cooldown_until = self._get_saved_refresh_token_cooldown_until(email)
@@ -376,71 +421,129 @@ class AnyAutoRegistrationEngine:
             )
 
         try:
-            for oauth_attempt in range(2):
-                if oauth_attempt > 0:
-                    self._log(f"{reason} 第 {oauth_attempt + 1}/2 次重试...")
-                    time.sleep(1)
+            with self._refresh_token_global_guard:
+                if allow_passwordless and not password_text:
+                    for oauth_round in range(2):
+                        self._wait_for_global_refresh_token_window(self._log, reason=reason)
 
-                oauth_client = OAuthClient(
-                    config=oauth_config,
-                    proxy=self.proxy_url,
-                    verbose=False,
-                    browser_mode=self.browser_mode,
-                )
-                oauth_client._log = self._log
-                oauth_client.session = last_session
+                        pwdless = self._passwordless_oauth_reauth(
+                            chatgpt_client,
+                            email,
+                            skymail_adapter,
+                            oauth_config,
+                        )
+                        last_session = (pwdless or {}).get("session") or last_session
+                        if pwdless and pwdless.get("access_token"):
+                            return {
+                                "tokens": pwdless,
+                                "session": last_session,
+                                "last_error": "",
+                                "source": "oauth_passwordless",
+                            }
 
-                tokens = oauth_client.login_and_get_tokens(
-                    email,
-                    password,
-                    chatgpt_client.device_id,
-                    chatgpt_client.ua,
-                    chatgpt_client.sec_ch_ua,
-                    chatgpt_client.impersonate,
-                    skymail_adapter,
-                )
-                last_session = oauth_client.session
-                if tokens and tokens.get("access_token"):
-                    return {
-                        "tokens": tokens,
-                        "session": oauth_client.session,
-                        "last_error": "",
-                        "source": "oauth_password",
-                    }
+                        last_error = str((pwdless or {}).get("error_message") or "").strip()
+                        if self._is_rate_limited_error(last_error):
+                            self._extend_global_refresh_token_backoff(
+                                seconds=self._refresh_token_global_rate_limit_backoff_seconds,
+                                log_fn=self._log,
+                                reason=reason,
+                            )
+                            if oauth_round < 1:
+                                self._log(f"{reason} 命中限流，等待全局退避后继续补齐...")
+                                continue
+                            cooldown_until = time.time() + self._refresh_token_cooldown_seconds
+                            self._log(f"{reason} 命中限流，进入 refresh_token 冷却窗")
+                            return self._build_refresh_token_deferred_completion(
+                                email,
+                                last_session,
+                                reason=last_error or "refresh_token 补齐限流",
+                                cooldown_until=cooldown_until,
+                            )
 
-                last_error = str(getattr(oauth_client, "last_error", "") or "").strip()
-                if allow_passwordless and self._is_phone_required_error(last_error):
-                    self._log(f"{reason} 命中手机号/风控，切换 passwordless OAuth 补齐...")
-                    pwdless = self._passwordless_oauth_reauth(
-                        chatgpt_client,
-                        email,
-                        skymail_adapter,
-                        oauth_config,
-                    )
-                    if pwdless and pwdless.get("access_token"):
                         return {
-                            "tokens": pwdless,
-                            "session": pwdless.get("session") or last_session,
-                            "last_error": "",
-                            "source": "oauth_passwordless",
+                            "tokens": None,
+                            "session": last_session,
+                            "last_error": last_error or "passwordless OAuth 补齐失败",
+                            "source": "",
                         }
 
-            if self._is_rate_limited_error(last_error):
-                cooldown_until = time.time() + self._refresh_token_cooldown_seconds
-                self._log(f"{reason} 命中限流，进入 refresh_token 冷却窗")
-                return self._build_refresh_token_deferred_completion(
-                    email,
-                    last_session,
-                    reason=last_error or "refresh_token 补齐限流",
-                    cooldown_until=cooldown_until,
-                )
+                for oauth_round in range(2):
+                    self._wait_for_global_refresh_token_window(self._log, reason=reason)
 
-            return {
-                "tokens": None,
-                "session": last_session,
-                "last_error": last_error,
-                "source": "",
-            }
+                    for oauth_attempt in range(2):
+                        if oauth_attempt > 0:
+                            self._log(f"{reason} 第 {oauth_attempt + 1}/2 次重试...")
+                            time.sleep(1)
+
+                        oauth_client = OAuthClient(
+                            config=oauth_config,
+                            proxy=self.proxy_url,
+                            verbose=False,
+                            browser_mode=self.browser_mode,
+                        )
+                        oauth_client._log = self._log
+                        oauth_client.session = last_session
+
+                        tokens = oauth_client.login_and_get_tokens(
+                            email,
+                            password,
+                            chatgpt_client.device_id,
+                            chatgpt_client.ua,
+                            chatgpt_client.sec_ch_ua,
+                            chatgpt_client.impersonate,
+                            skymail_adapter,
+                        )
+                        last_session = oauth_client.session
+                        if tokens and tokens.get("access_token"):
+                            return {
+                                "tokens": tokens,
+                                "session": oauth_client.session,
+                                "last_error": "",
+                                "source": "oauth_password",
+                            }
+
+                        last_error = str(getattr(oauth_client, "last_error", "") or "").strip()
+                        if allow_passwordless and self._is_phone_required_error(last_error):
+                            self._log(f"{reason} 命中手机号/风控，切换 passwordless OAuth 补齐...")
+                            pwdless = self._passwordless_oauth_reauth(
+                                chatgpt_client,
+                                email,
+                                skymail_adapter,
+                                oauth_config,
+                            )
+                            if pwdless and pwdless.get("access_token"):
+                                return {
+                                    "tokens": pwdless,
+                                    "session": pwdless.get("session") or last_session,
+                                    "last_error": "",
+                                    "source": "oauth_passwordless",
+                                }
+                            last_error = str((pwdless or {}).get("error_message") or last_error).strip()
+
+                    if self._is_rate_limited_error(last_error):
+                        self._extend_global_refresh_token_backoff(
+                            seconds=self._refresh_token_global_rate_limit_backoff_seconds,
+                            log_fn=self._log,
+                            reason=reason,
+                        )
+                        if oauth_round < 1:
+                            self._log(f"{reason} 命中限流，等待全局退避后继续补齐...")
+                            continue
+                        cooldown_until = time.time() + self._refresh_token_cooldown_seconds
+                        self._log(f"{reason} 命中限流，进入 refresh_token 冷却窗")
+                        return self._build_refresh_token_deferred_completion(
+                            email,
+                            last_session,
+                            reason=last_error or "refresh_token 补齐限流",
+                            cooldown_until=cooldown_until,
+                        )
+
+                    return {
+                        "tokens": None,
+                        "session": last_session,
+                        "last_error": last_error,
+                        "source": "",
+                    }
         finally:
             self._release_refresh_token_completion_slot(email)
 
@@ -813,12 +916,39 @@ class AnyAutoRegistrationEngine:
                         return base_result
 
                     if existing_account_detected and not self.password:
-                        metadata = dict(base_result.get("metadata") or {})
-                        metadata["refresh_token_acquired"] = False
-                        metadata["refresh_token_error"] = "缺少历史密码，跳过 OAuth 补齐"
-                        base_result["metadata"] = metadata
-                        self._log("已有账号缺少历史密码，跳过 OAuth 补 refresh_token，保留当前会话结果返回")
-                        return base_result
+                        self._log("已有账号缺少历史密码，改走受控 passwordless OAuth 补 refresh_token...")
+                        oauth_completion = self._run_oauth_token_completion(
+                            chatgpt_client,
+                            normalized_email,
+                            "",
+                            skymail_adapter,
+                            oauth_config,
+                            reason="已有账号缺少历史密码，尝试 passwordless OAuth 补 rt",
+                            allow_passwordless=True,
+                        )
+                        self.session = oauth_completion.get("session") or self.session
+                        tokens = oauth_completion.get("tokens") or {}
+                        if tokens.get("access_token"):
+                            merged_result = self._merge_success_result(
+                                base_result,
+                                create_account_result=create_account_result,
+                                oauth_tokens=tokens,
+                                token_source=str(oauth_completion.get("source") or "oauth_passwordless"),
+                            )
+                            merged_result = self._mark_existing_account_result(
+                                merged_result,
+                                password_source="passwordless",
+                            )
+                            self._log("缺少历史密码，但 passwordless OAuth 已补齐 refresh_token")
+                            return merged_result
+
+                        last_error = str(oauth_completion.get("last_error") or "").strip()
+                        if not last_error:
+                            last_error = "缺少历史密码，且 passwordless OAuth 补齐失败"
+                        elif "缺少历史密码" not in last_error:
+                            last_error = f"缺少历史密码，且 passwordless OAuth 补齐失败: {last_error}"
+                        self._log("已有账号缺少历史密码，且 passwordless OAuth 仍未补齐 refresh_token，本次任务按失败返回")
+                        return {"success": False, "error_message": last_error}
 
                     oauth_completion = self._run_oauth_token_completion(
                         chatgpt_client,

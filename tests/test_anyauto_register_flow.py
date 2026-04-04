@@ -60,7 +60,9 @@ class FakeChatGPTClient:
 
 class FakeOAuthClient:
     plans = []
+    passwordless_plans = []
     call_count = 0
+    passwordless_call_count = 0
     last_login_email = None
     last_login_password = None
 
@@ -103,7 +105,12 @@ class FakeOAuthClient:
         impersonate=None,
         skymail_client=None,
     ):
-        raise AssertionError("passwordless flow should not run in these tests")
+        FakeOAuthClient.passwordless_call_count += 1
+        if not FakeOAuthClient.passwordless_plans:
+            raise AssertionError("missing passwordless OAuth plan")
+        plan = FakeOAuthClient.passwordless_plans.pop(0)
+        self.last_error = plan.get("last_error", "")
+        return plan.get("tokens")
 
     def _decode_oauth_session_cookie(self):
         return {}
@@ -340,6 +347,88 @@ def test_run_existing_account_direct_otp_uses_saved_password_for_oauth(monkeypat
     assert result["metadata"]["login_password_source"] == "database"
 
 
+def test_run_existing_account_without_saved_password_uses_passwordless_oauth(monkeypatch):
+    FakeChatGPTClient.register_result = (True, "注册成功")
+    FakeChatGPTClient.existing_account_detected = True
+    FakeChatGPTClient.reuse_result = (
+        True,
+        {
+            "access_token": "session-access-existing",
+            "session_token": "session-token-existing",
+            "account_id": "acct-session-existing",
+            "workspace_id": "ws-session-existing",
+        },
+    )
+    FakeChatGPTClient.create_account_refresh_token = ""
+    FakeChatGPTClient.create_account_account_id = ""
+    FakeChatGPTClient.create_account_workspace_id = ""
+    FakeOAuthClient.plans = []
+    FakeOAuthClient.passwordless_plans = [
+        {
+            "tokens": {
+                "access_token": "oauth-access-passwordless",
+                "refresh_token": "refresh-passwordless",
+                "id_token": "id-passwordless",
+                "account_id": "acct-passwordless",
+                "workspace_id": "ws-passwordless",
+            }
+        }
+    ]
+    FakeOAuthClient.call_count = 0
+    FakeOAuthClient.passwordless_call_count = 0
+    _patch_saved_account(monkeypatch, None)
+
+    engine = _build_engine(monkeypatch)
+    result = engine.run()
+
+    assert result["success"] is True
+    assert result["source"] == "login"
+    assert result["refresh_token"] == "refresh-passwordless"
+    assert result["metadata"]["refresh_token_source"] == "oauth_passwordless"
+    assert result["metadata"]["existing_account_detected"] is True
+    assert FakeOAuthClient.call_count == 0
+    assert FakeOAuthClient.passwordless_call_count == 1
+
+
+def test_run_existing_account_without_saved_password_fails_when_passwordless_oauth_still_missing_rt(monkeypatch):
+    FakeChatGPTClient.register_result = (True, "注册成功")
+    FakeChatGPTClient.existing_account_detected = True
+    FakeChatGPTClient.reuse_result = (
+        True,
+        {
+            "access_token": "session-access-existing",
+            "session_token": "session-token-existing",
+            "account_id": "acct-session-existing",
+            "workspace_id": "ws-session-existing",
+        },
+    )
+    FakeChatGPTClient.create_account_refresh_token = ""
+    FakeChatGPTClient.create_account_account_id = ""
+    FakeChatGPTClient.create_account_workspace_id = ""
+    FakeOAuthClient.plans = []
+    FakeOAuthClient.passwordless_plans = [
+        {
+            "tokens": None,
+            "last_error": "提交邮箱失败: 429 - rate limit exceeded",
+        },
+        {
+            "tokens": None,
+            "last_error": "提交邮箱失败: 429 - rate limit exceeded",
+        },
+    ]
+    FakeOAuthClient.call_count = 0
+    FakeOAuthClient.passwordless_call_count = 0
+    _patch_saved_account(monkeypatch, None)
+
+    engine = _build_engine(monkeypatch)
+    result = engine.run()
+
+    assert result["success"] is False
+    assert "缺少历史密码" in result["error_message"]
+    assert FakeOAuthClient.call_count == 0
+    assert FakeOAuthClient.passwordless_call_count == 2
+
+
 def test_run_skips_oauth_completion_when_cooldown_is_active(monkeypatch):
     FakeChatGPTClient.reuse_result = (
         True,
@@ -383,3 +472,124 @@ def test_oauth_completion_slot_rejects_duplicate_inflight_attempts(monkeypatch):
         assert second is False
     finally:
         engine._release_refresh_token_completion_slot(email)
+
+
+def test_oauth_completion_waits_for_global_refresh_token_window(monkeypatch):
+    FakeOAuthClient.plans = [
+        {
+            "tokens": {
+                "access_token": "oauth-access-window",
+                "refresh_token": "refresh-window",
+            },
+            "last_error": "",
+        }
+    ]
+    FakeOAuthClient.call_count = 0
+    AnyAutoRegistrationEngine._refresh_token_slots = set()
+    AnyAutoRegistrationEngine._refresh_token_cooldowns = {}
+    AnyAutoRegistrationEngine._refresh_token_global_next_allowed_at = 105.0
+
+    sleeps = []
+    monkeypatch.setattr(register_flow_module.time, "time", lambda: 100.0)
+    monkeypatch.setattr(register_flow_module.time, "sleep", sleeps.append)
+
+    engine = _build_engine(monkeypatch)
+    chatgpt_client = FakeChatGPTClient()
+
+    result = engine._run_oauth_token_completion(
+        chatgpt_client,
+        "second@example.com",
+        "known-pass",
+        DummyEmailService(),
+        {"oauth_client_id": "client-1"},
+        reason="补齐窗口",
+    )
+
+    assert result["tokens"]["refresh_token"] == "refresh-window"
+    assert sleeps == [5.0]
+    assert FakeOAuthClient.call_count == 1
+
+
+def test_oauth_completion_without_password_uses_passwordless_flow_under_global_window(monkeypatch):
+    FakeOAuthClient.plans = []
+    FakeOAuthClient.passwordless_plans = [
+        {
+            "tokens": {
+                "access_token": "oauth-access-passwordless-window",
+                "refresh_token": "refresh-passwordless-window",
+            },
+            "last_error": "",
+        }
+    ]
+    FakeOAuthClient.call_count = 0
+    FakeOAuthClient.passwordless_call_count = 0
+    AnyAutoRegistrationEngine._refresh_token_slots = set()
+    AnyAutoRegistrationEngine._refresh_token_cooldowns = {}
+    AnyAutoRegistrationEngine._refresh_token_global_next_allowed_at = 105.0
+
+    sleeps = []
+    monkeypatch.setattr(register_flow_module.time, "time", lambda: 100.0)
+    monkeypatch.setattr(register_flow_module.time, "sleep", sleeps.append)
+
+    engine = _build_engine(monkeypatch)
+    chatgpt_client = FakeChatGPTClient()
+
+    result = engine._run_oauth_token_completion(
+        chatgpt_client,
+        "passwordless@example.com",
+        "",
+        DummyEmailService(),
+        {"oauth_client_id": "client-1"},
+        reason="无密码补齐",
+    )
+
+    assert result["tokens"]["refresh_token"] == "refresh-passwordless-window"
+    assert result["source"] == "oauth_passwordless"
+    assert sleeps == [5.0]
+    assert FakeOAuthClient.call_count == 0
+    assert FakeOAuthClient.passwordless_call_count == 1
+
+
+def test_oauth_completion_retries_after_global_backoff_until_success(monkeypatch):
+    FakeOAuthClient.plans = [
+        {
+            "tokens": None,
+            "last_error": "提交邮箱失败: 429 - rate limit exceeded",
+        },
+        {
+            "tokens": None,
+            "last_error": "提交邮箱失败: 429 - rate limit exceeded",
+        },
+        {
+            "tokens": {
+                "access_token": "oauth-access-after-backoff",
+                "refresh_token": "refresh-after-backoff",
+            },
+            "last_error": "",
+        },
+    ]
+    FakeOAuthClient.call_count = 0
+    AnyAutoRegistrationEngine._refresh_token_slots = set()
+    AnyAutoRegistrationEngine._refresh_token_cooldowns = {}
+    AnyAutoRegistrationEngine._refresh_token_global_next_allowed_at = 0.0
+    AnyAutoRegistrationEngine._refresh_token_global_rate_limit_backoff_seconds = 45.0
+
+    sleeps = []
+    monkeypatch.setattr(register_flow_module.time, "time", lambda: 100.0)
+    monkeypatch.setattr(register_flow_module.time, "sleep", sleeps.append)
+
+    engine = _build_engine(monkeypatch)
+    chatgpt_client = FakeChatGPTClient()
+
+    result = engine._run_oauth_token_completion(
+        chatgpt_client,
+        "rate-limit@example.com",
+        "known-pass",
+        DummyEmailService(),
+        {"oauth_client_id": "client-1"},
+        reason="命中限流",
+    )
+
+    assert result["tokens"]["refresh_token"] == "refresh-after-backoff"
+    assert 45.0 in sleeps
+    assert FakeOAuthClient.call_count == 3

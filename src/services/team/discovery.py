@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Sequence
 
 from sqlalchemy.orm import Session
 
@@ -20,11 +21,27 @@ def _parse_upstream_datetime(value: str | None) -> datetime | None:
 async def discover_teams_from_local_accounts(
     db: Session,
     *,
+    owner_account_ids: Sequence[int] | None = None,
     client: TeamClient | None = None,
 ) -> dict[str, int]:
     """从本地 accounts 表发现 Team 母号并同步到 teams。"""
     team_client = client or TeamClient()
-    raw_accounts = db.query(Account).order_by(Account.id.asc()).all()
+    query = db.query(Account)
+    if owner_account_ids is not None:
+        normalized_owner_ids = [
+            owner_account_id
+            for owner_account_id in owner_account_ids
+            if isinstance(owner_account_id, int) and owner_account_id > 0
+        ]
+        if not normalized_owner_ids:
+            return {
+                "accounts_scanned": 0,
+                "teams_found": 0,
+                "teams_persisted": 0,
+            }
+        query = query.filter(Account.id.in_(normalized_owner_ids))
+
+    raw_accounts = query.order_by(Account.id.asc()).all()
 
     accounts_scanned = 0
     teams_found = 0

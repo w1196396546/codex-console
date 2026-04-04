@@ -63,9 +63,51 @@ class OAuthClient:
         self.last_error = ""
         
         # 创建 session
-        self.session = curl_requests.Session()
-        if self.proxy:
-            self.session.proxies = {"http": self.proxy, "https": self.proxy}
+        self.session = self._create_session(proxy=self.proxy)
+
+    @staticmethod
+    def _looks_like_proxy_transport_error(error):
+        text = str(error or "").lower()
+        if not text:
+            return False
+        markers = (
+            "proxy connect aborted",
+            "connect tunnel failed",
+            "connection closed abruptly",
+            "connection timed out",
+            "curl: (56)",
+            "curl: (28)",
+            "proxy error",
+            "proxy connect",
+            "response 509",
+        )
+        return any(marker in text for marker in markers)
+
+    def _create_session(self, *, proxy=None):
+        session = curl_requests.Session()
+        if proxy:
+            session.proxies = {"http": proxy, "https": proxy}
+        return session
+
+    def _create_direct_session(self):
+        direct_session = self._create_session(proxy=None)
+        try:
+            direct_session.cookies.update(self.session.cookies)
+        except Exception:
+            pass
+        return direct_session
+
+    def _request_with_transport_fallback(self, method_name, url, *, request_label, **kwargs):
+        try:
+            return getattr(self.session, method_name)(url, **kwargs)
+        except Exception as exc:
+            if (not self.proxy) or (not self._looks_like_proxy_transport_error(exc)):
+                raise
+            self._log(f"{request_label} 代理通道异常，改走直连重试: {exc}")
+            direct_session = self._create_direct_session()
+            response = getattr(direct_session, method_name)(url, **kwargs)
+            self.session = direct_session
+            return response
     
     def _log(self, msg):
         """输出日志"""
@@ -114,7 +156,12 @@ class OAuthClient:
         response = None
         for attempt in range(max(1, int(max_attempts or 1))):
             self._browser_pause()
-            response = getattr(self.session, method_name)(url, **kwargs)
+            response = self._request_with_transport_fallback(
+                method_name,
+                url,
+                request_label=request_label,
+                **kwargs,
+            )
             if response.status_code != 429 or attempt >= max_attempts - 1:
                 return response
 
@@ -428,7 +475,12 @@ class OAuthClient:
                 kwargs["impersonate"] = impersonate
 
             self._browser_pause()
-            r = self.session.get(authorize_url, **kwargs)
+            r = self._request_with_transport_fallback(
+                "get",
+                authorize_url,
+                request_label="/oauth/authorize",
+                **kwargs,
+            )
             authorize_final_url = str(r.url)
             redirects = len(getattr(r, "history", []) or [])
             self._log(f"/oauth/authorize -> {r.status_code}, redirects={redirects}")
@@ -464,7 +516,12 @@ class OAuthClient:
                 kwargs["impersonate"] = impersonate
 
             self._browser_pause()
-            r2 = self.session.get(oauth2_url, **kwargs)
+            r2 = self._request_with_transport_fallback(
+                "get",
+                oauth2_url,
+                request_label="/api/oauth/oauth2/auth",
+                **kwargs,
+            )
             authorize_final_url = str(r2.url)
             redirects2 = len(getattr(r2, "history", []) or [])
             self._log(f"/api/oauth/oauth2/auth -> {r2.status_code}, redirects={redirects2}")

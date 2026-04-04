@@ -259,6 +259,19 @@
         console.warn(message);
     }
 
+    async function readErrorMessage(response) {
+        const detail = await response.text();
+        if (!detail) {
+            return `请求失败: ${response.status}`;
+        }
+        try {
+            const payload = JSON.parse(detail);
+            return normalizeText(payload && payload.detail) || detail;
+        } catch (error) {
+            return detail;
+        }
+    }
+
     async function fetchJson(path, options) {
         const response = await fetch(path, {
             credentials: 'same-origin',
@@ -270,8 +283,10 @@
         });
 
         if (!response.ok) {
-            const detail = await response.text();
-            throw new Error(detail || `请求失败: ${response.status}`);
+            const message = await readErrorMessage(response);
+            const error = new Error(message);
+            error.status = response.status;
+            throw error;
         }
         return response.json();
     }
@@ -401,6 +416,7 @@
     async function initPage(root) {
         const state = deriveInitialTeamState(runtime.location && runtime.location.search);
         const elements = collectElements(root);
+        let autoDiscoveryTriggered = false;
 
         elements.ownerFilter.value = state.filters.ownerAccountId || '';
         elements.statusFilter.value = state.filters.status || '';
@@ -469,6 +485,28 @@
             state.activeTaskUuid = acceptedPayload.task_uuid || '';
             renderTasks(state.taskItems, state, elements);
             await acceptedTaskFlow.start(acceptedPayload);
+            return acceptedPayload;
+        }
+
+        async function triggerOwnerDiscovery(ownerAccountId, { silent = false } = {}) {
+            const normalizedOwnerId = normalizePositiveInt(ownerAccountId);
+            if (normalizedOwnerId === null) {
+                if (!silent) {
+                    showAlert('请先输入母号 ID，或先从已有 Team 中选择一个母号。');
+                }
+                return null;
+            }
+
+            try {
+                return await triggerAcceptedTask('/api/team/discovery/run', { ids: [normalizedOwnerId] });
+            } catch (error) {
+                elements.taskLiveStatus.textContent = '提交失败';
+                elements.taskCurrentSummary.textContent = error && error.message ? error.message : '任务提交失败';
+                if (!silent) {
+                    showAlert(elements.taskCurrentSummary.textContent);
+                }
+                return null;
+            }
         }
 
         root.addEventListener('click', async (event) => {
@@ -483,11 +521,7 @@
                 if (actionName === 'discover-owner') {
                     const ownerAccountId = normalizePositiveInt(elements.ownerFilter.value)
                         || normalizePositiveInt((state.teams.find((item) => item.id === state.selectedTeamId) || {}).owner_account_id);
-                    if (!ownerAccountId) {
-                        showAlert('请先输入母号 ID，或先从已有 Team 中选择一个母号。');
-                        return;
-                    }
-                    await triggerAcceptedTask('/api/team/discovery/run', { ids: [ownerAccountId] });
+                    await triggerOwnerDiscovery(ownerAccountId);
                     return;
                 }
                 if (actionName === 'sync-batch') {
@@ -496,7 +530,13 @@
                         showAlert('当前没有可同步的 Team。');
                         return;
                     }
-                    await triggerAcceptedTask('/api/team/teams/sync-batch', { ids: selectedIds });
+                    try {
+                        await triggerAcceptedTask('/api/team/teams/sync-batch', { ids: selectedIds });
+                    } catch (error) {
+                        elements.taskLiveStatus.textContent = '提交失败';
+                        elements.taskCurrentSummary.textContent = error && error.message ? error.message : '任务提交失败';
+                        showAlert(elements.taskCurrentSummary.textContent);
+                    }
                     return;
                 }
             }
@@ -539,6 +579,13 @@
         renderTasks([], state, elements);
         await loadTeams();
         await loadTasks();
+
+        if (!autoDiscoveryTriggered && state.filters.ownerAccountId) {
+            autoDiscoveryTriggered = true;
+            elements.taskLiveStatus.textContent = '自动发现中';
+            elements.taskCurrentSummary.textContent = `正在自动发现母号 ${state.filters.ownerAccountId} 的 Team...`;
+            await triggerOwnerDiscovery(state.filters.ownerAccountId, { silent: true });
+        }
     }
 
     if (typeof document !== 'undefined') {

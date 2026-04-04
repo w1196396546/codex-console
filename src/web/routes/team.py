@@ -16,6 +16,7 @@ from ...database.models import Account
 from ...database.session import get_db
 from ...database.team_models import Team, TeamMembership, TeamTask
 from ...services.team.membership_actions import apply_membership_action
+from ...services.team.runner import schedule_team_task
 from ..task_manager import task_manager
 from .accounts import resolve_account_ids
 
@@ -87,9 +88,40 @@ def _enqueue_team_write_task(
             raise HTTPException(status_code=500, detail=message) from exc
 
 
+def _enqueue_or_reuse_discovery_task(*, owner_account_ids: list[int]) -> tuple[dict[str, Any], bool]:
+    from ...services.team.tasks import build_accepted_payload_from_task, enqueue_team_task, find_active_team_task
+
+    owner_account_id = owner_account_ids[0]
+    with get_db() as db:
+        existing_task = find_active_team_task(
+            db,
+            owner_account_id=owner_account_id,
+            task_type="discover_owner_teams",
+        )
+        if existing_task is not None:
+            should_schedule = task_manager.get_status(existing_task.task_uuid) is None
+            if should_schedule:
+                task_manager.update_status(existing_task.task_uuid, existing_task.status or "pending")
+            return build_accepted_payload_from_task(existing_task), should_schedule
+
+        payload = enqueue_team_task(
+            db,
+            task_uuid=_new_task_uuid(),
+            task_type="discover_owner_teams",
+            owner_account_id=owner_account_id,
+            request_payload={"ids": owner_account_ids},
+        )
+        return payload, True
+
+
 def _add_child_guard_logs(task_uuid: str) -> None:
     for log_line in _CHILD_GUARD_LOGS:
         task_manager.add_log(task_uuid, log_line)
+
+
+def _schedule_team_task(task_uuid: str):
+    """统一封装 Team 任务调度，便于测试与后续扩展。"""
+    return schedule_team_task(task_uuid)
 
 
 def _serialize_team(team: Team, owner: Account | None) -> dict[str, Any]:
@@ -115,21 +147,17 @@ async def run_team_discovery(request: TeamDiscoveryRunRequest):
     if not request.ids:
         raise HTTPException(status_code=400, detail="ids 不能为空")
 
-    payload = _enqueue_team_write_task(
-        task_type="discover_owner_teams",
-        owner_account_id=request.ids[0],
-        request_payload={"ids": request.ids},
-    )
+    payload, should_schedule = _enqueue_or_reuse_discovery_task(owner_account_ids=request.ids)
+    if should_schedule:
+        _schedule_team_task(payload["task_uuid"])
     return payload
 
 
 @router.post("/discovery/{account_id}", status_code=202)
 async def run_single_team_discovery(account_id: int):
-    payload = _enqueue_team_write_task(
-        task_type="discover_owner_teams",
-        owner_account_id=account_id,
-        request_payload={"ids": [account_id]},
-    )
+    payload, should_schedule = _enqueue_or_reuse_discovery_task(owner_account_ids=[account_id])
+    if should_schedule:
+        _schedule_team_task(payload["task_uuid"])
     return payload
 
 
@@ -213,11 +241,13 @@ async def get_team_detail(team_id: int):
 
 @router.post("/teams/{team_id}/sync", status_code=202)
 async def sync_team(team_id: int):
-    return _enqueue_team_write_task(
+    payload = _enqueue_team_write_task(
         task_type="sync_team",
         team_id=team_id,
         request_payload={"team_id": team_id},
     )
+    _schedule_team_task(payload["task_uuid"])
+    return payload
 
 
 @router.post("/teams/sync-batch", status_code=202)
@@ -230,6 +260,7 @@ async def sync_teams_batch(request: TeamSyncBatchRequest):
         request_payload={"ids": request.ids},
     )
     payload["accepted_count"] = len(request.ids)
+    _schedule_team_task(payload["task_uuid"])
     return payload
 
 

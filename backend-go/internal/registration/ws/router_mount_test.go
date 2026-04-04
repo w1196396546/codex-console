@@ -2,9 +2,11 @@ package ws_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +21,8 @@ import (
 	internalhttp "github.com/dou-jiang/codex-console/backend-go/internal/http"
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
 	"github.com/dou-jiang/codex-console/backend-go/internal/registration"
+	"github.com/dou-jiang/codex-console/backend-go/internal/registration/ws"
+	"github.com/hibiken/asynq"
 )
 
 func TestTaskWebSocketRouteIsMounted(t *testing.T) {
@@ -50,6 +54,126 @@ func TestTaskWebSocketRouteIsMounted(t *testing.T) {
 	assertRouteMessageField(t, message, "task_uuid", job.JobID)
 }
 
+func TestBatchWebSocketRouteIsMounted(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := jobs.NewInMemoryRepository()
+	queue := &routeTestQueue{}
+	jobService := jobs.NewService(repo, queue)
+	registrationService := registration.NewService(jobService)
+	batchService := registration.NewBatchService(jobService)
+
+	startResp, err := batchService.StartBatch(ctx, registration.BatchStartRequest{
+		Count:            1,
+		EmailServiceType: "tempmail",
+	})
+	if err != nil {
+		t.Fatalf("start batch: %v", err)
+	}
+
+	server := httptest.NewServer(internalhttp.NewRouter(jobService, registrationService, batchService, ws.NewBatchHandler(batchService)))
+	defer server.Close()
+
+	conn := dialRouteTestWebSocket(t, server.URL+"/api/ws/batch/"+startResp.BatchID)
+	defer conn.close(t)
+
+	message := conn.readJSON(t)
+	assertRouteMessageField(t, message, "type", "status")
+	assertRouteMessageField(t, message, "batch_id", startResp.BatchID)
+	assertRouteMessageField(t, message, "status", jobs.StatusRunning)
+}
+
+func TestBatchWebSocketRouteSharesBatchService(t *testing.T) {
+	t.Parallel()
+
+	repo := jobs.NewInMemoryRepository()
+	queue := &routeTestQueue{}
+	jobService := jobs.NewService(repo, queue)
+	registrationService := registration.NewService(jobService)
+
+	server := httptest.NewServer(internalhttp.NewRouter(jobService, registrationService))
+	defer server.Close()
+
+	resp, err := nethttp.Post(
+		server.URL+"/api/registration/batch",
+		"application/json",
+		bytes.NewReader([]byte(`{"count":1,"email_service_type":"tempmail"}`)),
+	)
+	if err != nil {
+		t.Fatalf("start batch through http: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != nethttp.StatusAccepted {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected batch start 202, got %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode batch start response: %v", err)
+	}
+
+	batchID, ok := payload["batch_id"].(string)
+	if !ok || batchID == "" {
+		t.Fatalf("expected batch_id string, got %#v", payload["batch_id"])
+	}
+
+	conn := dialRouteTestWebSocket(t, server.URL+"/api/ws/batch/"+batchID)
+	defer conn.close(t)
+
+	message := conn.readJSON(t)
+	assertRouteMessageField(t, message, "type", "status")
+	assertRouteMessageField(t, message, "batch_id", batchID)
+	assertRouteMessageField(t, message, "status", jobs.StatusRunning)
+}
+
+func TestBatchWebSocketRouteFallsBackToSharedHandlerWhenBatchServiceMissing(t *testing.T) {
+	t.Parallel()
+
+	repo := jobs.NewInMemoryRepository()
+	queue := &routeTestQueue{}
+	jobService := jobs.NewService(repo, queue)
+	registrationService := registration.NewService(jobService)
+
+	server := httptest.NewServer(internalhttp.NewRouter(jobService, registrationService, failingBatchSocketHandler{}))
+	defer server.Close()
+
+	resp, err := nethttp.Post(
+		server.URL+"/api/registration/batch",
+		"application/json",
+		bytes.NewReader([]byte(`{"count":1,"email_service_type":"tempmail"}`)),
+	)
+	if err != nil {
+		t.Fatalf("start batch through http: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != nethttp.StatusAccepted {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected batch start 202, got %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode batch start response: %v", err)
+	}
+
+	batchID, ok := payload["batch_id"].(string)
+	if !ok || batchID == "" {
+		t.Fatalf("expected batch_id string, got %#v", payload["batch_id"])
+	}
+
+	conn := dialRouteTestWebSocket(t, server.URL+"/api/ws/batch/"+batchID)
+	defer conn.close(t)
+
+	message := conn.readJSON(t)
+	assertRouteMessageField(t, message, "type", "status")
+	assertRouteMessageField(t, message, "batch_id", batchID)
+	assertRouteMessageField(t, message, "status", jobs.StatusRunning)
+}
+
 func assertRouteMessageField(t *testing.T, payload map[string]any, key string, want string) {
 	t.Helper()
 
@@ -65,6 +189,18 @@ func assertRouteMessageField(t *testing.T, payload map[string]any, key string, w
 type routeTestWebSocketConn struct {
 	conn   net.Conn
 	reader *bufio.Reader
+}
+
+type routeTestQueue struct{}
+
+func (q *routeTestQueue) Enqueue(_ context.Context, _ *asynq.Task) error {
+	return nil
+}
+
+type failingBatchSocketHandler struct{}
+
+func (failingBatchSocketHandler) HandleBatchSocket(w nethttp.ResponseWriter, _ *nethttp.Request) {
+	w.WriteHeader(nethttp.StatusTeapot)
 }
 
 func dialRouteTestWebSocket(t *testing.T, rawURL string) *routeTestWebSocketConn {
@@ -136,14 +272,8 @@ func (c *routeTestWebSocketConn) readJSON(t *testing.T) map[string]any {
 		t.Fatalf("set read deadline: %v", err)
 	}
 
-	header := make([]byte, 2)
-	if _, err := io.ReadFull(c.reader, header); err != nil {
-		t.Fatalf("read frame header: %v", err)
-	}
-
-	payloadLength := int(header[1] & 0x7f)
-	payload := make([]byte, payloadLength)
-	if _, err := io.ReadFull(c.reader, payload); err != nil {
+	payload, err := readRouteServerFrame(c.reader)
+	if err != nil {
 		t.Fatalf("read frame payload: %v", err)
 	}
 
@@ -152,4 +282,47 @@ func (c *routeTestWebSocketConn) readJSON(t *testing.T) map[string]any {
 		t.Fatalf("unmarshal frame payload: %v", err)
 	}
 	return message
+}
+
+func readRouteServerFrame(reader *bufio.Reader) ([]byte, error) {
+	header, err := reader.ReadByte()
+	if err != nil {
+		return nil, err
+	}
+	if header&0x0f == 0x8 {
+		return nil, io.EOF
+	}
+	if header&0x0f != 0x1 {
+		return nil, fmt.Errorf("unexpected opcode %d", header&0x0f)
+	}
+
+	lengthByte, err := reader.ReadByte()
+	if err != nil {
+		return nil, err
+	}
+	if lengthByte&0x80 != 0 {
+		return nil, fmt.Errorf("server frames must not be masked")
+	}
+
+	payloadLength := int(lengthByte & 0x7f)
+	switch payloadLength {
+	case 126:
+		lengthBytes := make([]byte, 2)
+		if _, err := io.ReadFull(reader, lengthBytes); err != nil {
+			return nil, err
+		}
+		payloadLength = int(binary.BigEndian.Uint16(lengthBytes))
+	case 127:
+		lengthBytes := make([]byte, 8)
+		if _, err := io.ReadFull(reader, lengthBytes); err != nil {
+			return nil, err
+		}
+		payloadLength = int(binary.BigEndian.Uint64(lengthBytes))
+	}
+
+	payload := make([]byte, payloadLength)
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
 }

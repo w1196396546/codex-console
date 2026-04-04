@@ -282,6 +282,148 @@ func TestRegistrationBatchCompatibilityFlow(t *testing.T) {
 	assertRegistrationBatchCompatFields(t, cancelled, cancelBatchID, jobs.StatusCancelled, 1, 1, 0, 0, false, true, true, 0, 0)
 }
 
+func TestRegistrationBatchWebSocketCompatibility(t *testing.T) {
+	repo := jobs.NewInMemoryRepository()
+	queue := &capturingQueue{}
+	jobService := jobs.NewService(repo, queue)
+	registrationService := registration.NewService(jobService)
+	server := httptest.NewServer(internalhttp.NewRouter(jobService, registrationService))
+	defer server.Close()
+
+	startResp := startRegistrationBatchThroughCompatAPI(t, server.URL, 2)
+	batchID, ok := startResp["batch_id"].(string)
+	if !ok || batchID == "" {
+		t.Fatalf("expected batch_id, got %#v", startResp["batch_id"])
+	}
+	if len(queue.tasks) != 2 {
+		t.Fatalf("expected 2 queued tasks, got %d", len(queue.tasks))
+	}
+
+	conn := dialTestWebSocket(t, server.URL+"/api/ws/batch/"+batchID)
+	defer conn.Close()
+
+	initialStatus := conn.readJSON(t)
+	assertWebSocketMessageField(t, initialStatus, "type", "status")
+	assertWebSocketMessageField(t, initialStatus, "batch_id", batchID)
+	assertWebSocketMessageField(t, initialStatus, "status", jobs.StatusRunning)
+	if initialStatus["total"] != float64(2) {
+		t.Fatalf("expected total=2, got %#v", initialStatus["total"])
+	}
+
+	if err := conn.conn.WriteJSON(map[string]any{"type": "ping"}); err != nil {
+		t.Fatalf("write batch ping websocket message: %v", err)
+	}
+	pong := conn.readJSON(t)
+	assertWebSocketMessageField(t, pong, "type", "pong")
+
+	pauseResp := controlRegistrationBatchThroughCompatAPI(t, server.URL, batchID, "pause")
+	if pauseResp["status"] != jobs.StatusPaused {
+		t.Fatalf("expected pause status paused, got %#v", pauseResp["status"])
+	}
+	pausedDeadline := time.Now().Add(3 * time.Second)
+	for {
+		if time.Now().After(pausedDeadline) {
+			t.Fatal("expected paused batch websocket status")
+		}
+
+		message := conn.readJSON(t)
+		if message["type"] == "status" && message["status"] == jobs.StatusPaused {
+			assertWebSocketMessageField(t, message, "batch_id", batchID)
+			break
+		}
+	}
+
+	resumeResp := controlRegistrationBatchThroughCompatAPI(t, server.URL, batchID, "resume")
+	if resumeResp["status"] != jobs.StatusRunning {
+		t.Fatalf("expected resume status running, got %#v", resumeResp["status"])
+	}
+	resumedDeadline := time.Now().Add(3 * time.Second)
+	for {
+		if time.Now().After(resumedDeadline) {
+			t.Fatal("expected resumed batch websocket status")
+		}
+
+		message := conn.readJSON(t)
+		if message["type"] == "status" && message["status"] == jobs.StatusRunning {
+			assertWebSocketMessageField(t, message, "batch_id", batchID)
+			if message["paused"] != false {
+				t.Fatalf("expected paused=false after resume, got %#v", message["paused"])
+			}
+			break
+		}
+	}
+
+	worker := jobs.NewWorker(jobService)
+	done := make(chan error, 1)
+	go func() {
+		done <- worker.HandleTask(context.Background(), queue.tasks[0])
+	}()
+
+	var sawProgressStatus bool
+	var sawLog bool
+	deadline := time.Now().Add(3 * time.Second)
+	for !(sawProgressStatus && sawLog) {
+		if time.Now().After(deadline) {
+			t.Fatalf("expected batch websocket progress status and log, got status=%v log=%v", sawProgressStatus, sawLog)
+		}
+
+		message := conn.readJSON(t)
+		messageType, _ := message["type"].(string)
+		switch messageType {
+		case "status":
+			if message["completed"] == float64(1) {
+				sawProgressStatus = true
+				assertWebSocketMessageField(t, message, "status", jobs.StatusRunning)
+			}
+		case "log":
+			if _, ok := message["message"].(string); ok {
+				sawLog = true
+			}
+		}
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("unexpected batch worker error: %v", err)
+	}
+
+	if err := conn.conn.WriteJSON(map[string]any{"type": "cancel"}); err != nil {
+		t.Fatalf("write batch cancel websocket message: %v", err)
+	}
+
+	cancelling := conn.readJSON(t)
+	assertWebSocketMessageField(t, cancelling, "type", "status")
+	assertWebSocketMessageField(t, cancelling, "batch_id", batchID)
+	assertWebSocketMessageField(t, cancelling, "status", "cancelling")
+	if cancelling["total"] != float64(2) {
+		t.Fatalf("expected cancelling total=2, got %#v", cancelling["total"])
+	}
+	if cancelling["completed"] != float64(2) {
+		t.Fatalf("expected cancelling completed=2, got %#v", cancelling["completed"])
+	}
+	if cancelling["finished"] != false {
+		t.Fatalf("expected cancelling finished=false, got %#v", cancelling["finished"])
+	}
+
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("expected final cancelled batch websocket status")
+		}
+
+		message := conn.readJSON(t)
+		if message["type"] == "status" && message["status"] == jobs.StatusCancelled {
+			assertWebSocketMessageField(t, message, "batch_id", batchID)
+			if message["finished"] != true {
+				t.Fatalf("expected finished=true, got %#v", message["finished"])
+			}
+			if message["cancelled"] != true {
+				t.Fatalf("expected cancelled=true, got %#v", message["cancelled"])
+			}
+			break
+		}
+	}
+}
+
 func assertRegistrationCompatAvailableServices(t *testing.T, payload map[string]any) {
 	t.Helper()
 

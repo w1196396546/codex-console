@@ -16,11 +16,13 @@ type Repository interface {
 
 type SQLCRepository struct {
 	queries *jobsdb.Queries
+	db      jobsdb.DBTX
 }
 
 func NewRepository(db jobsdb.DBTX) *SQLCRepository {
 	return &SQLCRepository{
 		queries: jobsdb.New(db),
+		db:      db,
 	}
 }
 

@@ -1,3 +1,5 @@
+CREATE SEQUENCE job_logs_seq;
+
 CREATE TABLE jobs (
     job_id UUID PRIMARY KEY,
     job_type TEXT NOT NULL,
@@ -27,7 +29,7 @@ CREATE TABLE job_logs (
     id BIGSERIAL PRIMARY KEY,
     job_id UUID NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
     job_run_id UUID,
-    seq BIGINT NOT NULL,
+    seq BIGINT NOT NULL DEFAULT nextval('job_logs_seq'),
     level TEXT NOT NULL,
     message TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

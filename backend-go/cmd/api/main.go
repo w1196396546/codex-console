@@ -11,6 +11,7 @@ import (
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
 	postgresplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/postgres"
 	redisplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/redis"
+	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgxpool"
 	redisv9 "github.com/redis/go-redis/v9"
 )
@@ -19,6 +20,7 @@ type apiDependencies struct {
 	Config   config.Config
 	Postgres *pgxpool.Pool
 	Redis    *redisv9.Client
+	Queue    *jobs.AsynqQueue
 }
 
 func main() {
@@ -30,7 +32,7 @@ func main() {
 
 	log.Printf("api listening on %s", deps.Config.HTTPAddr)
 
-	jobService := jobs.NewService(jobs.NewRepository(deps.Postgres), nil)
+	jobService := jobs.NewService(jobs.NewRepository(deps.Postgres), deps.Queue)
 
 	if err := http.ListenAndServe(deps.Config.HTTPAddr, internalhttp.NewRouter(jobService)); err != nil {
 		log.Fatal(err)
@@ -57,14 +59,27 @@ func bootstrapAPI(parent context.Context) (apiDependencies, error) {
 		return apiDependencies{}, err
 	}
 
+	queue := jobs.NewAsynqQueue(asynq.RedisClientOpt{
+		Addr:     cfg.RedisAddr,
+		Password: cfg.RedisPass,
+		DB:       cfg.RedisDB,
+	})
+
 	return apiDependencies{
 		Config:   cfg,
 		Postgres: pool,
 		Redis:    redisClient,
+		Queue:    queue,
 	}, nil
 }
 
 func closeAPI(deps apiDependencies) {
+	if deps.Queue != nil {
+		if err := deps.Queue.Close(); err != nil {
+			log.Printf("close asynq queue: %v", err)
+		}
+	}
+
 	if deps.Redis != nil {
 		if err := deps.Redis.Close(); err != nil {
 			log.Printf("close redis client: %v", err)

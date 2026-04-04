@@ -2,8 +2,8 @@ package http_test
 
 import (
 	"bytes"
-	"encoding/json"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -13,10 +13,11 @@ import (
 
 	internalhttp "github.com/dou-jiang/codex-console/backend-go/internal/http"
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
+	"github.com/hibiken/asynq"
 )
 
 func TestCreateJob(t *testing.T) {
-	router := newTestRouter(t)
+	router, queue := newTestRouter(t)
 	body := []byte(`{"job_type":"team_sync","scope_type":"team","scope_id":"42","payload":{"team_id":42}}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/jobs", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -41,10 +42,13 @@ func TestCreateJob(t *testing.T) {
 	if resp["status"] != jobs.StatusPending {
 		t.Fatalf("expected pending status, got %#v", resp["status"])
 	}
+	if queue.task == nil {
+		t.Fatal("expected create job to enqueue an asynq task")
+	}
 }
 
 func TestJobLifecycleEndpoints(t *testing.T) {
-	router := newTestRouter(t)
+	router, _ := newTestRouter(t)
 	jobID := createJob(t, router)
 
 	getReq := httptest.NewRequest(http.MethodGet, "/api/jobs/"+jobID, nil)
@@ -130,11 +134,12 @@ func createJob(t *testing.T, router http.Handler) string {
 	return jobID
 }
 
-func newTestRouter(t *testing.T) http.Handler {
+func newTestRouter(t *testing.T) (http.Handler, *fakeQueue) {
 	t.Helper()
 
-	svc := jobs.NewService(newTestRepository(), nil)
-	return internalhttp.NewRouter(svc)
+	queue := &fakeQueue{}
+	svc := jobs.NewService(newTestRepository(), queue)
+	return internalhttp.NewRouter(svc), queue
 }
 
 type testRepository struct {
@@ -216,4 +221,13 @@ func (failingRepository) GetJob(context.Context, string) (jobs.Job, error) {
 func cloneJob(job jobs.Job) jobs.Job {
 	job.Payload = append([]byte(nil), job.Payload...)
 	return job
+}
+
+type fakeQueue struct {
+	task *asynq.Task
+}
+
+func (q *fakeQueue) Enqueue(_ context.Context, task *asynq.Task) error {
+	q.task = task
+	return nil
 }

@@ -52,6 +52,12 @@ func (h *Handler) CreateJob(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 
+	if err := h.service.EnqueueJob(r.Context(), job.JobID); err != nil {
+		_, _ = h.service.MarkFailed(r.Context(), job.JobID, "enqueue job: "+err.Error())
+		writeServiceError(w, err)
+		return
+	}
+
 	writeJSON(w, nethttp.StatusAccepted, map[string]any{
 		"success": true,
 		"job_id":  job.JobID,

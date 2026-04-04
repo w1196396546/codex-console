@@ -597,6 +597,53 @@ func TestRegistrationOutlookBatchCompatibility(t *testing.T) {
 	assertRegistrationOutlookBatchCompatFields(t, cancelled, batchID, jobs.StatusCancelled, 2, 2, 1, 0, 0, false, true, true)
 }
 
+func TestRegistrationStatsCompatibilityEndpoint(t *testing.T) {
+	server := httptest.NewServer(internalhttp.NewRouter(
+		jobs.NewService(jobs.NewInMemoryRepository(), nil),
+		registration.NewService(jobs.NewService(jobs.NewInMemoryRepository(), nil)),
+		e2eRegistrationStatsService{
+			response: registration.StatsResponse{
+				ByStatus: map[string]int{
+					"completed": 5,
+					"failed":    2,
+				},
+				TodayCount:       7,
+				TodayTotal:       7,
+				TodaySuccess:     5,
+				TodayFailed:      2,
+				TodaySuccessRate: 71.4,
+				TodayByStatus: map[string]int{
+					"completed": 5,
+					"failed":    2,
+				},
+			},
+		},
+	))
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/api/registration/stats")
+	if err != nil {
+		t.Fatalf("get stats request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected get stats 200, got %d", resp.StatusCode)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode stats response: %v", err)
+	}
+
+	if payload["today_total"] != float64(7) || payload["today_success"] != float64(5) || payload["today_failed"] != float64(2) {
+		t.Fatalf("unexpected today stats payload: %#v", payload)
+	}
+	if payload["today_success_rate"] != 71.4 {
+		t.Fatalf("expected today_success_rate=71.4, got %#v", payload["today_success_rate"])
+	}
+}
+
 func assertRegistrationCompatAvailableServices(t *testing.T, payload map[string]any) {
 	t.Helper()
 
@@ -1125,6 +1172,15 @@ func (r e2eOutlookRepository) ListOutlookServices(context.Context) ([]registrati
 
 func (r e2eOutlookRepository) ListAccountsByEmails(context.Context, []string) ([]registration.RegisteredAccountRecord, error) {
 	return append([]registration.RegisteredAccountRecord(nil), r.accounts...), nil
+}
+
+type e2eRegistrationStatsService struct {
+	response registration.StatsResponse
+	err      error
+}
+
+func (s e2eRegistrationStatsService) GetStats(context.Context) (registration.StatsResponse, error) {
+	return s.response, s.err
 }
 
 type capturingQueue struct {

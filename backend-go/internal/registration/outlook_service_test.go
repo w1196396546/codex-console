@@ -111,8 +111,18 @@ func TestStartOutlookBatch(t *testing.T) {
 	service := registration.NewOutlookService(outlookFakeRepository{}, batchService)
 
 	response, err := service.StartOutlookBatch(context.Background(), registration.OutlookBatchStartRequest{
-		ServiceIDs: []int{101, 202},
-		Proxy:      "http://proxy.internal:8080",
+		ServiceIDs:        []int{101, 202},
+		Proxy:             "http://proxy.internal:8080",
+		IntervalMin:       5,
+		IntervalMax:       30,
+		Concurrency:       3,
+		Mode:              "pipeline",
+		AutoUploadCPA:     true,
+		CPAServiceIDs:     []int{7, 8},
+		AutoUploadSub2API: true,
+		Sub2APIServiceIDs: []int{9},
+		AutoUploadTM:      true,
+		TMServiceIDs:      []int{10, 11},
 	})
 	if err != nil {
 		t.Fatalf("unexpected start error: %v", err)
@@ -141,6 +151,18 @@ func TestStartOutlookBatch(t *testing.T) {
 	if payloadOne.Proxy != "http://proxy.internal:8080" {
 		t.Fatalf("expected first payload proxy, got %+v", payloadOne)
 	}
+	if payloadOne.IntervalMin != 5 || payloadOne.IntervalMax != 30 || payloadOne.Concurrency != 3 || payloadOne.Mode != "pipeline" {
+		t.Fatalf("expected first payload scheduling fields, got %+v", payloadOne)
+	}
+	if !payloadOne.AutoUploadCPA || !reflect.DeepEqual(payloadOne.CPAServiceIDs, []int{7, 8}) {
+		t.Fatalf("expected first payload CPA upload fields, got %+v", payloadOne)
+	}
+	if !payloadOne.AutoUploadSub2API || !reflect.DeepEqual(payloadOne.Sub2APIServiceIDs, []int{9}) {
+		t.Fatalf("expected first payload Sub2API upload fields, got %+v", payloadOne)
+	}
+	if !payloadOne.AutoUploadTM || !reflect.DeepEqual(payloadOne.TMServiceIDs, []int{10, 11}) {
+		t.Fatalf("expected first payload TM upload fields, got %+v", payloadOne)
+	}
 
 	var payloadTwo registration.StartRequest
 	if err := json.Unmarshal(jobsService.createParams[1].Payload, &payloadTwo); err != nil {
@@ -148,6 +170,9 @@ func TestStartOutlookBatch(t *testing.T) {
 	}
 	if payloadTwo.EmailServiceType != "outlook" || payloadTwo.EmailServiceID == nil || *payloadTwo.EmailServiceID != 202 {
 		t.Fatalf("unexpected second payload: %+v", payloadTwo)
+	}
+	if payloadTwo.IntervalMin != 5 || payloadTwo.IntervalMax != 30 || payloadTwo.Concurrency != 3 || payloadTwo.Mode != "pipeline" {
+		t.Fatalf("expected second payload scheduling fields, got %+v", payloadTwo)
 	}
 
 	status, err := service.GetOutlookBatch(context.Background(), response.BatchID, 0)

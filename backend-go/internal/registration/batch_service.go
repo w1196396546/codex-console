@@ -13,11 +13,14 @@ import (
 )
 
 var (
-	ErrBatchNotFound      = errors.New("batch not found")
-	ErrInvalidBatchCount  = errors.New("batch count must be greater than 0")
-	ErrBatchAlreadyPaused = errors.New("batch is already paused")
-	ErrBatchNotPaused     = errors.New("batch is not paused")
-	ErrBatchFinished      = errors.New("batch is already finished")
+	ErrBatchNotFound           = errors.New("batch not found")
+	ErrInvalidBatchCount       = errors.New("batch count must be greater than 0")
+	ErrInvalidBatchInterval    = errors.New("batch interval is invalid")
+	ErrInvalidBatchConcurrency = errors.New("batch concurrency must be between 1 and 50")
+	ErrInvalidBatchMode        = errors.New("batch mode must be parallel or pipeline")
+	ErrBatchAlreadyPaused      = errors.New("batch is already paused")
+	ErrBatchNotPaused          = errors.New("batch is not paused")
+	ErrBatchFinished           = errors.New("batch is already finished")
 )
 
 type BatchStartRequest struct {
@@ -26,6 +29,16 @@ type BatchStartRequest struct {
 	Proxy              string         `json:"proxy,omitempty"`
 	EmailServiceID     *int           `json:"email_service_id,omitempty"`
 	EmailServiceConfig map[string]any `json:"email_service_config,omitempty"`
+	IntervalMin        int            `json:"interval_min,omitempty"`
+	IntervalMax        int            `json:"interval_max,omitempty"`
+	Concurrency        int            `json:"concurrency,omitempty"`
+	Mode               string         `json:"mode,omitempty"`
+	AutoUploadCPA      bool           `json:"auto_upload_cpa,omitempty"`
+	CPAServiceIDs      []int          `json:"cpa_service_ids,omitempty"`
+	AutoUploadSub2API  bool           `json:"auto_upload_sub2api,omitempty"`
+	Sub2APIServiceIDs  []int          `json:"sub2api_service_ids,omitempty"`
+	AutoUploadTM       bool           `json:"auto_upload_tm,omitempty"`
+	TMServiceIDs       []int          `json:"tm_service_ids,omitempty"`
 }
 
 type BatchTask struct {
@@ -97,6 +110,10 @@ func (s *BatchService) StartBatch(ctx context.Context, req BatchStartRequest) (B
 	if req.Count <= 0 {
 		return BatchStartResponse{}, ErrInvalidBatchCount
 	}
+	options, err := normalizeBatchExecutionOptions(req.IntervalMin, req.IntervalMax, req.Concurrency, req.Mode)
+	if err != nil {
+		return BatchStartResponse{}, err
+	}
 
 	requests := make([]StartRequest, 0, req.Count)
 	for range req.Count {
@@ -105,6 +122,16 @@ func (s *BatchService) StartBatch(ctx context.Context, req BatchStartRequest) (B
 			Proxy:              req.Proxy,
 			EmailServiceID:     req.EmailServiceID,
 			EmailServiceConfig: req.EmailServiceConfig,
+			IntervalMin:        options.IntervalMin,
+			IntervalMax:        options.IntervalMax,
+			Concurrency:        options.Concurrency,
+			Mode:               options.Mode,
+			AutoUploadCPA:      req.AutoUploadCPA,
+			CPAServiceIDs:      append([]int(nil), req.CPAServiceIDs...),
+			AutoUploadSub2API:  req.AutoUploadSub2API,
+			Sub2APIServiceIDs:  append([]int(nil), req.Sub2APIServiceIDs...),
+			AutoUploadTM:       req.AutoUploadTM,
+			TMServiceIDs:       append([]int(nil), req.TMServiceIDs...),
 		})
 	}
 
@@ -162,6 +189,38 @@ func (s *BatchService) startBatchRequests(ctx context.Context, requests []StartR
 		BatchID: batchID,
 		Count:   len(requests),
 		Tasks:   tasks,
+	}, nil
+}
+
+type batchExecutionOptions struct {
+	IntervalMin int
+	IntervalMax int
+	Concurrency int
+	Mode        string
+}
+
+func normalizeBatchExecutionOptions(intervalMin int, intervalMax int, concurrency int, mode string) (batchExecutionOptions, error) {
+	if intervalMin < 0 || intervalMax < intervalMin {
+		return batchExecutionOptions{}, ErrInvalidBatchInterval
+	}
+	if concurrency == 0 {
+		concurrency = 1
+	}
+	if concurrency < 1 || concurrency > 50 {
+		return batchExecutionOptions{}, ErrInvalidBatchConcurrency
+	}
+	if mode == "" {
+		mode = "pipeline"
+	}
+	if mode != "parallel" && mode != "pipeline" {
+		return batchExecutionOptions{}, ErrInvalidBatchMode
+	}
+
+	return batchExecutionOptions{
+		IntervalMin: intervalMin,
+		IntervalMax: intervalMax,
+		Concurrency: concurrency,
+		Mode:        mode,
 	}, nil
 }
 

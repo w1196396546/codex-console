@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -53,6 +54,58 @@ func TestStartRegistrationCreatesPendingTaskResponse(t *testing.T) {
 	}
 	if decoded.EmailServiceType != req.EmailServiceType {
 		t.Fatalf("expected payload email service type %q, got %q", req.EmailServiceType, decoded.EmailServiceType)
+	}
+}
+
+func TestStartRegistrationPreservesCompatibilityFieldsInPayload(t *testing.T) {
+	fakeJobs := &fakeJobsService{
+		createResponse: jobs.Job{
+			JobID:  "job-compat",
+			Status: jobs.StatusPending,
+		},
+	}
+	svc := registration.NewService(fakeJobs)
+
+	emailServiceID := 42
+	req := registration.StartRequest{
+		EmailServiceType:   "outlook",
+		Proxy:              "http://proxy.internal:8080",
+		EmailServiceID:     &emailServiceID,
+		EmailServiceConfig: map[string]any{"domain": "example.com"},
+		AutoUploadCPA:      true,
+		CPAServiceIDs:      []int{11, 22},
+		AutoUploadSub2API:  true,
+		Sub2APIServiceIDs:  []int{33},
+		AutoUploadTM:       true,
+		TMServiceIDs:       []int{44, 55},
+	}
+
+	if _, err := svc.StartRegistration(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var decoded registration.StartRequest
+	if err := json.Unmarshal(fakeJobs.createParams.Payload, &decoded); err != nil {
+		t.Fatalf("unexpected payload decode error: %v", err)
+	}
+
+	if decoded.Proxy != req.Proxy {
+		t.Fatalf("expected proxy %q, got %q", req.Proxy, decoded.Proxy)
+	}
+	if decoded.EmailServiceID == nil || *decoded.EmailServiceID != emailServiceID {
+		t.Fatalf("expected email_service_id=%d, got %+v", emailServiceID, decoded.EmailServiceID)
+	}
+	if !reflect.DeepEqual(decoded.EmailServiceConfig, req.EmailServiceConfig) {
+		t.Fatalf("expected email_service_config %+v, got %+v", req.EmailServiceConfig, decoded.EmailServiceConfig)
+	}
+	if decoded.AutoUploadCPA != req.AutoUploadCPA || !reflect.DeepEqual(decoded.CPAServiceIDs, req.CPAServiceIDs) {
+		t.Fatalf("expected CPA upload fields preserved, got %+v", decoded)
+	}
+	if decoded.AutoUploadSub2API != req.AutoUploadSub2API || !reflect.DeepEqual(decoded.Sub2APIServiceIDs, req.Sub2APIServiceIDs) {
+		t.Fatalf("expected Sub2API upload fields preserved, got %+v", decoded)
+	}
+	if decoded.AutoUploadTM != req.AutoUploadTM || !reflect.DeepEqual(decoded.TMServiceIDs, req.TMServiceIDs) {
+		t.Fatalf("expected TM upload fields preserved, got %+v", decoded)
 	}
 }
 

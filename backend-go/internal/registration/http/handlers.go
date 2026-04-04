@@ -36,6 +36,10 @@ type availableServicesService interface {
 	ListAvailableServices(ctx context.Context) (registration.AvailableServicesResponse, error)
 }
 
+type statsService interface {
+	GetStats(ctx context.Context) (registration.StatsResponse, error)
+}
+
 type outlookService interface {
 	ListOutlookAccounts(ctx context.Context) (registration.OutlookAccountsListResponse, error)
 	StartOutlookBatch(ctx context.Context, req registration.OutlookBatchStartRequest) (registration.OutlookBatchStartResponse, error)
@@ -47,6 +51,7 @@ type Handler struct {
 	tasks             taskService
 	batches           batchService
 	availableServices availableServicesService
+	stats             statsService
 	outlook           outlookService
 }
 
@@ -55,6 +60,7 @@ func NewHandler(
 	tasks taskService,
 	batches batchService,
 	availableServices availableServicesService,
+	stats statsService,
 	outlook outlookService,
 ) *Handler {
 	return &Handler{
@@ -62,6 +68,7 @@ func NewHandler(
 		tasks:             tasks,
 		batches:           batches,
 		availableServices: availableServices,
+		stats:             stats,
 		outlook:           outlook,
 	}
 }
@@ -69,6 +76,9 @@ func NewHandler(
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Route("/api/registration", func(r chi.Router) {
 		r.Get("/available-services", h.GetAvailableServices)
+		if h.stats != nil {
+			r.Get("/stats", h.GetStats)
+		}
 		if h.outlook != nil {
 			r.Get("/outlook-accounts", h.GetOutlookAccounts)
 		}
@@ -133,6 +143,16 @@ func (h *Handler) GetAvailableServices(w nethttp.ResponseWriter, r *nethttp.Requ
 		"freemail":  {Available: false, Count: 0, Services: []map[string]any{}},
 		"imap_mail": {Available: false, Count: 0, Services: []map[string]any{}},
 	})
+}
+
+func (h *Handler) GetStats(w nethttp.ResponseWriter, r *nethttp.Request) {
+	resp, err := h.stats.GetStats(r.Context())
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, nethttp.StatusOK, resp)
 }
 
 func (h *Handler) StartRegistration(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -363,6 +383,12 @@ func writeServiceError(w nethttp.ResponseWriter, err error) {
 	} else if errors.Is(err, registration.ErrBatchNotPaused) {
 		status = nethttp.StatusBadRequest
 	} else if errors.Is(err, registration.ErrBatchFinished) {
+		status = nethttp.StatusBadRequest
+	} else if errors.Is(err, registration.ErrInvalidBatchInterval) {
+		status = nethttp.StatusBadRequest
+	} else if errors.Is(err, registration.ErrInvalidBatchConcurrency) {
+		status = nethttp.StatusBadRequest
+	} else if errors.Is(err, registration.ErrInvalidBatchMode) {
 		status = nethttp.StatusBadRequest
 	} else if errors.Is(err, registration.ErrOutlookAccountSelectionRequired) {
 		status = nethttp.StatusBadRequest

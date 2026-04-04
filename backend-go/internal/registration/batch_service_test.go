@@ -3,6 +3,8 @@ package registration_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"reflect"
 	"strconv"
 	"testing"
 
@@ -69,6 +71,62 @@ func TestStartBatchCreatesBatchAndTasks(t *testing.T) {
 	}
 }
 
+func TestStartBatchPreservesCompatibilityFieldsInEachPayload(t *testing.T) {
+	repo := jobs.NewInMemoryRepository()
+	queue := &batchFakeQueue{}
+	svc := registration.NewBatchService(jobs.NewService(repo, queue))
+
+	emailServiceID := 77
+	resp, err := svc.StartBatch(context.Background(), registration.BatchStartRequest{
+		Count:              2,
+		EmailServiceType:   "outlook",
+		Proxy:              "http://proxy.internal:8080",
+		EmailServiceID:     &emailServiceID,
+		EmailServiceConfig: map[string]any{"domain": "example.com"},
+		IntervalMin:        5,
+		IntervalMax:        30,
+		Concurrency:        4,
+		Mode:               "parallel",
+		AutoUploadCPA:      true,
+		CPAServiceIDs:      []int{1, 2},
+		AutoUploadSub2API:  true,
+		Sub2APIServiceIDs:  []int{3},
+		AutoUploadTM:       true,
+		TMServiceIDs:       []int{4, 5},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, task := range resp.Tasks {
+		job, err := repo.GetJob(context.Background(), task.TaskUUID)
+		if err != nil {
+			t.Fatalf("load stored job %q: %v", task.TaskUUID, err)
+		}
+
+		var payload registration.StartRequest
+		if err := json.Unmarshal(job.Payload, &payload); err != nil {
+			t.Fatalf("decode payload for %q: %v", task.TaskUUID, err)
+		}
+
+		if payload.IntervalMin != 5 || payload.IntervalMax != 30 || payload.Concurrency != 4 || payload.Mode != "parallel" {
+			t.Fatalf("expected batch scheduling fields preserved, got %+v", payload)
+		}
+		if payload.EmailServiceID == nil || *payload.EmailServiceID != emailServiceID {
+			t.Fatalf("expected email_service_id=%d, got %+v", emailServiceID, payload.EmailServiceID)
+		}
+		if !payload.AutoUploadCPA || !reflect.DeepEqual(payload.CPAServiceIDs, []int{1, 2}) {
+			t.Fatalf("expected CPA upload fields preserved, got %+v", payload)
+		}
+		if !payload.AutoUploadSub2API || !reflect.DeepEqual(payload.Sub2APIServiceIDs, []int{3}) {
+			t.Fatalf("expected Sub2API upload fields preserved, got %+v", payload)
+		}
+		if !payload.AutoUploadTM || !reflect.DeepEqual(payload.TMServiceIDs, []int{4, 5}) {
+			t.Fatalf("expected TM upload fields preserved, got %+v", payload)
+		}
+	}
+}
+
 func TestStartBatchRejectsNonPositiveCount(t *testing.T) {
 	repo := jobs.NewInMemoryRepository()
 	queue := &batchFakeQueue{}
@@ -82,6 +140,66 @@ func TestStartBatchRejectsNonPositiveCount(t *testing.T) {
 			})
 			if err == nil {
 				t.Fatalf("expected error for count=%d", count)
+			}
+		})
+	}
+}
+
+func TestStartBatchRejectsInvalidSchedulingOptions(t *testing.T) {
+	repo := jobs.NewInMemoryRepository()
+	queue := &batchFakeQueue{}
+	svc := registration.NewBatchService(jobs.NewService(repo, queue))
+
+	tests := []struct {
+		name string
+		req  registration.BatchStartRequest
+		want error
+	}{
+		{
+			name: "negative interval",
+			req: registration.BatchStartRequest{
+				Count:            1,
+				EmailServiceType: "tempmail",
+				IntervalMin:      -1,
+			},
+			want: registration.ErrInvalidBatchInterval,
+		},
+		{
+			name: "interval max less than min",
+			req: registration.BatchStartRequest{
+				Count:            1,
+				EmailServiceType: "tempmail",
+				IntervalMin:      10,
+				IntervalMax:      5,
+			},
+			want: registration.ErrInvalidBatchInterval,
+		},
+		{
+			name: "invalid concurrency",
+			req: registration.BatchStartRequest{
+				Count:            1,
+				EmailServiceType: "tempmail",
+				Concurrency:      51,
+			},
+			want: registration.ErrInvalidBatchConcurrency,
+		},
+		{
+			name: "invalid mode",
+			req: registration.BatchStartRequest{
+				Count:            1,
+				EmailServiceType: "tempmail",
+				Concurrency:      1,
+				Mode:             "serial",
+			},
+			want: registration.ErrInvalidBatchMode,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := svc.StartBatch(context.Background(), test.req)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("expected %v, got %v", test.want, err)
 			}
 		})
 	}

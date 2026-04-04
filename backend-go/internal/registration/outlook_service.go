@@ -185,23 +185,37 @@ func (s *OutlookService) StartOutlookBatch(ctx context.Context, req OutlookBatch
 	if len(req.ServiceIDs) == 0 {
 		return OutlookBatchStartResponse{}, ErrOutlookAccountSelectionRequired
 	}
-	if req.IntervalMin < 0 || req.IntervalMax < req.IntervalMin {
-		return OutlookBatchStartResponse{}, ErrInvalidOutlookInterval
-	}
-	if req.Concurrency != 0 && (req.Concurrency < 1 || req.Concurrency > 50) {
-		return OutlookBatchStartResponse{}, ErrInvalidOutlookConcurrency
-	}
-	if req.Mode != "" && req.Mode != "parallel" && req.Mode != "pipeline" {
-		return OutlookBatchStartResponse{}, ErrInvalidOutlookMode
+	options, err := normalizeBatchExecutionOptions(req.IntervalMin, req.IntervalMax, req.Concurrency, req.Mode)
+	if err != nil {
+		switch err {
+		case ErrInvalidBatchInterval:
+			return OutlookBatchStartResponse{}, ErrInvalidOutlookInterval
+		case ErrInvalidBatchConcurrency:
+			return OutlookBatchStartResponse{}, ErrInvalidOutlookConcurrency
+		case ErrInvalidBatchMode:
+			return OutlookBatchStartResponse{}, ErrInvalidOutlookMode
+		default:
+			return OutlookBatchStartResponse{}, err
+		}
 	}
 
 	requests := make([]StartRequest, 0, len(req.ServiceIDs))
 	for _, serviceID := range req.ServiceIDs {
 		id := serviceID
 		requests = append(requests, StartRequest{
-			EmailServiceType: "outlook",
-			Proxy:            req.Proxy,
-			EmailServiceID:   &id,
+			EmailServiceType:  "outlook",
+			Proxy:             req.Proxy,
+			EmailServiceID:    &id,
+			IntervalMin:       options.IntervalMin,
+			IntervalMax:       options.IntervalMax,
+			Concurrency:       options.Concurrency,
+			Mode:              options.Mode,
+			AutoUploadCPA:     req.AutoUploadCPA,
+			CPAServiceIDs:     append([]int(nil), req.CPAServiceIDs...),
+			AutoUploadSub2API: req.AutoUploadSub2API,
+			Sub2APIServiceIDs: append([]int(nil), req.Sub2APIServiceIDs...),
+			AutoUploadTM:      req.AutoUploadTM,
+			TMServiceIDs:      append([]int(nil), req.TMServiceIDs...),
 		})
 	}
 

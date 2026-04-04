@@ -236,6 +236,49 @@ func TestAvailableServicesEndpointUsesInjectedData(t *testing.T) {
 	}
 }
 
+func TestRegistrationStatsEndpoint(t *testing.T) {
+	router, _, _ := newRegistrationRouterWithStats(t, fakeRegistrationStatsService{
+		response: registration.StatsResponse{
+			ByStatus: map[string]int{
+				"completed": 3,
+				"failed":    1,
+			},
+			TodayCount:       4,
+			TodayTotal:       4,
+			TodaySuccess:     3,
+			TodayFailed:      1,
+			TodaySuccessRate: 75.0,
+			TodayByStatus: map[string]int{
+				"completed": 3,
+				"failed":    1,
+			},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/registration/stats", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode stats response: %v", err)
+	}
+
+	if resp["today_total"] != float64(4) || resp["today_success"] != float64(3) || resp["today_failed"] != float64(1) {
+		t.Fatalf("unexpected today stats: %#v", resp)
+	}
+	if resp["today_success_rate"] != float64(75) {
+		t.Fatalf("expected today_success_rate=75, got %#v", resp["today_success_rate"])
+	}
+	byStatus, ok := resp["by_status"].(map[string]any)
+	if !ok || byStatus["completed"] != float64(3) || byStatus["failed"] != float64(1) {
+		t.Fatalf("unexpected by_status payload: %#v", resp["by_status"])
+	}
+}
+
 func TestBatchEndpoints(t *testing.T) {
 	router, repo, queue := newRegistrationRouter(t)
 
@@ -483,6 +526,24 @@ func TestBatchEndpointsRejectInvalidTransitions(t *testing.T) {
 	}
 	if statusResp["cancelled"] != false {
 		t.Fatalf("expected cancelled=false after rejected cancel, got %#v", statusResp["cancelled"])
+	}
+}
+
+func TestBatchStartRejectsInvalidSchedulingOptions(t *testing.T) {
+	router, _, _ := newRegistrationRouter(t)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/registration/batch",
+		bytes.NewReader([]byte(`{"count":1,"email_service_type":"tempmail","interval_min":10,"interval_max":5,"concurrency":99,"mode":"serial"}`)),
+	)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid batch scheduling, got %d body=%q", rec.Code, rec.Body.String())
 	}
 }
 
@@ -796,6 +857,20 @@ func newRegistrationRouterWithOutlook(
 	return internalhttp.NewRouter(jobService, registrationService, batchService, outlookService), repo, queue
 }
 
+func newRegistrationRouterWithStats(
+	t *testing.T,
+	statsService fakeRegistrationStatsService,
+) (http.Handler, *registrationTestRepository, *fakeQueue) {
+	t.Helper()
+
+	repo := newRegistrationTestRepository()
+	queue := &fakeQueue{}
+	jobService := jobs.NewService(repo, queue)
+	registrationService := registration.NewService(jobService)
+
+	return internalhttp.NewRouter(jobService, registrationService, statsService), repo, queue
+}
+
 type registrationTestRepository struct {
 	mu     sync.RWMutex
 	nextID int
@@ -928,4 +1003,13 @@ func (f fakeOutlookRepository) ListOutlookServices(_ context.Context) ([]registr
 
 func (f fakeOutlookRepository) ListAccountsByEmails(_ context.Context, _ []string) ([]registration.RegisteredAccountRecord, error) {
 	return append([]registration.RegisteredAccountRecord(nil), f.accounts...), nil
+}
+
+type fakeRegistrationStatsService struct {
+	response registration.StatsResponse
+	err      error
+}
+
+func (f fakeRegistrationStatsService) GetStats(_ context.Context) (registration.StatsResponse, error) {
+	return f.response, f.err
 }

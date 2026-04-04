@@ -26,6 +26,10 @@ type availableServicesRouteService interface {
 	ListAvailableServices(ctx context.Context) (registration.AvailableServicesResponse, error)
 }
 
+type registrationStatsRouteService interface {
+	GetStats(ctx context.Context) (registration.StatsResponse, error)
+}
+
 type outlookRouteService interface {
 	ListOutlookAccounts(ctx context.Context) (registration.OutlookAccountsListResponse, error)
 	StartOutlookBatch(ctx context.Context, req registration.OutlookBatchStartRequest) (registration.OutlookBatchStartResponse, error)
@@ -40,6 +44,7 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 	var registrationService *registration.Service
 	var batchService *registration.BatchService
 	var availableServices availableServicesRouteService
+	var registrationStatsService registrationStatsRouteService
 	var outlookService outlookRouteService
 	var accountsService accountsRouteService
 	var taskSocketHandler taskSocketRouteHandler
@@ -57,6 +62,10 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 		case availableServicesRouteService:
 			if availableServices == nil {
 				availableServices = value
+			}
+		case registrationStatsRouteService:
+			if registrationStatsService == nil {
+				registrationStatsService = value
 			}
 		case outlookRouteService:
 			if outlookService == nil {
@@ -77,7 +86,7 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 		}
 	}
 
-	return newRouter(jobService, registrationService, batchService, availableServices, outlookService, accountsService, taskSocketHandler, batchSocketHandler)
+	return newRouter(jobService, registrationService, batchService, availableServices, registrationStatsService, outlookService, accountsService, taskSocketHandler, batchSocketHandler)
 }
 
 func NewRouterWithTaskSocket(
@@ -85,7 +94,7 @@ func NewRouterWithTaskSocket(
 	registrationService *registration.Service,
 	taskSocketHandler taskSocketRouteHandler,
 ) *chi.Mux {
-	return newRouter(jobService, registrationService, nil, nil, nil, nil, taskSocketHandler, nil)
+	return newRouter(jobService, registrationService, nil, nil, nil, nil, nil, taskSocketHandler, nil)
 }
 
 func newRouter(
@@ -93,6 +102,7 @@ func newRouter(
 	registrationService *registration.Service,
 	batchService *registration.BatchService,
 	availableServices availableServicesRouteService,
+	registrationStatsService registrationStatsRouteService,
 	outlookService outlookRouteService,
 	accountsService accountsRouteService,
 	taskSocketHandler taskSocketRouteHandler,
@@ -125,6 +135,7 @@ func newRouter(
 			jobService,
 			batchService,
 			availableServices,
+			registrationStatsService,
 			outlookService,
 		).RegisterRoutes(r)
 		if batchSocketHandler == nil {

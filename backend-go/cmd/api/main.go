@@ -41,6 +41,9 @@ func main() {
 	availableServices := registration.NewAvailableServicesService(
 		registration.NewAvailableServicesPostgresRepository(deps.Postgres),
 	)
+	statsService := registration.NewStatsService(
+		registration.NewStatsPostgresRepository(deps.Postgres),
+	)
 	outlookService := registration.NewOutlookService(
 		registration.NewOutlookPostgresRepository(deps.Postgres),
 		batchService,
@@ -53,7 +56,7 @@ func main() {
 
 	if err := http.ListenAndServe(
 		deps.Config.HTTPAddr,
-		internalhttp.NewRouter(jobService, registrationService, batchService, availableServices, outlookService, accountsService, taskSocketHandler, batchSocketHandler),
+		internalhttp.NewRouter(jobService, registrationService, batchService, availableServices, statsService, outlookService, accountsService, taskSocketHandler, batchSocketHandler),
 	); err != nil {
 		log.Fatal(err)
 	}

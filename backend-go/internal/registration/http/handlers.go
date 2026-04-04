@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	nethttp "net/http"
+	"strconv"
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
 	"github.com/dou-jiang/codex-console/backend-go/internal/registration"
@@ -100,9 +101,24 @@ func (h *Handler) GetTaskLogs(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 
+	offset := 0
+	if rawOffset := r.URL.Query().Get("offset"); rawOffset != "" {
+		parsedOffset, parseErr := strconv.Atoi(rawOffset)
+		if parseErr != nil || parsedOffset < 0 {
+			nethttp.Error(w, "invalid offset", nethttp.StatusBadRequest)
+			return
+		}
+		offset = parsedOffset
+	}
+	if offset > len(logs) {
+		offset = len(logs)
+	}
+	incrementalLogs := logs[offset:]
+
 	writeJSON(w, nethttp.StatusOK, map[string]any{
 		"status":          job.Status,
-		"logs":            logs,
+		"logs":            incrementalLogs,
+		"log_offset":      offset,
 		"log_next_offset": len(logs),
 	})
 }

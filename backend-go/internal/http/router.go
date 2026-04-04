@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
@@ -19,9 +20,14 @@ type batchSocketRouteHandler interface {
 	HandleBatchSocket(w http.ResponseWriter, r *http.Request)
 }
 
+type availableServicesRouteService interface {
+	ListAvailableServices(ctx context.Context) (registration.AvailableServicesResponse, error)
+}
+
 func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 	var registrationService *registration.Service
 	var batchService *registration.BatchService
+	var availableServices availableServicesRouteService
 	var taskSocketHandler taskSocketRouteHandler
 	var batchSocketHandler batchSocketRouteHandler
 	for _, dependency := range dependencies {
@@ -34,6 +40,10 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 			if batchService == nil {
 				batchService = value
 			}
+		case availableServicesRouteService:
+			if availableServices == nil {
+				availableServices = value
+			}
 		case taskSocketRouteHandler:
 			if taskSocketHandler == nil {
 				taskSocketHandler = value
@@ -45,7 +55,7 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 		}
 	}
 
-	return newRouter(jobService, registrationService, batchService, taskSocketHandler, batchSocketHandler)
+	return newRouter(jobService, registrationService, batchService, availableServices, taskSocketHandler, batchSocketHandler)
 }
 
 func NewRouterWithTaskSocket(
@@ -53,13 +63,14 @@ func NewRouterWithTaskSocket(
 	registrationService *registration.Service,
 	taskSocketHandler taskSocketRouteHandler,
 ) *chi.Mux {
-	return newRouter(jobService, registrationService, nil, taskSocketHandler, nil)
+	return newRouter(jobService, registrationService, nil, nil, taskSocketHandler, nil)
 }
 
 func newRouter(
 	jobService *jobs.Service,
 	registrationService *registration.Service,
 	batchService *registration.BatchService,
+	availableServices availableServicesRouteService,
 	taskSocketHandler taskSocketRouteHandler,
 	batchSocketHandler batchSocketRouteHandler,
 ) *chi.Mux {
@@ -86,6 +97,7 @@ func newRouter(
 			registrationService,
 			jobService,
 			batchService,
+			availableServices,
 		).RegisterRoutes(r)
 		if batchSocketHandler == nil {
 			batchSocketHandler = registrationws.NewBatchHandler(batchService)

@@ -99,7 +99,7 @@ func TestRegistrationCompatibleEndpoints(t *testing.T) {
 	assertTaskControlStatus(t, router, taskUUID, "cancel", jobs.StatusCancelled)
 }
 
-func TestAvailableServicesEndpointMatchesFrontendShape(t *testing.T) {
+func TestAvailableServicesEndpointFallbackShape(t *testing.T) {
 	router, _, _ := newRegistrationRouter(t)
 	rec := httptest.NewRecorder()
 
@@ -152,6 +152,74 @@ func TestAvailableServicesEndpointMatchesFrontendShape(t *testing.T) {
 		if !ok || len(services) != 0 {
 			t.Fatalf("expected %s services empty, got %#v", serviceType, group["services"])
 		}
+	}
+}
+
+func TestAvailableServicesEndpointUsesInjectedData(t *testing.T) {
+	router, _, _ := newRegistrationRouterWithAvailableServices(t, fakeAvailableServicesService{
+		response: registration.AvailableServicesResponse{
+			"tempmail": {
+				Available: true,
+				Count:     1,
+				Services: []map[string]any{
+					{"id": nil, "name": "Tempmail.lol", "type": "tempmail"},
+				},
+			},
+			"yyds_mail": {
+				Available: true,
+				Count:     1,
+				Services: []map[string]any{
+					{"id": nil, "name": "YYDS Mail", "type": "yyds_mail", "default_domain": "mail.example.com"},
+				},
+			},
+			"outlook": {
+				Available: true,
+				Count:     1,
+				Services: []map[string]any{
+					{"id": 101, "name": "Outlook A", "type": "outlook", "has_oauth": true},
+				},
+			},
+			"moe_mail":  {Available: false, Count: 0, Services: []map[string]any{}},
+			"temp_mail": {Available: false, Count: 0, Services: []map[string]any{}},
+			"duck_mail": {Available: false, Count: 0, Services: []map[string]any{}},
+			"luckmail":  {Available: false, Count: 0, Services: []map[string]any{}},
+			"freemail":  {Available: false, Count: 0, Services: []map[string]any{}},
+			"imap_mail": {Available: false, Count: 0, Services: []map[string]any{}},
+		},
+	})
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/registration/available-services", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unexpected response json error: %v", err)
+	}
+
+	outlook, ok := resp["outlook"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected outlook object, got %#v", resp["outlook"])
+	}
+	if outlook["available"] != true || outlook["count"] != float64(1) {
+		t.Fatalf("expected injected outlook availability, got %#v", outlook)
+	}
+	services, ok := outlook["services"].([]any)
+	if !ok || len(services) != 1 {
+		t.Fatalf("expected injected outlook services, got %#v", outlook["services"])
+	}
+	service, ok := services[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected injected outlook service object, got %#v", services[0])
+	}
+	if service["id"] != float64(101) {
+		t.Fatalf("expected injected outlook id=101, got %#v", service["id"])
+	}
+	if service["has_oauth"] != true {
+		t.Fatalf("expected injected outlook has_oauth=true, got %#v", service["has_oauth"])
 	}
 }
 
@@ -458,6 +526,20 @@ func newRegistrationRouter(t *testing.T) (http.Handler, *registrationTestReposit
 	return internalhttp.NewRouter(jobService, registrationService), repo, queue
 }
 
+func newRegistrationRouterWithAvailableServices(
+	t *testing.T,
+	availableServices fakeAvailableServicesService,
+) (http.Handler, *registrationTestRepository, *fakeQueue) {
+	t.Helper()
+
+	repo := newRegistrationTestRepository()
+	queue := &fakeQueue{}
+	jobService := jobs.NewService(repo, queue)
+	registrationService := registration.NewService(jobService)
+
+	return internalhttp.NewRouter(jobService, registrationService, availableServices), repo, queue
+}
+
 type registrationTestRepository struct {
 	mu     sync.RWMutex
 	nextID int
@@ -555,4 +637,13 @@ func (q *fakeQueue) Enqueue(_ context.Context, task *asynq.Task) error {
 	q.task = task
 	q.tasks = append(q.tasks, task)
 	return nil
+}
+
+type fakeAvailableServicesService struct {
+	response registration.AvailableServicesResponse
+	err      error
+}
+
+func (f fakeAvailableServicesService) ListAvailableServices(_ context.Context) (registration.AvailableServicesResponse, error) {
+	return f.response, f.err
 }

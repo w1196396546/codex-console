@@ -32,17 +32,28 @@ type batchService interface {
 	CancelBatch(ctx context.Context, batchID string) (registration.BatchControlResponse, error)
 }
 
-type Handler struct {
-	start   startService
-	tasks   taskService
-	batches batchService
+type availableServicesService interface {
+	ListAvailableServices(ctx context.Context) (registration.AvailableServicesResponse, error)
 }
 
-func NewHandler(start startService, tasks taskService, batches batchService) *Handler {
+type Handler struct {
+	start             startService
+	tasks             taskService
+	batches           batchService
+	availableServices availableServicesService
+}
+
+func NewHandler(
+	start startService,
+	tasks taskService,
+	batches batchService,
+	availableServices availableServicesService,
+) *Handler {
 	return &Handler{
-		start:   start,
-		tasks:   tasks,
-		batches: batches,
+		start:             start,
+		tasks:             tasks,
+		batches:           batches,
+		availableServices: availableServices,
 	}
 }
 
@@ -65,50 +76,32 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	})
 }
 
-func (h *Handler) GetAvailableServices(w nethttp.ResponseWriter, _ *nethttp.Request) {
-	writeJSON(w, nethttp.StatusOK, map[string]any{
-		"tempmail": map[string]any{
-			"available": true,
-			"count":     1,
-			"services": []map[string]any{
+func (h *Handler) GetAvailableServices(w nethttp.ResponseWriter, r *nethttp.Request) {
+	if h.availableServices != nil {
+		response, err := h.availableServices.ListAvailableServices(r.Context())
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, nethttp.StatusOK, response)
+		return
+	}
+
+	writeJSON(w, nethttp.StatusOK, registration.AvailableServicesResponse{
+		"tempmail": {
+			Available: true,
+			Count:     1,
+			Services: []map[string]any{
 				{"id": "default", "name": "TempMail"},
 			},
 		},
-		"yyds_mail": map[string]any{
-			"available": false,
-			"count":     0,
-			"services":  []any{},
-		},
-		"outlook": map[string]any{
-			"available": false,
-			"count":     0,
-			"services":  []any{},
-		},
-		"moe_mail": map[string]any{
-			"available": false,
-			"count":     0,
-			"services":  []any{},
-		},
-		"temp_mail": map[string]any{
-			"available": false,
-			"count":     0,
-			"services":  []any{},
-		},
-		"duck_mail": map[string]any{
-			"available": false,
-			"count":     0,
-			"services":  []any{},
-		},
-		"luckmail": map[string]any{
-			"available": false,
-			"count":     0,
-			"services":  []any{},
-		},
-		"freemail": map[string]any{
-			"available": false,
-			"count":     0,
-			"services":  []any{},
-		},
+		"yyds_mail": {Available: false, Count: 0, Services: []map[string]any{}},
+		"outlook":   {Available: false, Count: 0, Services: []map[string]any{}},
+		"moe_mail":  {Available: false, Count: 0, Services: []map[string]any{}},
+		"temp_mail": {Available: false, Count: 0, Services: []map[string]any{}},
+		"duck_mail": {Available: false, Count: 0, Services: []map[string]any{}},
+		"luckmail":  {Available: false, Count: 0, Services: []map[string]any{}},
+		"freemail":  {Available: false, Count: 0, Services: []map[string]any{}},
 	})
 }
 

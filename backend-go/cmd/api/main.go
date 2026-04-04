@@ -12,6 +12,7 @@ import (
 	postgresplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/postgres"
 	redisplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/redis"
 	"github.com/dou-jiang/codex-console/backend-go/internal/registration"
+	registrationws "github.com/dou-jiang/codex-console/backend-go/internal/registration/ws"
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgxpool"
 	redisv9 "github.com/redis/go-redis/v9"
@@ -35,8 +36,12 @@ func main() {
 
 	jobService := jobs.NewService(jobs.NewRepository(deps.Postgres), deps.Queue)
 	registrationService := registration.NewService(jobService)
+	taskSocketHandler := registrationws.NewHandler(jobService)
 
-	if err := http.ListenAndServe(deps.Config.HTTPAddr, internalhttp.NewRouter(jobService, registrationService)); err != nil {
+	if err := http.ListenAndServe(
+		deps.Config.HTTPAddr,
+		internalhttp.NewRouterWithTaskSocket(jobService, registrationService, taskSocketHandler),
+	); err != nil {
 		log.Fatal(err)
 	}
 }

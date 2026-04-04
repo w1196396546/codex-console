@@ -77,7 +77,7 @@ func (r *InMemoryRepository) MarkJobRunning(ctx context.Context, jobID string, _
 	return r.UpdateJobStatus(ctx, jobID, StatusRunning)
 }
 
-func (r *InMemoryRepository) MarkJobCompleted(_ context.Context, jobID string, _ []byte) (Job, error) {
+func (r *InMemoryRepository) MarkJobCompleted(_ context.Context, jobID string, result []byte) (Job, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -86,6 +86,7 @@ func (r *InMemoryRepository) MarkJobCompleted(_ context.Context, jobID string, _
 		return Job{}, ErrJobNotFound
 	}
 	job.Status = StatusCompleted
+	job.Result = append([]byte(nil), result...)
 	r.jobs[jobID] = cloneStoredJob(job)
 	return cloneStoredJob(job), nil
 }
@@ -132,5 +133,6 @@ func (r *InMemoryRepository) ListJobLogs(_ context.Context, jobID string) ([]Job
 
 func cloneStoredJob(job Job) Job {
 	job.Payload = append([]byte(nil), job.Payload...)
+	job.Result = append([]byte(nil), job.Result...)
 	return job
 }

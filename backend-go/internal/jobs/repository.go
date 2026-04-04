@@ -76,6 +76,7 @@ func mapJob(record jobsdb.Job) Job {
 		ScopeID:   record.ScopeID,
 		Status:    record.Status,
 		Payload:   append([]byte(nil), record.Payload...),
+		Result:    append([]byte(nil), record.Result...),
 	}
 }
 

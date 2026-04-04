@@ -16,6 +16,7 @@ type Job struct {
 	ScopeID   string
 	Status    string
 	Payload   []byte
+	Result    []byte
 }
 
 type CreateJobParams struct {

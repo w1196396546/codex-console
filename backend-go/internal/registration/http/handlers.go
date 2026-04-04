@@ -229,12 +229,13 @@ func (h *Handler) GetTask(w nethttp.ResponseWriter, r *nethttp.Request) {
 		writeServiceError(w, err)
 		return
 	}
+	taskMetadata := registration.ResolveTaskMetadata(job)
 
 	writeJSON(w, nethttp.StatusOK, map[string]any{
 		"task_uuid":     job.JobID,
 		"status":        job.Status,
-		"email":         nil,
-		"email_service": nil,
+		"email":         taskMetadata.Email,
+		"email_service": taskMetadata.EmailService,
 	})
 }
 
@@ -269,12 +270,13 @@ func (h *Handler) GetTaskLogs(w nethttp.ResponseWriter, r *nethttp.Request) {
 	for _, item := range incrementalLogs {
 		logMessages = append(logMessages, item.Message)
 	}
+	taskMetadata := registration.ResolveTaskMetadata(job)
 
 	writeJSON(w, nethttp.StatusOK, map[string]any{
 		"task_uuid":       job.JobID,
 		"status":          job.Status,
-		"email":           nil,
-		"email_service":   nil,
+		"email":           taskMetadata.Email,
+		"email_service":   taskMetadata.EmailService,
 		"logs":            logMessages,
 		"log_offset":      offset,
 		"log_next_offset": len(logs),

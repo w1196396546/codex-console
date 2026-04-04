@@ -80,6 +80,7 @@ func TestGetJobReturnsMappedJob(t *testing.T) {
 			scopeID:   "42",
 			status:    jobs.StatusPending,
 			payload:   []byte(`{"team_id":42}`),
+			result:    []byte(`{"ok":true}`),
 		},
 	}
 	repo := jobs.NewRepository(db)
@@ -96,6 +97,43 @@ func TestGetJobReturnsMappedJob(t *testing.T) {
 	}
 	if job.Status != jobs.StatusPending {
 		t.Fatalf("expected pending, got %s", job.Status)
+	}
+	if string(job.Result) != `{"ok":true}` {
+		t.Fatalf("unexpected result: %s", string(job.Result))
+	}
+}
+
+func TestInMemoryRepositoryMarkJobCompletedPersistsResult(t *testing.T) {
+	repo := jobs.NewInMemoryRepository()
+
+	created, err := repo.CreateJob(context.Background(), jobs.CreateJobParams{
+		JobType:   "team_sync",
+		ScopeType: "team",
+		ScopeID:   "42",
+		Payload:   []byte(`{"team_id":42}`),
+	})
+	if err != nil {
+		t.Fatalf("unexpected create error: %v", err)
+	}
+
+	result := []byte(`{"ok":true}`)
+	completed, err := repo.MarkJobCompleted(context.Background(), created.JobID, result)
+	if err != nil {
+		t.Fatalf("unexpected complete error: %v", err)
+	}
+	if completed.Status != jobs.StatusCompleted {
+		t.Fatalf("expected completed, got %s", completed.Status)
+	}
+	if string(completed.Result) != `{"ok":true}` {
+		t.Fatalf("unexpected completed result: %s", string(completed.Result))
+	}
+
+	stored, err := repo.GetJob(context.Background(), created.JobID)
+	if err != nil {
+		t.Fatalf("unexpected get error: %v", err)
+	}
+	if string(stored.Result) != `{"ok":true}` {
+		t.Fatalf("unexpected stored result: %s", string(stored.Result))
 	}
 }
 
@@ -154,6 +192,7 @@ type fakeRow struct {
 	scopeID   string
 	status    string
 	payload   []byte
+	result    []byte
 }
 
 func (r fakeRow) Scan(dest ...any) error {
@@ -168,7 +207,7 @@ func (r fakeRow) Scan(dest ...any) error {
 	*(dest[4].(*string)) = r.status
 	*(dest[5].(*int32)) = 0
 	*(dest[6].(*[]byte)) = append([]byte(nil), r.payload...)
-	*(dest[7].(*[]byte)) = nil
+	*(dest[7].(*[]byte)) = append([]byte(nil), r.result...)
 	*(dest[8].(*pgtype.Text)) = pgtype.Text{}
 	*(dest[9].(*pgtype.Timestamptz)) = pgtype.Timestamptz{}
 	*(dest[10].(*pgtype.Timestamptz)) = pgtype.Timestamptz{}

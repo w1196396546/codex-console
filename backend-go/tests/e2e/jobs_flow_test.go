@@ -75,10 +75,10 @@ func TestRegistrationCompatibilityFlow(t *testing.T) {
 	}
 
 	task := getRegistrationTaskThroughCompatAPI(t, server.URL, taskUUID)
-	assertRegistrationCompatTaskFields(t, task, taskUUID, jobs.StatusPending)
+	assertRegistrationCompatTaskFields(t, task, taskUUID, jobs.StatusPending, nil, "tempmail")
 
 	initialLogs := getRegistrationLogsThroughCompatAPI(t, server.URL, taskUUID, 0)
-	assertRegistrationCompatLogFields(t, initialLogs, taskUUID, jobs.StatusPending, 0, 0)
+	assertRegistrationCompatLogFields(t, initialLogs, taskUUID, jobs.StatusPending, nil, "tempmail", 0, 0)
 	initialLogItems, ok := initialLogs["logs"].([]any)
 	if !ok {
 		t.Fatalf("expected initial logs array, got %#v", initialLogs["logs"])
@@ -92,7 +92,7 @@ func TestRegistrationCompatibilityFlow(t *testing.T) {
 	}
 
 	logs := getRegistrationLogsThroughCompatAPI(t, server.URL, taskUUID, 1)
-	assertRegistrationCompatLogFields(t, logs, taskUUID, jobs.StatusCompleted, 1, 2)
+	assertRegistrationCompatLogFields(t, logs, taskUUID, jobs.StatusCompleted, nil, "tempmail", 1, 2)
 
 	logItems, ok := logs["logs"].([]any)
 	if !ok {
@@ -119,7 +119,7 @@ func TestRegistrationCompatibilityFlow(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected numeric clamped log_offset, got %#v", clampedLogs["log_offset"])
 	}
-	assertRegistrationCompatLogFields(t, clampedLogs, taskUUID, jobs.StatusCompleted, clampedOffset, clampedOffset)
+	assertRegistrationCompatLogFields(t, clampedLogs, taskUUID, jobs.StatusCompleted, nil, "tempmail", clampedOffset, clampedOffset)
 	clampedItems, ok := clampedLogs["logs"].([]any)
 	if !ok {
 		t.Fatalf("expected clamped logs array, got %#v", clampedLogs["logs"])
@@ -152,6 +152,9 @@ func TestRegistrationWebSocketCompatibility(t *testing.T) {
 	assertWebSocketMessageField(t, initialStatus, "type", "status")
 	assertWebSocketMessageField(t, initialStatus, "task_uuid", taskUUID)
 	assertWebSocketMessageField(t, initialStatus, "status", jobs.StatusPending)
+	if initialStatus["email_service"] != "tempmail" {
+		t.Fatalf("expected websocket email_service=tempmail, got %#v", initialStatus["email_service"])
+	}
 
 	worker := jobs.NewWorker(jobService)
 	done := make(chan error, 1)
@@ -635,7 +638,14 @@ func assertRegistrationCompatAvailableServices(t *testing.T, payload map[string]
 	}
 }
 
-func assertRegistrationCompatTaskFields(t *testing.T, payload map[string]any, taskUUID string, status string) {
+func assertRegistrationCompatTaskFields(
+	t *testing.T,
+	payload map[string]any,
+	taskUUID string,
+	status string,
+	email *string,
+	emailService string,
+) {
 	t.Helper()
 
 	if payload["task_uuid"] != taskUUID {
@@ -646,13 +656,17 @@ func assertRegistrationCompatTaskFields(t *testing.T, payload map[string]any, ta
 	}
 	if value, ok := payload["email"]; !ok {
 		t.Fatalf("expected email field, got %#v", payload)
-	} else if value != nil {
-		t.Fatalf("expected email to be null, got %#v", value)
+	} else if email == nil {
+		if value != nil {
+			t.Fatalf("expected email to be null, got %#v", value)
+		}
+	} else if value != *email {
+		t.Fatalf("expected email %q, got %#v", *email, value)
 	}
 	if value, ok := payload["email_service"]; !ok {
 		t.Fatalf("expected email_service field, got %#v", payload)
-	} else if value != nil {
-		t.Fatalf("expected email_service to be null, got %#v", value)
+	} else if value != emailService {
+		t.Fatalf("expected email_service to be %q, got %#v", emailService, value)
 	}
 }
 
@@ -661,12 +675,14 @@ func assertRegistrationCompatLogFields(
 	payload map[string]any,
 	taskUUID string,
 	status string,
+	email *string,
+	emailService string,
 	offset float64,
 	nextOffset float64,
 ) {
 	t.Helper()
 
-	assertRegistrationCompatTaskFields(t, payload, taskUUID, status)
+	assertRegistrationCompatTaskFields(t, payload, taskUUID, status, email, emailService)
 	if _, ok := payload["logs"]; !ok {
 		t.Fatalf("expected logs field, got %#v", payload)
 	}

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
+	"github.com/dou-jiang/codex-console/backend-go/internal/registration"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -95,10 +96,13 @@ func (h *Handler) sendSnapshot(
 	if err != nil {
 		return err
 	}
-	if err := socket.writeJSON(map[string]string{
-		"type":      "status",
-		"task_uuid": taskUUID,
-		"status":    job.Status,
+	taskMetadata := registration.ResolveTaskMetadata(job)
+	if err := socket.writeJSON(map[string]any{
+		"type":          "status",
+		"task_uuid":     taskUUID,
+		"status":        job.Status,
+		"email":         taskMetadata.Email,
+		"email_service": taskMetadata.EmailService,
 	}); err != nil {
 		return err
 	}
@@ -173,11 +177,13 @@ func (h *Handler) writeStatusUpdate(
 	if err != nil {
 		return err
 	}
-
-	if err := socket.writeJSON(map[string]string{
-		"type":      "status",
-		"task_uuid": taskUUID,
-		"status":    job.Status,
+	taskMetadata := registration.ResolveTaskMetadata(job)
+	if err := socket.writeJSON(map[string]any{
+		"type":          "status",
+		"task_uuid":     taskUUID,
+		"status":        job.Status,
+		"email":         taskMetadata.Email,
+		"email_service": taskMetadata.EmailService,
 	}); err != nil {
 		return err
 	}
@@ -212,10 +218,13 @@ func (h *Handler) pollLoop(
 
 			lastStatus, lastLogCount := state.get()
 			if job.Status != lastStatus {
-				if err := socket.writeJSON(map[string]string{
-					"type":      "status",
-					"task_uuid": taskUUID,
-					"status":    job.Status,
+				taskMetadata := registration.ResolveTaskMetadata(job)
+				if err := socket.writeJSON(map[string]any{
+					"type":          "status",
+					"task_uuid":     taskUUID,
+					"status":        job.Status,
+					"email":         taskMetadata.Email,
+					"email_service": taskMetadata.EmailService,
 				}); err != nil {
 					return err
 				}

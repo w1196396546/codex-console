@@ -70,6 +70,12 @@ func TestRegistrationCompatibleEndpoints(t *testing.T) {
 	if getTaskResp["status"] != jobs.StatusPending {
 		t.Fatalf("expected pending status, got %#v", getTaskResp["status"])
 	}
+	if getTaskResp["email_service"] != "tempmail" {
+		t.Fatalf("expected email_service=tempmail, got %#v", getTaskResp["email_service"])
+	}
+	if getTaskResp["email"] != nil {
+		t.Fatalf("expected email=nil, got %#v", getTaskResp["email"])
+	}
 
 	logsRec := httptest.NewRecorder()
 	router.ServeHTTP(logsRec, httptest.NewRequest(http.MethodGet, "/api/registration/tasks/"+taskUUID+"/logs", nil))
@@ -84,6 +90,12 @@ func TestRegistrationCompatibleEndpoints(t *testing.T) {
 	}
 	if logsResp["status"] != jobs.StatusPending {
 		t.Fatalf("expected pending log status, got %#v", logsResp["status"])
+	}
+	if logsResp["email_service"] != "tempmail" {
+		t.Fatalf("expected logs email_service=tempmail, got %#v", logsResp["email_service"])
+	}
+	if logsResp["email"] != nil {
+		t.Fatalf("expected logs email=nil, got %#v", logsResp["email"])
 	}
 	if logsResp["log_next_offset"] != float64(1) {
 		t.Fatalf("expected log_next_offset=1, got %#v", logsResp["log_next_offset"])

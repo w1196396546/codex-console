@@ -25,10 +25,10 @@ func TestRegistrationStartAndTaskReadback(t *testing.T) {
 	taskUUID := startRegistration(t, server.URL)
 
 	task := getRegistrationTask(t, server.URL, taskUUID)
-	assertRegistrationTaskFrontendFields(t, task, taskUUID, jobs.StatusPending)
+	assertRegistrationTaskFrontendFields(t, task, taskUUID, jobs.StatusPending, nil, "tempmail")
 
 	initialLogs := getRegistrationLogs(t, server.URL, taskUUID, 0)
-	assertRegistrationLogFrontendFields(t, initialLogs, taskUUID, jobs.StatusPending, 0, 0)
+	assertRegistrationLogFrontendFields(t, initialLogs, taskUUID, jobs.StatusPending, nil, "tempmail", 0, 0)
 	initialLogItems, ok := initialLogs["logs"].([]any)
 	if !ok {
 		t.Fatalf("expected initial logs array, got %#v", initialLogs["logs"])
@@ -42,7 +42,7 @@ func TestRegistrationStartAndTaskReadback(t *testing.T) {
 	}
 
 	logs := getRegistrationLogs(t, server.URL, taskUUID, 0)
-	assertRegistrationLogFrontendFields(t, logs, taskUUID, jobs.StatusCompleted, 0, 2)
+	assertRegistrationLogFrontendFields(t, logs, taskUUID, jobs.StatusCompleted, nil, "tempmail", 0, 2)
 
 	logItems, ok := logs["logs"].([]any)
 	if !ok {
@@ -69,7 +69,7 @@ func TestRegistrationLogsRespectsOffset(t *testing.T) {
 	}
 
 	logs := getRegistrationLogs(t, server.URL, taskUUID, 1)
-	assertRegistrationLogFrontendFields(t, logs, taskUUID, jobs.StatusCompleted, 1, 2)
+	assertRegistrationLogFrontendFields(t, logs, taskUUID, jobs.StatusCompleted, nil, "tempmail", 1, 2)
 	logItems, ok := logs["logs"].([]any)
 	if !ok {
 		t.Fatalf("expected logs array, got %#v", logs["logs"])
@@ -79,7 +79,7 @@ func TestRegistrationLogsRespectsOffset(t *testing.T) {
 	}
 
 	clampedLogs := getRegistrationLogs(t, server.URL, taskUUID, 999)
-	assertRegistrationLogFrontendFields(t, clampedLogs, taskUUID, jobs.StatusCompleted, 2, 2)
+	assertRegistrationLogFrontendFields(t, clampedLogs, taskUUID, jobs.StatusCompleted, nil, "tempmail", 2, 2)
 	clampedItems, ok := clampedLogs["logs"].([]any)
 	if !ok {
 		t.Fatalf("expected clamped logs array, got %#v", clampedLogs["logs"])
@@ -100,13 +100,39 @@ func TestRegistrationTaskResponseIncludesFrontendFields(t *testing.T) {
 	taskUUID := startRegistration(t, server.URL)
 
 	task := getRegistrationTask(t, server.URL, taskUUID)
-	assertRegistrationTaskFrontendFields(t, task, taskUUID, jobs.StatusPending)
+	assertRegistrationTaskFrontendFields(t, task, taskUUID, jobs.StatusPending, nil, "tempmail")
 
 	logs := getRegistrationLogs(t, server.URL, taskUUID, 0)
-	assertRegistrationLogFrontendFields(t, logs, taskUUID, jobs.StatusPending, 0, 0)
+	assertRegistrationLogFrontendFields(t, logs, taskUUID, jobs.StatusPending, nil, "tempmail", 0, 0)
 }
 
-func assertRegistrationTaskFrontendFields(t *testing.T, payload map[string]any, taskUUID string, status string) {
+func TestRegistrationLogsExposeCompletedEmailFromJobResult(t *testing.T) {
+	repo := jobs.NewInMemoryRepository()
+	queue := &fakeQueue{}
+	jobService := jobs.NewService(repo, queue)
+	registrationService := registration.NewService(jobService)
+	server := httptest.NewServer(internalhttp.NewRouter(jobService, registrationService))
+	defer server.Close()
+
+	taskUUID := startRegistration(t, server.URL)
+
+	worker := jobs.NewWorkerWithIDAndExecutor(jobService, "worker-email", jobs.ExecutorFunc(func(_ context.Context, _ jobs.Job) (map[string]any, error) {
+		return map[string]any{
+			"email": "alice@example.com",
+		}, nil
+	}))
+	if err := worker.HandleTask(context.Background(), queue.task); err != nil {
+		t.Fatalf("unexpected worker error: %v", err)
+	}
+
+	task := getRegistrationTask(t, server.URL, taskUUID)
+	assertRegistrationTaskFrontendFields(t, task, taskUUID, jobs.StatusCompleted, ptr("alice@example.com"), "tempmail")
+
+	logs := getRegistrationLogs(t, server.URL, taskUUID, 0)
+	assertRegistrationLogFrontendFields(t, logs, taskUUID, jobs.StatusCompleted, ptr("alice@example.com"), "tempmail", 0, 2)
+}
+
+func assertRegistrationTaskFrontendFields(t *testing.T, payload map[string]any, taskUUID string, status string, email *string, emailService string) {
 	t.Helper()
 
 	if payload["task_uuid"] != taskUUID {
@@ -117,13 +143,17 @@ func assertRegistrationTaskFrontendFields(t *testing.T, payload map[string]any, 
 	}
 	if value, ok := payload["email"]; !ok {
 		t.Fatalf("expected email field, got %#v", payload)
-	} else if value != nil {
-		t.Fatalf("expected email to be null, got %#v", value)
+	} else if email == nil {
+		if value != nil {
+			t.Fatalf("expected email to be null, got %#v", value)
+		}
+	} else if value != *email {
+		t.Fatalf("expected email %q, got %#v", *email, value)
 	}
 	if value, ok := payload["email_service"]; !ok {
 		t.Fatalf("expected email_service field, got %#v", payload)
-	} else if value != nil {
-		t.Fatalf("expected email_service to be null, got %#v", value)
+	} else if value != emailService {
+		t.Fatalf("expected email_service %q, got %#v", emailService, value)
 	}
 }
 
@@ -132,12 +162,14 @@ func assertRegistrationLogFrontendFields(
 	payload map[string]any,
 	taskUUID string,
 	status string,
+	email *string,
+	emailService string,
 	offset float64,
 	nextOffset float64,
 ) {
 	t.Helper()
 
-	assertRegistrationTaskFrontendFields(t, payload, taskUUID, status)
+	assertRegistrationTaskFrontendFields(t, payload, taskUUID, status, email, emailService)
 	if _, ok := payload["logs"]; !ok {
 		t.Fatalf("expected logs field, got %#v", payload)
 	}
@@ -154,6 +186,10 @@ func assertRegistrationLogFrontendFields(
 	if payload["log_next_offset"] != nextOffset {
 		t.Fatalf("expected log_next_offset=%v, got %#v", nextOffset, payload["log_next_offset"])
 	}
+}
+
+func ptr(value string) *string {
+	return &value
 }
 
 func startRegistration(t *testing.T, baseURL string) string {

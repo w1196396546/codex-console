@@ -29,10 +29,10 @@ func TestTaskSocketSendsCurrentStatusAndLogs(t *testing.T) {
 	service := jobs.NewService(repo, nil)
 
 	job, err := service.CreateJob(ctx, jobs.CreateJobParams{
-		JobType:   "registration",
+		JobType:   "registration_single",
 		ScopeType: "registration",
 		ScopeID:   "scope-1",
-		Payload:   []byte(`{"email":"user@example.com"}`),
+		Payload:   []byte(`{"email_service_type":"tempmail"}`),
 	})
 	if err != nil {
 		t.Fatalf("create job: %v", err)
@@ -58,6 +58,7 @@ func TestTaskSocketSendsCurrentStatusAndLogs(t *testing.T) {
 	assertMessageField(t, statusMessage, "type", "status")
 	assertMessageField(t, statusMessage, "task_uuid", job.JobID)
 	assertMessageField(t, statusMessage, "status", jobs.StatusPending)
+	assertMessageField(t, statusMessage, "email_service", "tempmail")
 
 	firstLog := conn.readJSON(t)
 	assertMessageField(t, firstLog, "type", "log")
@@ -77,11 +78,13 @@ func TestTaskSocketSendsCurrentStatusAndLogs(t *testing.T) {
 	paused := conn.readJSON(t)
 	assertMessageField(t, paused, "type", "status")
 	assertMessageField(t, paused, "status", jobs.StatusPaused)
+	assertMessageField(t, paused, "email_service", "tempmail")
 
 	conn.writeJSON(t, map[string]any{"type": "resume"})
 	resumed := conn.readJSON(t)
 	assertMessageField(t, resumed, "type", "status")
 	assertMessageField(t, resumed, "status", jobs.StatusPending)
+	assertMessageField(t, resumed, "email_service", "tempmail")
 
 	if _, err := repo.UpdateJobStatus(ctx, job.JobID, jobs.StatusRunning); err != nil {
 		t.Fatalf("set running status: %v", err)
@@ -102,12 +105,14 @@ func TestTaskSocketSendsCurrentStatusAndLogs(t *testing.T) {
 	})
 	assertContainsMessage(t, updates, "status", "type", "status")
 	assertContainsMessage(t, updates, jobs.StatusRunning, "status", "status")
+	assertContainsMessage(t, updates, "tempmail", "email_service", "email_service")
 	assertContainsMessage(t, updates, "third log", "message", "message")
 
 	conn.writeJSON(t, map[string]any{"type": "cancel"})
 	cancelled := conn.readJSON(t)
 	assertMessageField(t, cancelled, "type", "status")
 	assertMessageField(t, cancelled, "status", jobs.StatusCancelled)
+	assertMessageField(t, cancelled, "email_service", "tempmail")
 }
 
 func assertMessageField(t *testing.T, payload map[string]any, key string, want string) {

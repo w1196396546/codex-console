@@ -98,6 +98,24 @@ func (s *BatchService) StartBatch(ctx context.Context, req BatchStartRequest) (B
 		return BatchStartResponse{}, ErrInvalidBatchCount
 	}
 
+	requests := make([]StartRequest, 0, req.Count)
+	for range req.Count {
+		requests = append(requests, StartRequest{
+			EmailServiceType:   req.EmailServiceType,
+			Proxy:              req.Proxy,
+			EmailServiceID:     req.EmailServiceID,
+			EmailServiceConfig: req.EmailServiceConfig,
+		})
+	}
+
+	return s.startBatchRequests(ctx, requests)
+}
+
+func (s *BatchService) startBatchRequests(ctx context.Context, requests []StartRequest) (BatchStartResponse, error) {
+	if len(requests) == 0 {
+		return BatchStartResponse{}, ErrInvalidBatchCount
+	}
+
 	batchID, err := newBatchID()
 	if err != nil {
 		return BatchStartResponse{}, fmt.Errorf("generate batch id: %w", err)
@@ -105,27 +123,20 @@ func (s *BatchService) StartBatch(ctx context.Context, req BatchStartRequest) (B
 
 	s.mu.Lock()
 	s.batches[batchID] = batchRecord{
-		count:      req.Count,
-		taskUUIDs:  make([]string, 0, req.Count),
+		count:      len(requests),
+		taskUUIDs:  make([]string, 0, len(requests)),
 		logs:       make([]string, 0),
-		logOffsets: make(map[string]int, req.Count),
+		logOffsets: make(map[string]int, len(requests)),
 	}
 	s.mu.Unlock()
 
-	tasks := make([]BatchTask, 0, req.Count)
-	startReq := StartRequest{
-		EmailServiceType:   req.EmailServiceType,
-		Proxy:              req.Proxy,
-		EmailServiceID:     req.EmailServiceID,
-		EmailServiceConfig: req.EmailServiceConfig,
-	}
+	tasks := make([]BatchTask, 0, len(requests))
+	for _, request := range requests {
+		payload, err := json.Marshal(request)
+		if err != nil {
+			return BatchStartResponse{}, fmt.Errorf("marshal registration request: %w", err)
+		}
 
-	payload, err := json.Marshal(startReq)
-	if err != nil {
-		return BatchStartResponse{}, fmt.Errorf("marshal registration request: %w", err)
-	}
-
-	for range req.Count {
 		job, createErr := s.jobs.CreateJob(ctx, jobs.CreateJobParams{
 			JobType:   "registration_single",
 			ScopeType: "registration_batch",
@@ -149,7 +160,7 @@ func (s *BatchService) StartBatch(ctx context.Context, req BatchStartRequest) (B
 
 	return BatchStartResponse{
 		BatchID: batchID,
-		Count:   req.Count,
+		Count:   len(requests),
 		Tasks:   tasks,
 	}, nil
 }

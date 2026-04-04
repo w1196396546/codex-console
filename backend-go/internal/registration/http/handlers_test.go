@@ -474,6 +474,213 @@ func TestBatchEndpointsRejectInvalidTransitions(t *testing.T) {
 	}
 }
 
+func TestOutlookAccountsEndpoint(t *testing.T) {
+	router, _, _ := newRegistrationRouterWithOutlook(t, fakeOutlookRepository{
+		services: []registration.EmailServiceRecord{
+			{
+				ID:          101,
+				ServiceType: "outlook",
+				Name:        "Outlook Alpha",
+				Config: map[string]any{
+					"email":         "alpha@example.com",
+					"client_id":     "client-alpha",
+					"refresh_token": "oauth-refresh-alpha",
+				},
+			},
+			{
+				ID:          102,
+				ServiceType: "outlook",
+				Name:        "Outlook Beta",
+				Config: map[string]any{
+					"email": "beta@example.com",
+				},
+			},
+		},
+		accounts: []registration.RegisteredAccountRecord{
+			{
+				ID:           9001,
+				Email:        "alpha@example.com",
+				RefreshToken: "account-refresh-alpha",
+			},
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/registration/outlook-accounts", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unexpected response json error: %v", err)
+	}
+
+	if resp["total"] != float64(2) {
+		t.Fatalf("expected total=2, got %#v", resp["total"])
+	}
+	if resp["registered_count"] != float64(1) {
+		t.Fatalf("expected registered_count=1, got %#v", resp["registered_count"])
+	}
+	if resp["unregistered_count"] != float64(1) {
+		t.Fatalf("expected unregistered_count=1, got %#v", resp["unregistered_count"])
+	}
+
+	accounts, ok := resp["accounts"].([]any)
+	if !ok || len(accounts) != 2 {
+		t.Fatalf("expected accounts length=2, got %#v", resp["accounts"])
+	}
+
+	first, ok := accounts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected first account object, got %#v", accounts[0])
+	}
+	if first["id"] != float64(101) || first["email"] != "alpha@example.com" || first["name"] != "Outlook Alpha" {
+		t.Fatalf("unexpected first account payload: %#v", first)
+	}
+	if first["has_oauth"] != true || first["is_registered"] != true || first["has_refresh_token"] != true {
+		t.Fatalf("unexpected first account flags: %#v", first)
+	}
+	if first["needs_token_refresh"] != false || first["is_registration_complete"] != true {
+		t.Fatalf("unexpected first account registration state: %#v", first)
+	}
+	if first["registered_account_id"] != float64(9001) {
+		t.Fatalf("expected first registered_account_id=9001, got %#v", first["registered_account_id"])
+	}
+}
+
+func TestOutlookBatchEndpoints(t *testing.T) {
+	router, repo, queue := newRegistrationRouterWithOutlook(t, fakeOutlookRepository{})
+
+	startReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/registration/outlook-batch",
+		bytes.NewReader([]byte(`{"service_ids":[101,202],"proxy":"http://proxy.internal:8080","interval_min":5,"interval_max":30,"concurrency":3,"mode":"pipeline"}`)),
+	)
+	startReq.Header.Set("Content-Type", "application/json")
+	startRec := httptest.NewRecorder()
+	router.ServeHTTP(startRec, startReq)
+
+	if startRec.Code != http.StatusAccepted {
+		t.Fatalf("expected outlook batch start 202, got %d", startRec.Code)
+	}
+	if len(queue.tasks) != 2 {
+		t.Fatalf("expected 2 queued tasks, got %d", len(queue.tasks))
+	}
+
+	var startResp map[string]any
+	if err := json.Unmarshal(startRec.Body.Bytes(), &startResp); err != nil {
+		t.Fatalf("unexpected start response json error: %v", err)
+	}
+
+	batchID, ok := startResp["batch_id"].(string)
+	if !ok || batchID == "" {
+		t.Fatalf("expected batch_id string, got %#v", startResp["batch_id"])
+	}
+	if startResp["total"] != float64(2) {
+		t.Fatalf("expected total=2, got %#v", startResp["total"])
+	}
+	if startResp["skipped"] != float64(0) {
+		t.Fatalf("expected skipped=0, got %#v", startResp["skipped"])
+	}
+	if startResp["to_register"] != float64(2) {
+		t.Fatalf("expected to_register=2, got %#v", startResp["to_register"])
+	}
+	serviceIDs, ok := startResp["service_ids"].([]any)
+	if !ok || len(serviceIDs) != 2 || serviceIDs[0] != float64(101) || serviceIDs[1] != float64(202) {
+		t.Fatalf("expected service_ids [101,202], got %#v", startResp["service_ids"])
+	}
+
+	jobIDs := registrationBatchJobIDsByScope(repo, batchID)
+	if len(jobIDs) != 2 {
+		t.Fatalf("expected 2 jobs for batch %q, got %#v", batchID, jobIDs)
+	}
+	if err := repo.AppendJobLog(context.Background(), jobIDs[0], "info", "outlook compat log"); err != nil {
+		t.Fatalf("append batch log: %v", err)
+	}
+
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(
+		getRec,
+		httptest.NewRequest(http.MethodGet, "/api/registration/outlook-batch/"+batchID+"?log_offset=0", nil),
+	)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("expected outlook batch get 200, got %d", getRec.Code)
+	}
+
+	var getResp map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getResp); err != nil {
+		t.Fatalf("unexpected get response json error: %v", err)
+	}
+	if getResp["batch_id"] != batchID {
+		t.Fatalf("expected batch_id %q, got %#v", batchID, getResp["batch_id"])
+	}
+	if getResp["status"] != "running" {
+		t.Fatalf("expected status=running, got %#v", getResp["status"])
+	}
+	if getResp["total"] != float64(2) || getResp["completed"] != float64(0) {
+		t.Fatalf("unexpected totals payload: %#v", getResp)
+	}
+	if getResp["skipped"] != float64(0) {
+		t.Fatalf("expected skipped=0, got %#v", getResp["skipped"])
+	}
+	logs, ok := getResp["logs"].([]any)
+	if !ok || len(logs) != 1 || logs[0] != "outlook compat log" {
+		t.Fatalf("expected one outlook batch log, got %#v", getResp["logs"])
+	}
+
+	pauseResp := assertOutlookBatchControlStatus(t, router, batchID, "pause", "paused")
+	if pauseResp["success"] != true {
+		t.Fatalf("expected pause success=true, got %#v", pauseResp["success"])
+	}
+
+	pausedRec := httptest.NewRecorder()
+	router.ServeHTTP(
+		pausedRec,
+		httptest.NewRequest(http.MethodGet, "/api/registration/outlook-batch/"+batchID+"?log_offset=1", nil),
+	)
+	if pausedRec.Code != http.StatusOK {
+		t.Fatalf("expected paused outlook batch get 200, got %d", pausedRec.Code)
+	}
+
+	var pausedResp map[string]any
+	if err := json.Unmarshal(pausedRec.Body.Bytes(), &pausedResp); err != nil {
+		t.Fatalf("unexpected paused response json error: %v", err)
+	}
+	if pausedResp["status"] != "paused" || pausedResp["paused"] != true {
+		t.Fatalf("expected paused outlook batch state, got %#v", pausedResp)
+	}
+
+	resumeResp := assertOutlookBatchControlStatus(t, router, batchID, "resume", "running")
+	if resumeResp["success"] != true {
+		t.Fatalf("expected resume success=true, got %#v", resumeResp["success"])
+	}
+
+	cancelResp := assertOutlookBatchControlStatus(t, router, batchID, "cancel", "cancelled")
+	if cancelResp["success"] != true {
+		t.Fatalf("expected cancel success=true, got %#v", cancelResp["success"])
+	}
+
+	cancelledRec := httptest.NewRecorder()
+	router.ServeHTTP(
+		cancelledRec,
+		httptest.NewRequest(http.MethodGet, "/api/registration/outlook-batch/"+batchID+"?log_offset=1", nil),
+	)
+	if cancelledRec.Code != http.StatusOK {
+		t.Fatalf("expected cancelled outlook batch get 200, got %d", cancelledRec.Code)
+	}
+
+	var cancelledResp map[string]any
+	if err := json.Unmarshal(cancelledRec.Body.Bytes(), &cancelledResp); err != nil {
+		t.Fatalf("unexpected cancelled response json error: %v", err)
+	}
+	if cancelledResp["cancelled"] != true || cancelledResp["finished"] != true {
+		t.Fatalf("expected cancelled finished outlook batch state, got %#v", cancelledResp)
+	}
+}
+
 func assertTaskControlStatus(t *testing.T, router http.Handler, taskUUID string, action string, wantStatus string) {
 	t.Helper()
 
@@ -516,6 +723,26 @@ func assertBatchControlStatus(t *testing.T, router http.Handler, batchID string,
 	return resp
 }
 
+func assertOutlookBatchControlStatus(t *testing.T, router http.Handler, batchID string, action string, wantStatus string) map[string]any {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/registration/outlook-batch/"+batchID+"/"+action, nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected outlook %s 200, got %d", action, rec.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unexpected outlook %s response json error: %v", action, err)
+	}
+	if resp["status"] != wantStatus {
+		t.Fatalf("expected outlook %s status %q, got %#v", action, wantStatus, resp["status"])
+	}
+	return resp
+}
+
 func newRegistrationRouter(t *testing.T) (http.Handler, *registrationTestRepository, *fakeQueue) {
 	t.Helper()
 
@@ -539,6 +766,22 @@ func newRegistrationRouterWithAvailableServices(
 	registrationService := registration.NewService(jobService)
 
 	return internalhttp.NewRouter(jobService, registrationService, availableServices), repo, queue
+}
+
+func newRegistrationRouterWithOutlook(
+	t *testing.T,
+	outlookRepo fakeOutlookRepository,
+) (http.Handler, *registrationTestRepository, *fakeQueue) {
+	t.Helper()
+
+	repo := newRegistrationTestRepository()
+	queue := &fakeQueue{}
+	jobService := jobs.NewService(repo, queue)
+	registrationService := registration.NewService(jobService)
+	batchService := registration.NewBatchService(jobService)
+	outlookService := registration.NewOutlookService(outlookRepo, batchService)
+
+	return internalhttp.NewRouter(jobService, registrationService, batchService, outlookService), repo, queue
 }
 
 type registrationTestRepository struct {
@@ -624,6 +867,19 @@ func (r *registrationTestRepository) ListJobLogs(_ context.Context, jobID string
 	return logs, nil
 }
 
+func registrationBatchJobIDsByScope(repo *registrationTestRepository, batchID string) []string {
+	repo.mu.RLock()
+	defer repo.mu.RUnlock()
+
+	jobIDs := make([]string, 0)
+	for _, job := range repo.jobs {
+		if job.ScopeType == "registration_batch" && job.ScopeID == batchID {
+			jobIDs = append(jobIDs, job.JobID)
+		}
+	}
+	return jobIDs
+}
+
 func cloneRegistrationJob(job jobs.Job) jobs.Job {
 	job.Payload = append([]byte(nil), job.Payload...)
 	return job
@@ -647,4 +903,17 @@ type fakeAvailableServicesService struct {
 
 func (f fakeAvailableServicesService) ListAvailableServices(_ context.Context) (registration.AvailableServicesResponse, error) {
 	return f.response, f.err
+}
+
+type fakeOutlookRepository struct {
+	services []registration.EmailServiceRecord
+	accounts []registration.RegisteredAccountRecord
+}
+
+func (f fakeOutlookRepository) ListOutlookServices(_ context.Context) ([]registration.EmailServiceRecord, error) {
+	return append([]registration.EmailServiceRecord(nil), f.services...), nil
+}
+
+func (f fakeOutlookRepository) ListAccountsByEmails(_ context.Context, _ []string) ([]registration.RegisteredAccountRecord, error) {
+	return append([]registration.RegisteredAccountRecord(nil), f.accounts...), nil
 }

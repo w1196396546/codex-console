@@ -36,11 +36,18 @@ type availableServicesService interface {
 	ListAvailableServices(ctx context.Context) (registration.AvailableServicesResponse, error)
 }
 
+type outlookService interface {
+	ListOutlookAccounts(ctx context.Context) (registration.OutlookAccountsListResponse, error)
+	StartOutlookBatch(ctx context.Context, req registration.OutlookBatchStartRequest) (registration.OutlookBatchStartResponse, error)
+	GetOutlookBatch(ctx context.Context, batchID string, logOffset int) (registration.OutlookBatchStatusResponse, error)
+}
+
 type Handler struct {
 	start             startService
 	tasks             taskService
 	batches           batchService
 	availableServices availableServicesService
+	outlook           outlookService
 }
 
 func NewHandler(
@@ -48,18 +55,23 @@ func NewHandler(
 	tasks taskService,
 	batches batchService,
 	availableServices availableServicesService,
+	outlook outlookService,
 ) *Handler {
 	return &Handler{
 		start:             start,
 		tasks:             tasks,
 		batches:           batches,
 		availableServices: availableServices,
+		outlook:           outlook,
 	}
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Route("/api/registration", func(r chi.Router) {
 		r.Get("/available-services", h.GetAvailableServices)
+		if h.outlook != nil {
+			r.Get("/outlook-accounts", h.GetOutlookAccounts)
+		}
 		r.Post("/start", h.StartRegistration)
 		if h.batches != nil {
 			r.Post("/batch", h.StartBatch)
@@ -68,12 +80,29 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Post("/batch/{batchID}/resume", h.ResumeBatch)
 			r.Post("/batch/{batchID}/cancel", h.CancelBatch)
 		}
+		if h.outlook != nil && h.batches != nil {
+			r.Post("/outlook-batch", h.StartOutlookBatch)
+			r.Get("/outlook-batch/{batchID}", h.GetOutlookBatch)
+			r.Post("/outlook-batch/{batchID}/pause", h.PauseOutlookBatch)
+			r.Post("/outlook-batch/{batchID}/resume", h.ResumeOutlookBatch)
+			r.Post("/outlook-batch/{batchID}/cancel", h.CancelOutlookBatch)
+		}
 		r.Get("/tasks/{taskUUID}", h.GetTask)
 		r.Get("/tasks/{taskUUID}/logs", h.GetTaskLogs)
 		r.Post("/tasks/{taskUUID}/pause", h.PauseTask)
 		r.Post("/tasks/{taskUUID}/resume", h.ResumeTask)
 		r.Post("/tasks/{taskUUID}/cancel", h.CancelTask)
 	})
+}
+
+func (h *Handler) GetOutlookAccounts(w nethttp.ResponseWriter, r *nethttp.Request) {
+	resp, err := h.outlook.ListOutlookAccounts(r.Context())
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, nethttp.StatusOK, resp)
 }
 
 func (h *Handler) GetAvailableServices(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -138,6 +167,22 @@ func (h *Handler) StartBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
 	writeJSON(w, nethttp.StatusAccepted, resp)
 }
 
+func (h *Handler) StartOutlookBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
+	var req registration.OutlookBatchStartRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		nethttp.Error(w, "invalid json", nethttp.StatusBadRequest)
+		return
+	}
+
+	resp, err := h.outlook.StartOutlookBatch(r.Context(), req)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, nethttp.StatusAccepted, resp)
+}
+
 func (h *Handler) GetBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
 	logOffset := 0
 	if rawOffset := r.URL.Query().Get("log_offset"); rawOffset != "" {
@@ -150,6 +195,26 @@ func (h *Handler) GetBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 
 	resp, err := h.batches.GetBatch(r.Context(), chi.URLParam(r, "batchID"), logOffset)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, nethttp.StatusOK, resp)
+}
+
+func (h *Handler) GetOutlookBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
+	logOffset := 0
+	if rawOffset := r.URL.Query().Get("log_offset"); rawOffset != "" {
+		parsedOffset, err := strconv.Atoi(rawOffset)
+		if err != nil || parsedOffset < 0 {
+			nethttp.Error(w, "invalid log_offset", nethttp.StatusBadRequest)
+			return
+		}
+		logOffset = parsedOffset
+	}
+
+	resp, err := h.outlook.GetOutlookBatch(r.Context(), chi.URLParam(r, "batchID"), logOffset)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -240,6 +305,18 @@ func (h *Handler) CancelBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
 	h.writeBatchStatusUpdate(w, r, h.batches.CancelBatch)
 }
 
+func (h *Handler) PauseOutlookBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
+	h.writeBatchStatusUpdate(w, r, h.batches.PauseBatch)
+}
+
+func (h *Handler) ResumeOutlookBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
+	h.writeBatchStatusUpdate(w, r, h.batches.ResumeBatch)
+}
+
+func (h *Handler) CancelOutlookBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
+	h.writeBatchStatusUpdate(w, r, h.batches.CancelBatch)
+}
+
 func (h *Handler) writeTaskStatusUpdate(
 	w nethttp.ResponseWriter,
 	r *nethttp.Request,
@@ -284,6 +361,14 @@ func writeServiceError(w nethttp.ResponseWriter, err error) {
 	} else if errors.Is(err, registration.ErrBatchNotPaused) {
 		status = nethttp.StatusBadRequest
 	} else if errors.Is(err, registration.ErrBatchFinished) {
+		status = nethttp.StatusBadRequest
+	} else if errors.Is(err, registration.ErrOutlookAccountSelectionRequired) {
+		status = nethttp.StatusBadRequest
+	} else if errors.Is(err, registration.ErrInvalidOutlookInterval) {
+		status = nethttp.StatusBadRequest
+	} else if errors.Is(err, registration.ErrInvalidOutlookConcurrency) {
+		status = nethttp.StatusBadRequest
+	} else if errors.Is(err, registration.ErrInvalidOutlookMode) {
 		status = nethttp.StatusBadRequest
 	} else if errors.Is(err, jobs.ErrControlNotSupported) {
 		status = nethttp.StatusNotImplemented

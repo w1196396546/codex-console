@@ -424,6 +424,176 @@ func TestRegistrationBatchWebSocketCompatibility(t *testing.T) {
 	}
 }
 
+func TestRegistrationOutlookBatchCompatibility(t *testing.T) {
+	repo := jobs.NewInMemoryRepository()
+	queue := &capturingQueue{}
+	jobService := jobs.NewService(repo, queue)
+	registrationService := registration.NewService(jobService)
+	batchService := registration.NewBatchService(jobService)
+	outlookService := registration.NewOutlookService(e2eOutlookRepository{
+		services: []registration.EmailServiceRecord{
+			{
+				ID:          101,
+				ServiceType: "outlook",
+				Name:        "Outlook Alpha",
+				Config: map[string]any{
+					"email":         "alpha@example.com",
+					"client_id":     "client-alpha",
+					"refresh_token": "oauth-refresh-alpha",
+				},
+			},
+			{
+				ID:          202,
+				ServiceType: "outlook",
+				Name:        "Outlook Beta",
+				Config: map[string]any{
+					"email": "beta@example.com",
+				},
+			},
+		},
+		accounts: []registration.RegisteredAccountRecord{
+			{
+				ID:           9001,
+				Email:        "alpha@example.com",
+				RefreshToken: "account-refresh-alpha",
+			},
+		},
+	}, batchService)
+	server := httptest.NewServer(internalhttp.NewRouter(jobService, registrationService, batchService, outlookService))
+	defer server.Close()
+
+	accounts := getOutlookAccountsThroughCompatAPI(t, server.URL)
+	if accounts["total"] != float64(2) {
+		t.Fatalf("expected total=2 accounts, got %#v", accounts["total"])
+	}
+	if accounts["registered_count"] != float64(1) || accounts["unregistered_count"] != float64(1) {
+		t.Fatalf("unexpected outlook account counters: %#v", accounts)
+	}
+	accountItems, ok := accounts["accounts"].([]any)
+	if !ok || len(accountItems) != 2 {
+		t.Fatalf("expected outlook accounts array length=2, got %#v", accounts["accounts"])
+	}
+
+	startResp := startOutlookBatchThroughCompatAPI(t, server.URL, []int{101, 202})
+	batchID, ok := startResp["batch_id"].(string)
+	if !ok || batchID == "" {
+		t.Fatalf("expected batch_id, got %#v", startResp["batch_id"])
+	}
+	if startResp["total"] != float64(2) || startResp["skipped"] != float64(0) || startResp["to_register"] != float64(2) {
+		t.Fatalf("unexpected outlook batch start payload: %#v", startResp)
+	}
+	if len(queue.tasks) != 2 {
+		t.Fatalf("expected 2 queued outlook tasks, got %d", len(queue.tasks))
+	}
+
+	conn := dialTestWebSocket(t, server.URL+"/api/ws/batch/"+batchID)
+	defer conn.Close()
+
+	initialStatus := conn.readJSON(t)
+	assertWebSocketMessageField(t, initialStatus, "type", "status")
+	assertWebSocketMessageField(t, initialStatus, "batch_id", batchID)
+	assertWebSocketMessageField(t, initialStatus, "status", jobs.StatusRunning)
+	if initialStatus["total"] != float64(2) {
+		t.Fatalf("expected websocket total=2, got %#v", initialStatus["total"])
+	}
+
+	initial := getOutlookBatchThroughCompatAPI(t, server.URL, batchID, 0)
+	assertRegistrationOutlookBatchCompatFields(t, initial, batchID, jobs.StatusRunning, 2, 0, 0, 0, 0, false, false, false)
+
+	pauseResp := controlOutlookBatchThroughCompatAPI(t, server.URL, batchID, "pause")
+	if pauseResp["status"] != jobs.StatusPaused {
+		t.Fatalf("expected pause status paused, got %#v", pauseResp["status"])
+	}
+	pausedDeadline := time.Now().Add(3 * time.Second)
+	for {
+		if time.Now().After(pausedDeadline) {
+			t.Fatal("expected paused outlook batch websocket status")
+		}
+
+		message := conn.readJSON(t)
+		if message["type"] == "status" && message["status"] == jobs.StatusPaused {
+			assertWebSocketMessageField(t, message, "batch_id", batchID)
+			break
+		}
+	}
+
+	resumeResp := controlOutlookBatchThroughCompatAPI(t, server.URL, batchID, "resume")
+	if resumeResp["status"] != jobs.StatusRunning {
+		t.Fatalf("expected resume status running, got %#v", resumeResp["status"])
+	}
+	resumedDeadline := time.Now().Add(3 * time.Second)
+	for {
+		if time.Now().After(resumedDeadline) {
+			t.Fatal("expected resumed outlook batch websocket status")
+		}
+
+		message := conn.readJSON(t)
+		if message["type"] == "status" && message["status"] == jobs.StatusRunning {
+			assertWebSocketMessageField(t, message, "batch_id", batchID)
+			break
+		}
+	}
+
+	worker := jobs.NewWorker(jobService)
+	done := make(chan error, 1)
+	go func() {
+		done <- worker.HandleTask(context.Background(), queue.tasks[0])
+	}()
+
+	var sawProgressStatus bool
+	var sawLog bool
+	progressDeadline := time.Now().Add(3 * time.Second)
+	for !(sawProgressStatus && sawLog) {
+		if time.Now().After(progressDeadline) {
+			t.Fatalf("expected outlook batch websocket progress and log, got status=%v log=%v", sawProgressStatus, sawLog)
+		}
+
+		message := conn.readJSON(t)
+		switch message["type"] {
+		case "status":
+			if message["completed"] == float64(1) {
+				sawProgressStatus = true
+				assertWebSocketMessageField(t, message, "status", jobs.StatusRunning)
+			}
+		case "log":
+			if _, ok := message["message"].(string); ok {
+				sawLog = true
+			}
+		}
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("unexpected worker error: %v", err)
+	}
+
+	cancelResp := controlOutlookBatchThroughCompatAPI(t, server.URL, batchID, "cancel")
+	if success, ok := cancelResp["success"].(bool); !ok || !success {
+		t.Fatalf("expected cancel success=true, got %#v", cancelResp["success"])
+	}
+
+	cancelDeadline := time.Now().Add(3 * time.Second)
+	for {
+		if time.Now().After(cancelDeadline) {
+			t.Fatal("expected final cancelled outlook batch websocket status")
+		}
+
+		message := conn.readJSON(t)
+		if message["type"] == "status" && message["status"] == jobs.StatusCancelled {
+			assertWebSocketMessageField(t, message, "batch_id", batchID)
+			if message["finished"] != true {
+				t.Fatalf("expected finished=true, got %#v", message["finished"])
+			}
+			if message["cancelled"] != true {
+				t.Fatalf("expected cancelled=true, got %#v", message["cancelled"])
+			}
+			break
+		}
+	}
+
+	cancelled := getOutlookBatchThroughCompatAPI(t, server.URL, batchID, 0)
+	assertRegistrationOutlookBatchCompatFields(t, cancelled, batchID, jobs.StatusCancelled, 2, 2, 1, 0, 0, false, true, true)
+}
+
 func assertRegistrationCompatAvailableServices(t *testing.T, payload map[string]any) {
 	t.Helper()
 
@@ -567,6 +737,50 @@ func assertRegistrationBatchCompatFields(
 	}
 	if payload["log_next_offset"] != nextOffset {
 		t.Fatalf("expected log_next_offset=%v, got %#v", nextOffset, payload["log_next_offset"])
+	}
+}
+
+func assertRegistrationOutlookBatchCompatFields(
+	t *testing.T,
+	payload map[string]any,
+	batchID string,
+	status string,
+	total float64,
+	completed float64,
+	success float64,
+	failed float64,
+	skipped float64,
+	paused bool,
+	cancelled bool,
+	finished bool,
+) {
+	t.Helper()
+
+	logOffset, ok := payload["log_offset"].(float64)
+	if !ok {
+		t.Fatalf("expected log_offset number, got %#v", payload["log_offset"])
+	}
+	logNextOffset, ok := payload["log_next_offset"].(float64)
+	if !ok {
+		t.Fatalf("expected log_next_offset number, got %#v", payload["log_next_offset"])
+	}
+	assertRegistrationBatchCompatFields(
+		t,
+		payload,
+		batchID,
+		status,
+		total,
+		completed,
+		success,
+		failed,
+		paused,
+		cancelled,
+		finished,
+		logOffset,
+		logNextOffset,
+	)
+	if payload["skipped"] != skipped {
+		t.Fatalf("expected skipped=%v, got %#v", skipped, payload["skipped"])
 	}
 }
 
@@ -786,6 +1000,115 @@ func controlRegistrationBatchThroughCompatAPI(t *testing.T, baseURL string, batc
 		t.Fatalf("decode batch %s response: %v", action, err)
 	}
 	return payload
+}
+
+func getOutlookAccountsThroughCompatAPI(t *testing.T, baseURL string) map[string]any {
+	t.Helper()
+
+	resp, err := http.Get(baseURL + "/api/registration/outlook-accounts")
+	if err != nil {
+		t.Fatalf("get outlook accounts request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected get outlook accounts 200, got %d", resp.StatusCode)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode outlook accounts response: %v", err)
+	}
+	return payload
+}
+
+func startOutlookBatchThroughCompatAPI(t *testing.T, baseURL string, serviceIDs []int) map[string]any {
+	t.Helper()
+
+	body, err := json.Marshal(map[string]any{
+		"service_ids":  serviceIDs,
+		"interval_min": 5,
+		"interval_max": 30,
+		"concurrency":  2,
+		"mode":         "pipeline",
+	})
+	if err != nil {
+		t.Fatalf("marshal outlook batch request: %v", err)
+	}
+
+	resp, err := http.Post(baseURL+"/api/registration/outlook-batch", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("start outlook batch request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected start outlook batch 202, got %d", resp.StatusCode)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode start outlook batch response: %v", err)
+	}
+	return payload
+}
+
+func getOutlookBatchThroughCompatAPI(t *testing.T, baseURL string, batchID string, logOffset int) map[string]any {
+	t.Helper()
+
+	resp, err := http.Get(baseURL + "/api/registration/outlook-batch/" + batchID + "?log_offset=" + strconv.Itoa(logOffset))
+	if err != nil {
+		t.Fatalf("get outlook batch request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected get outlook batch 200, got %d", resp.StatusCode)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode outlook batch response: %v", err)
+	}
+	return payload
+}
+
+func controlOutlookBatchThroughCompatAPI(t *testing.T, baseURL string, batchID string, action string) map[string]any {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/registration/outlook-batch/"+batchID+"/"+action, nil)
+	if err != nil {
+		t.Fatalf("create outlook batch %s request: %v", action, err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("outlook batch %s request failed: %v", action, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected outlook batch %s 200, got %d", action, resp.StatusCode)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode outlook batch %s response: %v", action, err)
+	}
+	return payload
+}
+
+type e2eOutlookRepository struct {
+	services []registration.EmailServiceRecord
+	accounts []registration.RegisteredAccountRecord
+}
+
+func (r e2eOutlookRepository) ListOutlookServices(context.Context) ([]registration.EmailServiceRecord, error) {
+	return append([]registration.EmailServiceRecord(nil), r.services...), nil
+}
+
+func (r e2eOutlookRepository) ListAccountsByEmails(context.Context, []string) ([]registration.RegisteredAccountRecord, error) {
+	return append([]registration.RegisteredAccountRecord(nil), r.accounts...), nil
 }
 
 type capturingQueue struct {

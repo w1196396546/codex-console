@@ -40,12 +40,16 @@ func main() {
 	availableServices := registration.NewAvailableServicesService(
 		registration.NewAvailableServicesPostgresRepository(deps.Postgres),
 	)
+	outlookService := registration.NewOutlookService(
+		registration.NewOutlookPostgresRepository(deps.Postgres),
+		batchService,
+	)
 	taskSocketHandler := registrationws.NewHandler(jobService)
 	batchSocketHandler := registrationws.NewBatchHandler(batchService)
 
 	if err := http.ListenAndServe(
 		deps.Config.HTTPAddr,
-		internalhttp.NewRouter(jobService, registrationService, batchService, availableServices, taskSocketHandler, batchSocketHandler),
+		internalhttp.NewRouter(jobService, registrationService, batchService, availableServices, outlookService, taskSocketHandler, batchSocketHandler),
 	); err != nil {
 		log.Fatal(err)
 	}

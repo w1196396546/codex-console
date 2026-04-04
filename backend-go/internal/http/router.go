@@ -24,10 +24,17 @@ type availableServicesRouteService interface {
 	ListAvailableServices(ctx context.Context) (registration.AvailableServicesResponse, error)
 }
 
+type outlookRouteService interface {
+	ListOutlookAccounts(ctx context.Context) (registration.OutlookAccountsListResponse, error)
+	StartOutlookBatch(ctx context.Context, req registration.OutlookBatchStartRequest) (registration.OutlookBatchStartResponse, error)
+	GetOutlookBatch(ctx context.Context, batchID string, logOffset int) (registration.OutlookBatchStatusResponse, error)
+}
+
 func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 	var registrationService *registration.Service
 	var batchService *registration.BatchService
 	var availableServices availableServicesRouteService
+	var outlookService outlookRouteService
 	var taskSocketHandler taskSocketRouteHandler
 	var batchSocketHandler batchSocketRouteHandler
 	for _, dependency := range dependencies {
@@ -44,6 +51,10 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 			if availableServices == nil {
 				availableServices = value
 			}
+		case outlookRouteService:
+			if outlookService == nil {
+				outlookService = value
+			}
 		case taskSocketRouteHandler:
 			if taskSocketHandler == nil {
 				taskSocketHandler = value
@@ -55,7 +66,7 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 		}
 	}
 
-	return newRouter(jobService, registrationService, batchService, availableServices, taskSocketHandler, batchSocketHandler)
+	return newRouter(jobService, registrationService, batchService, availableServices, outlookService, taskSocketHandler, batchSocketHandler)
 }
 
 func NewRouterWithTaskSocket(
@@ -63,7 +74,7 @@ func NewRouterWithTaskSocket(
 	registrationService *registration.Service,
 	taskSocketHandler taskSocketRouteHandler,
 ) *chi.Mux {
-	return newRouter(jobService, registrationService, nil, nil, taskSocketHandler, nil)
+	return newRouter(jobService, registrationService, nil, nil, nil, taskSocketHandler, nil)
 }
 
 func newRouter(
@@ -71,6 +82,7 @@ func newRouter(
 	registrationService *registration.Service,
 	batchService *registration.BatchService,
 	availableServices availableServicesRouteService,
+	outlookService outlookRouteService,
 	taskSocketHandler taskSocketRouteHandler,
 	batchSocketHandler batchSocketRouteHandler,
 ) *chi.Mux {
@@ -98,6 +110,7 @@ func newRouter(
 			jobService,
 			batchService,
 			availableServices,
+			outlookService,
 		).RegisterRoutes(r)
 		if batchSocketHandler == nil {
 			batchSocketHandler = registrationws.NewBatchHandler(batchService)

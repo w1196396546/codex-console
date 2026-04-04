@@ -141,6 +141,17 @@ Redis 用于：
 
 并行存在，直到核心链路都切稳为止。
 
+### 3.7 目录落地约束
+
+Go 重建不直接覆盖当前 Python 代码，而是在当前仓库根目录下新增独立目录承载新系统。  
+本设计默认该目录命名为 `backend-go/`，用于放置：
+
+- Go control API
+- Go worker
+- Go migration / config / runtime 代码
+
+当前 Python 代码继续保留在原目录结构中，作为过渡期兼容实现，直到对应能力被 Go 版本完全替换。
+
 ---
 
 ## 4. 目标架构
@@ -683,4 +694,3 @@ Go 侧日志统一使用结构化输出，至少包含：
 3. Redis key / queue / control 协议设计
 4. API 兼容清单
 5. Phase 0-1 的执行计划
-

@@ -1,0 +1,10 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    schema: "db/migrations"
+    queries: "db/query"
+    gen:
+      go:
+        package: "jobsdb"
+        out: "internal/jobs/sqlc"
+        sql_package: "pgx/v5"

@@ -115,6 +115,44 @@ func TestTaskSocketSendsCurrentStatusAndLogs(t *testing.T) {
 	assertMessageField(t, cancelled, "email_service", "tempmail")
 }
 
+func TestTaskSocketCompletedStatusIncludesEmailFromJobResult(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := jobs.NewInMemoryRepository()
+	service := jobs.NewService(repo, nil)
+
+	job, err := service.CreateJob(ctx, jobs.CreateJobParams{
+		JobType:   "registration_single",
+		ScopeType: "registration",
+		ScopeID:   "scope-completed",
+		Payload:   []byte(`{"email_service_type":"tempmail"}`),
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if _, err := repo.MarkJobCompleted(ctx, job.JobID, []byte(`{"email":"done@example.com"}`)); err != nil {
+		t.Fatalf("mark job completed: %v", err)
+	}
+
+	handler := NewHandler(service, WithPollInterval(5*time.Millisecond))
+	router := chi.NewRouter()
+	router.Get("/api/ws/task/{task_uuid}", handler.HandleTaskSocket)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	conn := dialTestWebSocket(t, server.URL+"/api/ws/task/"+job.JobID)
+	defer conn.close(t)
+
+	statusMessage := conn.readJSON(t)
+	assertMessageField(t, statusMessage, "type", "status")
+	assertMessageField(t, statusMessage, "task_uuid", job.JobID)
+	assertMessageField(t, statusMessage, "status", jobs.StatusCompleted)
+	assertMessageField(t, statusMessage, "email_service", "tempmail")
+	assertMessageField(t, statusMessage, "email", "done@example.com")
+}
+
 func assertMessageField(t *testing.T, payload map[string]any, key string, want string) {
 	t.Helper()
 

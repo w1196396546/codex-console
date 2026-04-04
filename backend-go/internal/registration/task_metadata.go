@@ -28,6 +28,9 @@ func ResolveTaskMetadata(job jobs.Job) TaskMetadata {
 	if len(job.Result) == 0 {
 		return metadata
 	}
+	if job.Status != jobs.StatusCompleted {
+		return metadata
+	}
 
 	var result struct {
 		Email string `json:"email"`

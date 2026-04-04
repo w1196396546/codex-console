@@ -140,3 +140,97 @@ def test_start_outlook_batch_registration_allows_registered_complete_accounts(mo
     assert response.skipped == 0
     assert response.to_register == 2
     assert response.service_ids == [pending_id, complete_id]
+
+
+def test_cancel_task_marks_runtime_cancel_flag_and_cancelling_status(monkeypatch):
+    manager = _build_manager("registration_routes_cancel_single.db")
+
+    with manager.session_scope() as session:
+        session.add(
+            registration_module.RegistrationTask(
+                task_uuid="task-cancel-route",
+                status="running",
+            )
+        )
+
+    @contextmanager
+    def fake_get_db():
+        session = manager.SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    monkeypatch.setattr(registration_module, "get_db", fake_get_db)
+    registration_module.task_manager.cleanup_task("task-cancel-route")
+
+    response = asyncio.run(registration_module.cancel_task("task-cancel-route"))
+
+    with manager.session_scope() as session:
+        task = registration_module.crud.get_registration_task(session, "task-cancel-route")
+        task_status = task.status if task is not None else None
+
+    assert response["success"] is True
+    assert task is not None
+    assert task_status == "cancelling"
+    assert registration_module.task_manager.is_cancelled("task-cancel-route") is True
+
+
+def test_cancel_batch_cascades_to_child_tasks():
+    batch_id = "batch-cancel-cascade"
+    child_task_ids = ["batch-child-1", "batch-child-2"]
+    registration_module.batch_tasks[batch_id] = {
+        "total": 2,
+        "completed": 0,
+        "success": 0,
+        "failed": 0,
+        "cancelled": False,
+        "task_uuids": child_task_ids,
+        "current_index": 0,
+        "logs": [],
+        "finished": False,
+    }
+
+    try:
+        response = asyncio.run(registration_module.cancel_batch(batch_id))
+
+        assert response["success"] is True
+        assert registration_module.batch_tasks[batch_id]["cancelled"] is True
+        assert registration_module.task_manager.is_batch_cancelled(batch_id) is True
+        assert registration_module.task_manager.is_cancelled("batch-child-1") is True
+        assert registration_module.task_manager.is_cancelled("batch-child-2") is True
+    finally:
+        registration_module.batch_tasks.pop(batch_id, None)
+        registration_module.task_manager.cleanup_task("batch-child-1")
+        registration_module.task_manager.cleanup_task("batch-child-2")
+
+
+def test_get_task_logs_prefers_runtime_log_queue(monkeypatch):
+    manager = _build_manager("registration_routes_runtime_logs.db")
+
+    with manager.session_scope() as session:
+        session.add(
+            registration_module.RegistrationTask(
+                task_uuid="task-runtime-log",
+                status="running",
+                logs="persisted-log",
+            )
+        )
+
+    @contextmanager
+    def fake_get_db():
+        session = manager.SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    monkeypatch.setattr(registration_module, "get_db", fake_get_db)
+    registration_module.task_manager.add_log("task-runtime-log", "live-log-1")
+
+    try:
+        payload = asyncio.run(registration_module.get_task_logs("task-runtime-log"))
+    finally:
+        registration_module.task_manager.cleanup_task("task-runtime-log")
+
+    assert payload["logs"] == ["live-log-1"]

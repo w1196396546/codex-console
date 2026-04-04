@@ -91,6 +91,10 @@ class SignupFormResult:
     error_message: str = ""
 
 
+class RegistrationCancelledError(RuntimeError):
+    """注册任务收到取消请求后，用于快速中断当前流程。"""
+
+
 class RegistrationEngine:
     """
     注册引擎
@@ -102,7 +106,8 @@ class RegistrationEngine:
         email_service: BaseEmailService,
         proxy_url: Optional[str] = None,
         callback_logger: Optional[Callable[[str], None]] = None,
-        task_uuid: Optional[str] = None
+        task_uuid: Optional[str] = None,
+        check_cancelled: Optional[Callable[[], bool]] = None,
     ):
         """
         初始化注册引擎
@@ -112,11 +117,13 @@ class RegistrationEngine:
             proxy_url: 代理 URL
             callback_logger: 日志回调函数
             task_uuid: 任务 UUID（用于数据库记录）
+            check_cancelled: 取消检查回调
         """
         self.email_service = email_service
         self.proxy_url = proxy_url
         self.callback_logger = callback_logger or (lambda msg: logger.info(msg))
         self.task_uuid = task_uuid
+        self.check_cancelled = check_cancelled or (lambda: False)
 
         # 创建 HTTP 客户端
         self.http_client = OpenAIHTTPClient(proxy_url=proxy_url)
@@ -166,8 +173,14 @@ class RegistrationEngine:
         self._oai_client_build: str = _DEFAULT_OAI_CLIENT_BUILD
         self._oai_language: str = _DEFAULT_OAI_LANGUAGE
 
+    def _raise_if_cancelled(self):
+        """在关键边界点检查取消状态。"""
+        if callable(self.check_cancelled) and self.check_cancelled():
+            raise RegistrationCancelledError("任务已取消，停止继续执行")
+
     def _log(self, message: str, level: str = "info"):
         """记录日志"""
+        self._raise_if_cancelled()
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_message = f"[{timestamp}] {message}"
 
@@ -177,14 +190,6 @@ class RegistrationEngine:
         # 调用回调函数
         if self.callback_logger:
             self.callback_logger(log_message)
-
-        # 记录到数据库（如果有关联任务）
-        if self.task_uuid:
-            try:
-                with get_db() as db:
-                    crud.append_task_log(db, self.task_uuid, log_message)
-            except Exception as e:
-                logger.warning(f"记录任务日志失败: {e}")
 
         # 根据级别记录到日志系统
         if level == "error":
@@ -2945,6 +2950,7 @@ class RegistrationEngine:
         """
         result = RegistrationResult(success=False, logs=self.logs)
         try:
+            self._raise_if_cancelled()
             settings = get_settings()
             max_retries = int(getattr(settings, "registration_max_retries", 3) or 3)
 
@@ -2952,12 +2958,14 @@ class RegistrationEngine:
                 email_service=self.email_service,
                 proxy_url=self.proxy_url,
                 callback_logger=self._log,
+                check_cancelled=self._raise_if_cancelled,
                 max_retries=max_retries,
                 browser_mode="protocol",
                 extra_config=None,
             )
 
             flow_result = flow_engine.run()
+            self._raise_if_cancelled()
 
             # 同步关键状态供后续存库/导出
             self.email_info = flow_engine.email_info
@@ -3025,6 +3033,9 @@ class RegistrationEngine:
 
             return result
 
+        except RegistrationCancelledError as e:
+            result.error_message = str(e)
+            return result
         except Exception as e:
             self._log(f"注册过程中发生未预期错误: {e}", "error")
             result.error_message = str(e)

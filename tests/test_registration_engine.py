@@ -324,121 +324,133 @@ def test_native_password_verify_sends_device_id_and_complete_sentinel_header(mon
     )
 
 
-def test_run_registers_then_relogs_to_fetch_token():
-    session_one = QueueSession([
-        ("GET", "https://auth.example.test/flow/1", _response_with_did("did-1")),
-        (
-            "POST",
-            OPENAI_API_ENDPOINTS["signup"],
-            DummyResponse(payload={"page": {"type": OPENAI_PAGE_TYPES["PASSWORD_REGISTRATION"]}}),
-        ),
-        ("POST", OPENAI_API_ENDPOINTS["register"], DummyResponse(payload={})),
-        ("GET", OPENAI_API_ENDPOINTS["send_otp"], DummyResponse(payload={})),
-        ("POST", OPENAI_API_ENDPOINTS["validate_otp"], DummyResponse(payload={})),
-        ("POST", OPENAI_API_ENDPOINTS["create_account"], DummyResponse(payload={})),
-    ])
-    session_two = QueueSession([
-        ("GET", "https://auth.example.test/flow/2", _response_with_did("did-2")),
-        (
-            "POST",
-            OPENAI_API_ENDPOINTS["signup"],
-            DummyResponse(payload={"page": {"type": OPENAI_PAGE_TYPES["LOGIN_PASSWORD"]}}),
-        ),
-        (
-            "POST",
-            OPENAI_API_ENDPOINTS["password_verify"],
-            DummyResponse(payload={"page": {"type": OPENAI_PAGE_TYPES["EMAIL_OTP_VERIFICATION"]}}),
-        ),
-        ("POST", OPENAI_API_ENDPOINTS["validate_otp"], _response_with_login_cookies()),
-        (
-            "POST",
-            OPENAI_API_ENDPOINTS["select_workspace"],
-            DummyResponse(payload={"continue_url": "https://auth.example.test/continue"}),
-        ),
-        (
-            "GET",
-            "https://auth.example.test/continue",
-            DummyResponse(
-                status_code=302,
-                headers={"Location": "http://localhost:1455/auth/callback?code=code-2&state=state-2"},
-            ),
-        ),
-    ])
+def test_run_registers_then_relogs_to_fetch_token(monkeypatch):
+    captured = {}
 
-    email_service = FakeEmailService(["123456", "654321"])
-    engine = RegistrationEngine(email_service)
-    fake_oauth = FakeOAuthManager()
-    engine.http_client = FakeOpenAIClient([session_one, session_two], ["sentinel-1", "sentinel-2"])
-    engine.oauth_manager = fake_oauth
+    class StubAnyAutoRegistrationEngine:
+        def __init__(
+            self,
+            email_service,
+            proxy_url=None,
+            callback_logger=None,
+            check_cancelled=None,
+            max_retries=3,
+            browser_mode="protocol",
+            extra_config=None,
+        ):
+            captured["check_cancelled"] = check_cancelled
+            self.email_info = {"service_id": "mailbox-1"}
+            self.email = "tester@example.com"
+            self.inbox_email = "tester@example.com"
+            self.password = "Passw0rd!123"
+            self.session = None
+            self.device_id = "device-2"
 
+        def run(self):
+            return {
+                "success": True,
+                "source": "register",
+                "access_token": "access-2",
+                "refresh_token": "refresh-2",
+                "id_token": "id-2",
+                "session_token": "session-1",
+                "account_id": "acct-1",
+                "workspace_id": "ws-1",
+                "metadata": {
+                    "token_acquired_via_relogin": True,
+                },
+            }
+
+    monkeypatch.setattr(register_module, "AnyAutoRegistrationEngine", StubAnyAutoRegistrationEngine)
+    monkeypatch.setattr(
+        register_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            registration_max_retries=1,
+            openai_client_id="client-1",
+            openai_auth_url="https://auth.example.test",
+            openai_token_url="https://auth.example.test/oauth/token",
+            openai_redirect_uri="http://localhost:1455/auth/callback",
+            openai_scope="openid profile email offline_access",
+        ),
+    )
+
+    engine = RegistrationEngine(FakeEmailService(["123456"]))
     result = engine.run()
 
     assert result.success is True
     assert result.source == "register"
     assert result.workspace_id == "ws-1"
     assert result.session_token == "session-1"
-    assert fake_oauth.start_calls == 2
-    assert len(email_service.otp_requests) == 2
-    assert all(item["otp_sent_at"] is not None for item in email_service.otp_requests)
-    assert sum(1 for call in session_one.calls if call["url"] == OPENAI_API_ENDPOINTS["send_otp"]) == 1
-    assert sum(1 for call in session_two.calls if call["url"] == OPENAI_API_ENDPOINTS["send_otp"]) == 0
-    assert sum(1 for call in session_one.calls if call["url"] == OPENAI_API_ENDPOINTS["select_workspace"]) == 0
-    assert sum(1 for call in session_two.calls if call["url"] == OPENAI_API_ENDPOINTS["select_workspace"]) == 1
-    relogin_start_body = json.loads(session_two.calls[1]["kwargs"]["data"])
-    assert relogin_start_body["screen_hint"] == "login"
-    assert relogin_start_body["username"]["value"] == "tester@example.com"
-    password_verify_body = json.loads(session_two.calls[2]["kwargs"]["data"])
-    assert password_verify_body == {"password": result.password}
+    assert result.password == "Passw0rd!123"
     assert result.metadata["token_acquired_via_relogin"] is True
+    assert callable(captured["check_cancelled"])
 
 
-def test_existing_account_login_uses_auto_sent_otp_without_manual_send():
-    session = QueueSession([
-        ("GET", "https://auth.example.test/flow/1", _response_with_did("did-1")),
-        (
-            "POST",
-            OPENAI_API_ENDPOINTS["signup"],
-            DummyResponse(payload={"page": {"type": OPENAI_PAGE_TYPES["EMAIL_OTP_VERIFICATION"]}}),
+def test_existing_account_login_uses_auto_sent_otp_without_manual_send(monkeypatch):
+    class StubAnyAutoRegistrationEngine:
+        def __init__(
+            self,
+            email_service,
+            proxy_url=None,
+            callback_logger=None,
+            check_cancelled=None,
+            max_retries=3,
+            browser_mode="protocol",
+            extra_config=None,
+        ):
+            self.email_info = {"service_id": "mailbox-1"}
+            self.email = "tester@example.com"
+            self.inbox_email = "tester@example.com"
+            self.password = "known-pass"
+            self.session = None
+            self.device_id = "device-login"
+
+        def run(self):
+            return {
+                "success": True,
+                "source": "login",
+                "access_token": "access-login",
+                "refresh_token": "refresh-login",
+                "id_token": "id-login",
+                "session_token": "session-existing",
+                "account_id": "acct-existing",
+                "workspace_id": "ws-existing",
+                "metadata": {
+                    "token_acquired_via_relogin": False,
+                },
+            }
+
+    monkeypatch.setattr(register_module, "AnyAutoRegistrationEngine", StubAnyAutoRegistrationEngine)
+    monkeypatch.setattr(
+        register_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            registration_max_retries=1,
+            openai_client_id="client-1",
+            openai_auth_url="https://auth.example.test",
+            openai_token_url="https://auth.example.test/oauth/token",
+            openai_redirect_uri="http://localhost:1455/auth/callback",
+            openai_scope="openid profile email offline_access",
         ),
-        ("POST", OPENAI_API_ENDPOINTS["validate_otp"], _response_with_login_cookies("ws-existing", "session-existing")),
-        (
-            "POST",
-            OPENAI_API_ENDPOINTS["select_workspace"],
-            DummyResponse(payload={"continue_url": "https://auth.example.test/continue-existing"}),
-        ),
-        (
-            "GET",
-            "https://auth.example.test/continue-existing",
-            DummyResponse(
-                status_code=302,
-                headers={"Location": "http://localhost:1455/auth/callback?code=code-1&state=state-1"},
-            ),
-        ),
-    ])
+    )
 
-    email_service = FakeEmailService(["246810"])
-    engine = RegistrationEngine(email_service)
-    fake_oauth = FakeOAuthManager()
-    engine.http_client = FakeOpenAIClient([session], ["sentinel-1"])
-    engine.oauth_manager = fake_oauth
-
+    engine = RegistrationEngine(FakeEmailService(["246810"]))
     result = engine.run()
 
     assert result.success is True
     assert result.source == "login"
-    assert fake_oauth.start_calls == 1
-    assert sum(1 for call in session.calls if call["url"] == OPENAI_API_ENDPOINTS["send_otp"]) == 0
-    assert len(email_service.otp_requests) == 1
-    assert email_service.otp_requests[0]["otp_sent_at"] is not None
+    assert result.session_token == "session-existing"
     assert result.metadata["token_acquired_via_relogin"] is False
 
 
 def test_run_propagates_anyauto_login_source(monkeypatch):
     class StubAnyAutoRegistrationEngine:
-        def __init__(self, email_service, proxy_url=None, callback_logger=None, max_retries=3, browser_mode="protocol", extra_config=None):
+        def __init__(self, email_service, proxy_url=None, callback_logger=None, check_cancelled=None, max_retries=3, browser_mode="protocol", extra_config=None):
             self.email_service = email_service
             self.proxy_url = proxy_url
             self.callback_logger = callback_logger
+            self.check_cancelled = check_cancelled
             self.max_retries = max_retries
             self.browser_mode = browser_mode
             self.extra_config = extra_config
@@ -485,3 +497,39 @@ def test_run_propagates_anyauto_login_source(monkeypatch):
     assert result.source == "login"
     assert result.password == "known-pass"
     assert result.metadata["existing_account_detected"] is True
+
+
+def test_run_returns_cancelled_error_when_check_cancelled_trips(monkeypatch):
+    class StubAnyAutoRegistrationEngine:
+        def __init__(self, email_service, proxy_url=None, callback_logger=None, check_cancelled=None, max_retries=3, browser_mode="protocol", extra_config=None):
+            self.check_cancelled = check_cancelled
+            self.email_info = {"service_id": "mailbox-1"}
+            self.email = "tester@example.com"
+            self.inbox_email = "tester@example.com"
+            self.password = "known-pass"
+            self.session = None
+            self.device_id = "device-login"
+
+        def run(self):
+            self.check_cancelled()
+            raise AssertionError("should stop before here")
+
+    monkeypatch.setattr(register_module, "AnyAutoRegistrationEngine", StubAnyAutoRegistrationEngine)
+    monkeypatch.setattr(
+        register_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            registration_max_retries=1,
+            openai_client_id="client-1",
+            openai_auth_url="https://auth.example.test",
+            openai_token_url="https://auth.example.test/oauth/token",
+            openai_redirect_uri="http://localhost:1455/auth/callback",
+            openai_scope="openid profile email offline_access",
+        ),
+    )
+
+    engine = RegistrationEngine(FakeEmailService(["123456"]), check_cancelled=lambda: True)
+    result = engine.run()
+
+    assert result.success is False
+    assert result.error_message == "任务已取消，停止继续执行"

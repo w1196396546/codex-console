@@ -40,6 +40,7 @@ _task_cancelled: Dict[str, bool] = {}
 _batch_status: Dict[str, dict] = {}
 _batch_logs: Dict[str, List[str]] = defaultdict(list)
 _batch_locks: Dict[str, threading.Lock] = {}
+_batch_task_map: Dict[str, set[str]] = defaultdict(set)
 
 
 def _derive_scope_fields(
@@ -381,10 +382,22 @@ class TaskManager:
 
     def cancel_batch(self, batch_id: str):
         """取消批量任务"""
-        if batch_id in _batch_status:
+        if batch_id not in _batch_status:
+            _batch_status[batch_id] = {"cancelled": True, "status": "cancelling"}
+        else:
             _batch_status[batch_id]["cancelled"] = True
             _batch_status[batch_id]["status"] = "cancelling"
-            logger.info(f"批量任务 {batch_id} 已标记为取消")
+        logger.info(f"批量任务 {batch_id} 已标记为取消")
+        for task_uuid in list(_batch_task_map.get(batch_id, set())):
+            self.cancel_task(task_uuid)
+
+    def bind_batch_tasks(self, batch_id: str, task_uuids: List[str]):
+        """建立批量任务与子任务的映射，供取消级联使用。"""
+        _batch_task_map[batch_id] = {str(task_uuid).strip() for task_uuid in task_uuids if str(task_uuid).strip()}
+
+    def get_batch_task_ids(self, batch_id: str) -> List[str]:
+        """获取某个批量任务关联的子任务 ID 列表。"""
+        return sorted(_batch_task_map.get(batch_id, set()))
 
     def register_batch_websocket(self, batch_id: str, websocket):
         """注册批量任务 WebSocket 连接"""
@@ -431,13 +444,10 @@ class TaskManager:
         logger.info(f"批量任务 WebSocket 连接已注销: {batch_id}")
 
     def create_log_callback(self, task_uuid: str, prefix: str = "", batch_id: str = "") -> Callable[[str], None]:
-        """创建日志回调函数，可附加任务编号前缀，并同时推送到批量任务频道"""
+        """创建日志回调函数，可附加任务编号前缀。"""
         def callback(msg: str):
             full_msg = f"{prefix} {msg}" if prefix else msg
             self.add_log(task_uuid, full_msg)
-            # 如果属于批量任务，同步推送到 batch 频道，前端可在混合日志中看到详细步骤
-            if batch_id:
-                self.add_batch_log(batch_id, full_msg)
         return callback
 
     def create_check_cancelled_callback(self, task_uuid: str) -> Callable[[], bool]:

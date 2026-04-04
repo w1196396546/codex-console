@@ -70,6 +70,7 @@ class AnyAutoRegistrationEngine:
         email_service,
         proxy_url: Optional[str] = None,
         callback_logger: Optional[Callable[[str], None]] = None,
+        check_cancelled: Optional[Callable[[], object]] = None,
         max_retries: int = 3,
         browser_mode: str = "protocol",
         extra_config: Optional[Dict[str, Any]] = None,
@@ -77,6 +78,7 @@ class AnyAutoRegistrationEngine:
         self.email_service = email_service
         self.proxy_url = proxy_url
         self.callback_logger = callback_logger or (lambda _msg: None)
+        self.check_cancelled = check_cancelled or (lambda: False)
         self.max_retries = max(1, int(max_retries or 1))
         self.browser_mode = browser_mode or "protocol"
         self.extra_config = dict(extra_config or {})
@@ -88,7 +90,21 @@ class AnyAutoRegistrationEngine:
         self.session = None
         self.device_id: Optional[str] = None
 
+    def _raise_if_cancelled(self):
+        result = self.check_cancelled() if callable(self.check_cancelled) else False
+        if result is True:
+            raise RuntimeError("任务已取消，停止继续执行")
+
+    def _sleep(self, seconds: float):
+        remaining = max(0.0, float(seconds or 0.0))
+        while remaining > 0:
+            self._raise_if_cancelled()
+            step = min(0.2, remaining)
+            time.sleep(step)
+            remaining -= step
+
     def _log(self, message: str):
+        self._raise_if_cancelled()
         if self.callback_logger:
             self.callback_logger(message)
 
@@ -473,7 +489,7 @@ class AnyAutoRegistrationEngine:
                     for oauth_attempt in range(2):
                         if oauth_attempt > 0:
                             self._log(f"{reason} 第 {oauth_attempt + 1}/2 次重试...")
-                            time.sleep(1)
+                            self._sleep(1)
 
                         oauth_client = OAuthClient(
                             config=oauth_config,
@@ -754,6 +770,7 @@ class AnyAutoRegistrationEngine:
 
         for attempt in range(self.max_retries):
             try:
+                self._raise_if_cancelled()
                 if attempt == 0:
                     self._log("=" * 60)
                     self._log("开始注册流程 V2 (Session 复用直取 AccessToken)")
@@ -761,7 +778,7 @@ class AnyAutoRegistrationEngine:
                     self._log("=" * 60)
                 else:
                     self._log(f"整流程重试 {attempt + 1}/{self.max_retries} ...")
-                    time.sleep(1)
+                    self._sleep(1)
 
                 # 1. 创建邮箱
                 self.email_info = self.email_service.create_email()

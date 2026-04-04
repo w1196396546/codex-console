@@ -11,6 +11,8 @@ let selectedAccounts = new Set();
 let isLoading = false;
 let selectAllPages = false;  // 是否选中了全部页
 let currentFilters = { status: '', email_service: '', refresh_token_state: '', search: '' };  // 当前筛选条件
+let currentVisibleAccounts = [];
+let lastTeamManagementOwnerAccountId = null;
 const hasWindow = typeof window !== 'undefined';
 const hasDocument = typeof document !== 'undefined';
 const getElement = hasDocument ? (id) => document.getElementById(id) : () => null;
@@ -28,6 +30,37 @@ function buildTeamManagementEntryUrl(ownerAccountId) {
         return '/auto-team';
     }
     return `/auto-team?owner_account_id=${encodeURIComponent(ownerAccountId)}`;
+}
+
+function normalizePositiveInt(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+        return null;
+    }
+    return Math.trunc(numeric);
+}
+
+function resolveTeamManagementOwnerAccountId(account) {
+    if (!account || typeof account !== 'object') {
+        return null;
+    }
+
+    const teamRelationSummary = account.team_relation_summary && typeof account.team_relation_summary === 'object'
+        ? account.team_relation_summary
+        : null;
+    if (teamRelationSummary && teamRelationSummary.has_owner_role === true) {
+        return normalizePositiveInt(account.id);
+    }
+
+    if (normalizeSubscriptionType(account.subscription_type) === 'team') {
+        return normalizePositiveInt(account.id);
+    }
+
+    return null;
+}
+
+function resolveTeamManagementEntryHref(account) {
+    return buildTeamManagementEntryUrl(resolveTeamManagementOwnerAccountId(account));
 }
 
 // DOM 元素
@@ -51,6 +84,7 @@ const elements = {
     batchDeleteBtn: getElement('batch-delete-btn'),
     exportBtn: getElement('export-btn'),
     exportMenu: getElement('export-menu'),
+    teamManagementEntry: getElement('team-management-entry'),
     selectAll: getElement('select-all'),
     prevPage: getElement('prev-page'),
     nextPage: getElement('next-page'),
@@ -59,6 +93,33 @@ const elements = {
     modalBody: getElement('modal-body'),
     closeModal: getElement('close-modal')
 };
+
+function updateTeamManagementEntry(account = null) {
+    if (!elements.teamManagementEntry) {
+        return '/auto-team';
+    }
+
+    let ownerAccountId = resolveTeamManagementOwnerAccountId(account);
+
+    if (ownerAccountId === null && selectedAccounts.size === 1) {
+        const [selectedId] = Array.from(selectedAccounts);
+        const selectedAccount = currentVisibleAccounts.find((item) => item.id === selectedId) || null;
+        ownerAccountId = resolveTeamManagementOwnerAccountId(selectedAccount);
+    }
+
+    if (ownerAccountId !== null) {
+        lastTeamManagementOwnerAccountId = ownerAccountId;
+    } else if (lastTeamManagementOwnerAccountId !== null) {
+        ownerAccountId = lastTeamManagementOwnerAccountId;
+    }
+
+    const href = buildTeamManagementEntryUrl(ownerAccountId);
+    elements.teamManagementEntry.href = href;
+    elements.teamManagementEntry.title = ownerAccountId !== null
+        ? `进入母号 ${ownerAccountId} 的 Team 管理`
+        : '请先选择或查看一个 Team 账号';
+    return href;
+}
 
 // 初始化
 if (hasDocument) {
@@ -327,6 +388,7 @@ function applyAccountsPageError(error) {
 
 // 渲染账号列表
 function renderAccounts(accounts) {
+    currentVisibleAccounts = Array.isArray(accounts) ? accounts : [];
     if (accounts.length === 0) {
         elements.table.innerHTML = `
             <tr>
@@ -422,6 +484,7 @@ function renderAccounts(accounts) {
             elements.selectAll.indeterminate = checkedCount > 0 && checkedCount < allChecked.length;
             updateBatchButtons();
             renderSelectAllBanner();
+            updateTeamManagementEntry();
         });
     });
 
@@ -447,6 +510,7 @@ function renderAccounts(accounts) {
     elements.selectAll.checked = allCbs.length > 0 && checkedCbs.length === allCbs.length;
     elements.selectAll.indeterminate = checkedCbs.length > 0 && checkedCbs.length < allCbs.length;
     renderSelectAllBanner();
+    updateTeamManagementEntry();
 }
 
 function normalizeSubscriptionType(subscriptionType) {
@@ -663,6 +727,7 @@ async function viewAccount(id) {
     try {
         const account = await api.get(`/accounts/${id}`);
         const tokens = await api.get(`/accounts/${id}/tokens`);
+        const teamManagementHref = updateTeamManagementEntry(account);
 
         elements.modalBody.innerHTML = `
             <div class="info-grid">
@@ -771,6 +836,9 @@ async function viewAccount(id) {
                 <button class="btn btn-primary" onclick="refreshToken(${id}); elements.detailModal.classList.remove('active');">
                     🔄 刷新Token
                 </button>
+                <a class="btn btn-secondary" href="${escapeHtml(teamManagementHref)}">
+                    进入 Team 管理
+                </a>
             </div>
         `;
 
@@ -1484,5 +1552,6 @@ function showInboxCodeResult(code, email) {
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         buildTeamManagementEntryUrl,
+        resolveTeamManagementEntryHref,
     };
 }

@@ -14,6 +14,7 @@ let todayStatsResetInterval = null;
 let isBatchMode = false;
 let isOutlookBatchMode = false;
 const outlookSelectorApi = window.OutlookAccountSelector || {};
+const registrationLogBufferApi = window.RegistrationLogBuffer || {};
 let outlookAccounts = [];
 let selectedOutlookAccountIds = new Set();
 let outlookAccountFilters = {
@@ -24,8 +25,8 @@ let taskCompleted = false;  // 标记任务是否已完成
 let batchCompleted = false;  // 标记批量任务是否已完成
 let taskFinalStatus = null;  // 保存任务的最终状态
 let batchFinalStatus = null;  // 保存批量任务的最终状态
-let displayedLogs = new Set();  // 用于日志去重
 let toastShown = false;  // 标记是否已显示过 toast
+let logConsole = null;
 let availableServices = {
     tempmail: { available: true, services: [] },
     yyds_mail: { available: false, services: [] },
@@ -125,6 +126,7 @@ const elements = {
 
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
+    logConsole = createLogConsole();
     initEventListeners();
     loadAvailableServices();
     loadRecentAccounts();
@@ -231,8 +233,7 @@ function initEventListeners() {
 
     // 清空日志
     elements.clearLogBtn.addEventListener('click', () => {
-        elements.consoleLog.innerHTML = '<div class="log-line info">[系统] 日志已清空</div>';
-        displayedLogs.clear();  // 清空日志去重集合
+        resetLogConsole('<div class="log-line info">[系统] 日志已清空</div>');
     });
 
     // 刷新账号列表
@@ -553,7 +554,7 @@ async function handleStartRegistration(e) {
     elements.cancelBtn.disabled = false;
 
     // 清空日志
-    elements.consoleLog.innerHTML = '';
+    resetLogConsole();
 
     // 构建请求数据（代理从设置中自动获取）
     const requestData = {
@@ -583,7 +584,7 @@ async function handleSingleRegistration(requestData) {
     // 重置任务状态
     taskCompleted = false;
     taskFinalStatus = null;
-    displayedLogs.clear();  // 清空日志去重集合
+    resetLogConsole();
     toastShown = false;  // 重置 toast 标志
 
     addLog('info', '[系统] 正在启动注册任务...');
@@ -726,7 +727,7 @@ function connectWebSocket(taskUuid) {
                 }
 
                 // 检查是否完成
-                if (['completed', 'failed', 'cancelled', 'cancelling'].includes(data.status)) {
+                if (['completed', 'failed', 'cancelled'].includes(data.status)) {
                     // 保存最终状态，用于 onclose 判断
                     taskFinalStatus = data.status;
                     taskCompleted = true;
@@ -748,7 +749,7 @@ function connectWebSocket(taskUuid) {
                         } else if (data.status === 'failed') {
                             addLog('error', '[错误] 注册失败');
                             toast.error('注册失败');
-                        } else if (data.status === 'cancelled' || data.status === 'cancelling') {
+                        } else if (data.status === 'cancelled') {
                             addLog('warning', '[警告] 任务已取消');
                         }
                     }
@@ -837,7 +838,7 @@ async function handleBatchRegistration(requestData) {
     // 重置批量任务状态
     batchCompleted = false;
     batchFinalStatus = null;
-    displayedLogs.clear();  // 清空日志去重集合
+    resetLogConsole();
     toastShown = false;  // 重置 toast 标志
 
     const count = parseInt(elements.batchCount.value) || 5;
@@ -898,8 +899,6 @@ async function handleCancelTask() {
                 await api.post(endpoint);
                 addLog('warning', '[警告] 批量任务取消请求已提交');
                 toast.info('任务取消请求已提交');
-                stopBatchPolling();
-                resetButtons();
             }
         }
         // 单次任务取消
@@ -912,10 +911,9 @@ async function handleCancelTask() {
             } else {
                 // 降级到 REST API
                 await api.post(`/registration/tasks/${currentTask.task_uuid}/cancel`);
-                addLog('warning', '[警告] 任务已取消');
-                toast.info('任务已取消');
-                stopLogPolling();
-                resetButtons();
+                updateTaskStatus('cancelling');
+                addLog('warning', '[警告] 任务取消请求已提交，等待当前步骤收尾');
+                toast.info('任务取消请求已提交');
             }
         }
         // 没有活动任务
@@ -1018,12 +1016,17 @@ function startBatchPolling(batchId) {
                 // 只显示一次 toast
                 if (!toastShown) {
                     toastShown = true;
-                    addLog('info', `[完成] 批量任务完成！成功: ${data.success}, 失败: ${data.failed}`);
-                    if (data.success > 0) {
+                    if (data.cancelled) {
+                        addLog('warning', '[警告] 批量任务已取消');
+                        toast.warning('批量任务已取消');
+                    } else {
+                        addLog('info', `[完成] 批量任务完成！成功: ${data.success}, 失败: ${data.failed}`);
+                    }
+                    if (!data.cancelled && data.success > 0) {
                         toast.success(`批量注册完成，成功 ${data.success} 个`);
                         // 刷新账号列表
                         loadRecentAccounts();
-                    } else {
+                    } else if (!data.cancelled) {
                         toast.warning('批量注册完成，但没有成功注册任何账号');
                     }
                 }
@@ -1057,6 +1060,7 @@ function updateTaskStatus(status) {
     const statusInfo = {
         pending: { text: '等待中', class: 'pending' },
         running: { text: '运行中', class: 'running' },
+        cancelling: { text: '取消中', class: 'pending' },
         completed: { text: '已完成', class: 'completed' },
         failed: { text: '失败', class: 'failed' },
         cancelled: { text: '已取消', class: 'disabled' }
@@ -1095,21 +1099,8 @@ function updateBatchProgress(data) {
     elements.batchFailed.textContent = data.failed;
     elements.batchRemaining.textContent = data.total - data.completed;
 
-    // 记录日志（避免重复）
-    if (data.completed > 0) {
-        const lastSuccess = parseInt(elements.batchSuccess.dataset.last || '0');
-        const lastFailed = parseInt(elements.batchFailed.dataset.last || '0');
-
-        if (data.success > lastSuccess) {
-            addLog('success', `[成功] 第 ${data.success} 个账号注册成功`);
-        }
-        if (data.failed > lastFailed) {
-            addLog('error', `[失败] 第 ${data.failed} 个账号注册失败`);
-        }
-
-        elements.batchSuccess.dataset.last = data.success;
-        elements.batchFailed.dataset.last = data.failed;
-    }
+    elements.batchSuccess.dataset.last = data.success;
+    elements.batchFailed.dataset.last = data.failed;
 }
 
 // 加载最近注册的账号
@@ -1252,43 +1243,60 @@ function startTodayStatsPolling() {
     }, 60000);
 }
 
-// 添加日志
-function addLog(type, message) {
-    // 日志去重：使用消息内容的 hash 作为键
-    const logKey = `${type}:${message}`;
-    if (displayedLogs.has(logKey)) {
-        return;  // 已经显示过，跳过
-    }
-    displayedLogs.add(logKey);
-
-    // 限制去重集合大小，避免内存泄漏
-    if (displayedLogs.size > 1000) {
-        // 清空一半的记录
-        const keys = Array.from(displayedLogs);
-        keys.slice(0, 500).forEach(k => displayedLogs.delete(k));
+function renderLogBatch(entries) {
+    if (!entries || entries.length === 0) {
+        return;
     }
 
-    const line = document.createElement('div');
-    line.className = `log-line ${type}`;
-
-    // 添加时间戳
-    const timestamp = new Date().toLocaleTimeString('zh-CN', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
+    const fragment = document.createDocumentFragment();
+    entries.forEach(({ type, message }) => {
+        const line = document.createElement('div');
+        line.className = `log-line ${type}`;
+        const timestamp = new Date().toLocaleTimeString('zh-CN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        });
+        line.innerHTML = `<span class="timestamp">[${timestamp}]</span>${escapeHtml(message)}`;
+        fragment.appendChild(line);
     });
 
-    line.innerHTML = `<span class="timestamp">[${timestamp}]</span>${escapeHtml(message)}`;
-    elements.consoleLog.appendChild(line);
-
-    // 自动滚动到底部
-    elements.consoleLog.scrollTop = elements.consoleLog.scrollHeight;
-
-    // 限制日志行数
-    const lines = elements.consoleLog.querySelectorAll('.log-line');
-    if (lines.length > 500) {
-        lines[0].remove();
+    elements.consoleLog.appendChild(fragment);
+    while (elements.consoleLog.childElementCount > 500) {
+        elements.consoleLog.firstElementChild?.remove();
     }
+    elements.consoleLog.scrollTop = elements.consoleLog.scrollHeight;
+}
+
+function createLogConsole() {
+    if (typeof registrationLogBufferApi.createBufferedLogPump === 'function') {
+        return registrationLogBufferApi.createBufferedLogPump({
+            renderBatch: renderLogBatch,
+            dedupeLimit: 1000,
+        });
+    }
+    return {
+        enqueue(type, message) {
+            renderLogBatch([{ type, message }]);
+            return true;
+        },
+        reset() {},
+    };
+}
+
+function resetLogConsole(html = '') {
+    if (logConsole && typeof logConsole.reset === 'function') {
+        logConsole.reset();
+    }
+    elements.consoleLog.innerHTML = html;
+}
+
+// 添加日志
+function addLog(type, message) {
+    if (!logConsole) {
+        logConsole = createLogConsole();
+    }
+    logConsole.enqueue(type, message);
 }
 
 // 获取日志类型
@@ -1578,7 +1586,7 @@ async function handleOutlookBatchRegistration() {
     // 重置批量任务状态
     batchCompleted = false;
     batchFinalStatus = null;
-    displayedLogs.clear();  // 清空日志去重集合
+    resetLogConsole();
     toastShown = false;  // 重置 toast 标志
 
     // 获取选中的账户
@@ -1601,7 +1609,7 @@ async function handleOutlookBatchRegistration() {
     elements.cancelBtn.disabled = false;
 
     // 清空日志
-    elements.consoleLog.innerHTML = '';
+    resetLogConsole();
 
     const requestData = {
         service_ids: selectedIds,
@@ -1701,7 +1709,7 @@ function connectBatchWebSocket(batchId) {
                 }
 
                 // 检查是否完成
-                if (['completed', 'failed', 'cancelled', 'cancelling'].includes(data.status)) {
+                if (['completed', 'failed', 'cancelled'].includes(data.status)) {
                     // 保存最终状态，用于 onclose 判断
                     batchFinalStatus = data.status;
                     batchCompleted = true;
@@ -1726,7 +1734,7 @@ function connectBatchWebSocket(batchId) {
                         } else if (data.status === 'failed') {
                             addLog('error', '[错误] 批量任务执行失败');
                             toast.error('批量任务执行失败');
-                        } else if (data.status === 'cancelled' || data.status === 'cancelling') {
+                        } else if (data.status === 'cancelled') {
                             addLog('warning', '[警告] 批量任务已取消');
                         }
                     }
@@ -1844,11 +1852,16 @@ function startOutlookBatchPolling(batchId) {
                 // 只显示一次 toast
                 if (!toastShown) {
                     toastShown = true;
-                    addLog('info', `[完成] Outlook 批量任务完成！成功: ${data.success}, 失败: ${data.failed}, 跳过: ${data.skipped || 0}`);
-                    if (data.success > 0) {
+                    if (data.cancelled) {
+                        addLog('warning', '[警告] 批量任务已取消');
+                        toast.warning('批量任务已取消');
+                    } else {
+                        addLog('info', `[完成] Outlook 批量任务完成！成功: ${data.success}, 失败: ${data.failed}, 跳过: ${data.skipped || 0}`);
+                    }
+                    if (!data.cancelled && data.success > 0) {
                         toast.success(`Outlook 批量注册完成，成功 ${data.success} 个`);
                         loadRecentAccounts();
-                    } else {
+                    } else if (!data.cancelled) {
                         toast.warning('Outlook 批量注册完成，但没有成功注册任何账号');
                     }
                 }
@@ -1916,7 +1929,7 @@ async function restoreActiveTask() {
             taskCompleted = false;
             taskFinalStatus = null;
             toastShown = false;
-            displayedLogs.clear();
+            resetLogConsole();
             elements.startBtn.disabled = true;
             elements.cancelBtn.disabled = false;
             showTaskStatus(data);
@@ -1944,7 +1957,7 @@ async function restoreActiveTask() {
             batchCompleted = false;
             batchFinalStatus = null;
             toastShown = false;
-            displayedLogs.clear();
+            resetLogConsole();
             elements.startBtn.disabled = true;
             elements.cancelBtn.disabled = false;
             showBatchStatus({ count: total || data.total });

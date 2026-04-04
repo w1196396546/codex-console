@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from ...database import crud
 from ...database.session import get_db
 from ...database.models import RegistrationTask, Proxy
-from ...core.register import RegistrationEngine, RegistrationResult
+from ...core.register import RegistrationCancelledError, RegistrationEngine, RegistrationResult
 from ...services import EmailServiceFactory, EmailServiceType
 from ...config.settings import get_settings
 from ..task_manager import task_manager
@@ -312,6 +312,38 @@ def _normalize_email_service_config(
     return normalized
 
 
+def _snapshot_runtime_logs(task_uuid: str) -> Optional[str]:
+    """优先使用内存日志快照，减少高并发下的数据库写放大。"""
+    runtime_logs = task_manager.get_logs(task_uuid)
+    if runtime_logs:
+        return "\n".join(runtime_logs)
+    return None
+
+
+def _finalize_task_record(
+    db,
+    task_uuid: str,
+    *,
+    status: str,
+    completed_at: Optional[datetime] = None,
+    result: Optional[dict] = None,
+    error_message: Optional[str] = None,
+):
+    """统一写入任务终态，并带上运行期日志快照。"""
+    payload: dict[str, object] = {
+        "status": status,
+        "completed_at": completed_at or datetime.utcnow(),
+    }
+    runtime_logs = _snapshot_runtime_logs(task_uuid)
+    if runtime_logs is not None:
+        payload["logs"] = runtime_logs
+    if result is not None:
+        payload["result"] = result
+    if error_message is not None:
+        payload["error_message"] = error_message
+    return crud.update_registration_task(db, task_uuid, **payload)
+
+
 def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None):
     """
     在线程池中执行的同步注册任务
@@ -323,6 +355,8 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
             # 检查是否已取消
             if task_manager.is_cancelled(task_uuid):
                 logger.info(f"任务 {task_uuid} 已取消，跳过执行")
+                _finalize_task_record(db, task_uuid, status="cancelled")
+                task_manager.update_status(task_uuid, "cancelled")
                 return
 
             # 更新任务状态为运行中
@@ -492,15 +526,31 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
             # 创建注册引擎 - 使用 TaskManager 的日志回调
             log_callback = task_manager.create_log_callback(task_uuid, prefix=log_prefix, batch_id=batch_id)
 
+            def raise_if_cancelled():
+                if task_manager.is_cancelled(task_uuid):
+                    raise RegistrationCancelledError("任务已取消，停止继续执行")
+
             engine = RegistrationEngine(
                 email_service=email_service,
                 proxy_url=actual_proxy_url,
                 callback_logger=log_callback,
-                task_uuid=task_uuid
+                task_uuid=task_uuid,
+                check_cancelled=raise_if_cancelled,
             )
 
             # 执行注册
             result = engine.run()
+            if task_manager.is_cancelled(task_uuid):
+                cancel_reason = getattr(result, "error_message", None) or "任务已取消"
+                _finalize_task_record(
+                    db,
+                    task_uuid,
+                    status="cancelled",
+                    error_message=cancel_reason,
+                )
+                task_manager.update_status(task_uuid, "cancelled")
+                logger.info(f"注册任务取消收尾完成: {task_uuid}")
+                return
             marker = getattr(email_service, "mark_registration_outcome", None)
             marker_context = {}
             try:
@@ -617,11 +667,11 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                         log_callback(f"[TM] 上传异常: {tm_err}")
 
                 # 更新任务状态
-                crud.update_registration_task(
-                    db, task_uuid,
+                _finalize_task_record(
+                    db,
+                    task_uuid,
                     status="completed",
-                    completed_at=datetime.utcnow(),
-                    result=result.to_dict()
+                    result=result.to_dict(),
                 )
 
                 # 更新 TaskManager 状态
@@ -641,11 +691,11 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                         logger.warning(f"记录邮箱失败状态失败: {mark_err}")
 
                 # 更新任务状态为失败
-                crud.update_registration_task(
-                    db, task_uuid,
+                _finalize_task_record(
+                    db,
+                    task_uuid,
                     status="failed",
-                    completed_at=datetime.utcnow(),
-                    error_message=result.error_message
+                    error_message=result.error_message,
                 )
 
                 # 更新 TaskManager 状态
@@ -653,16 +703,27 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
                 logger.warning(f"注册任务失败: {task_uuid}, 原因: {result.error_message}")
 
+        except RegistrationCancelledError as e:
+            _finalize_task_record(
+                db,
+                task_uuid,
+                status="cancelled",
+                error_message=str(e),
+            )
+            task_manager.update_status(task_uuid, "cancelled")
+            logger.info(f"注册任务取消完成: {task_uuid}")
         except Exception as e:
             logger.error(f"注册任务异常: {task_uuid}, 错误: {e}")
 
             try:
                 with get_db() as db:
                     crud.update_registration_task(
-                        db, task_uuid,
+                        db,
+                        task_uuid,
                         status="failed",
                         completed_at=datetime.utcnow(),
-                        error_message=str(e)
+                        error_message=str(e),
+                        logs=_snapshot_runtime_logs(task_uuid),
                     )
 
                 # 更新 TaskManager 状态
@@ -713,18 +774,26 @@ async def run_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
 def _init_batch_state(batch_id: str, task_uuids: List[str]):
     """初始化批量任务内存状态"""
+    existing = batch_tasks.get(batch_id, {})
+    preserved_cancelled = bool(existing.get("cancelled"))
+    preserved_logs = list(existing.get("logs", []))
+    preserved_skipped = int(existing.get("skipped", 0) or 0)
     task_manager.init_batch(batch_id, len(task_uuids))
+    task_manager.bind_batch_tasks(batch_id, task_uuids)
     batch_tasks[batch_id] = {
         "total": len(task_uuids),
         "completed": 0,
         "success": 0,
         "failed": 0,
-        "cancelled": False,
+        "cancelled": preserved_cancelled,
         "task_uuids": task_uuids,
         "current_index": 0,
-        "logs": [],
+        "logs": preserved_logs,
+        "skipped": preserved_skipped,
         "finished": False
     }
+    if preserved_cancelled:
+        task_manager.cancel_batch(batch_id)
 
 
 def _make_batch_helpers(batch_id: str):
@@ -768,7 +837,15 @@ async def run_batch_parallel(
 
     async def _run_one(idx: int, uuid: str):
         prefix = f"[任务{idx + 1}]"
+        if task_manager.is_batch_cancelled(batch_id):
+            with get_db() as db:
+                _finalize_task_record(db, uuid, status="cancelled", error_message="批量任务已取消")
+            return
         async with semaphore:
+            if task_manager.is_batch_cancelled(batch_id):
+                with get_db() as db:
+                    _finalize_task_record(db, uuid, status="cancelled", error_message="批量任务已取消")
+                return
             await run_registration_task(
                 uuid, email_service_type, proxy, email_service_config, email_service_id,
                 log_prefix=prefix, batch_id=batch_id,
@@ -864,7 +941,8 @@ async def run_batch_pipeline(
             if task_manager.is_batch_cancelled(batch_id) or batch_tasks[batch_id]["cancelled"]:
                 with get_db() as db:
                     for remaining_uuid in task_uuids[i:]:
-                        crud.update_registration_task(db, remaining_uuid, status="cancelled")
+                        task_manager.cancel_task(remaining_uuid)
+                        _finalize_task_record(db, remaining_uuid, status="cancelled", error_message="批量任务已取消")
                 add_batch_log("[取消] 批量任务已取消")
                 update_batch_status(finished=True, status="cancelled")
                 break
@@ -1040,6 +1118,20 @@ async def start_batch_registration(
     with get_db() as db:
         tasks = [crud.get_registration_task(db, uuid) for uuid in task_uuids]
 
+    batch_tasks[batch_id] = {
+        "total": len(task_uuids),
+        "completed": 0,
+        "success": 0,
+        "failed": 0,
+        "skipped": 0,
+        "cancelled": False,
+        "task_uuids": task_uuids,
+        "current_index": 0,
+        "logs": [],
+        "finished": False,
+    }
+    task_manager.bind_batch_tasks(batch_id, task_uuids)
+
     # 在后台运行批量注册
     background_tasks.add_task(
         run_batch_registration,
@@ -1099,6 +1191,7 @@ async def cancel_batch(batch_id: str):
         raise HTTPException(status_code=400, detail="批量任务已完成")
 
     batch["cancelled"] = True
+    task_manager.bind_batch_tasks(batch_id, batch.get("task_uuids", []))
     task_manager.cancel_batch(batch_id)
     return {"success": True, "message": "批量任务取消请求已提交，正在让它们有序收工"}
 
@@ -1145,6 +1238,8 @@ async def get_task_logs(task_uuid: str):
             raise HTTPException(status_code=404, detail="任务不存在")
 
         logs = task.logs or ""
+        runtime_logs = task_manager.get_logs(task_uuid)
+        resolved_logs = runtime_logs if runtime_logs else (logs.split("\n") if logs else [])
         result = task.result if isinstance(task.result, dict) else {}
         email = result.get("email")
         service_type = task.email_service.service_type if task.email_service else None
@@ -1153,7 +1248,7 @@ async def get_task_logs(task_uuid: str):
             "status": task.status,
             "email": email,
             "email_service": service_type,
-            "logs": logs.split("\n") if logs else []
+            "logs": resolved_logs,
         }
 
 
@@ -1168,9 +1263,11 @@ async def cancel_task(task_uuid: str):
         if task.status not in ["pending", "running"]:
             raise HTTPException(status_code=400, detail="任务已完成或已取消")
 
-        task = crud.update_registration_task(db, task_uuid, status="cancelled")
+        task_manager.cancel_task(task_uuid)
+        task_manager.update_status(task_uuid, "cancelling")
+        task = crud.update_registration_task(db, task_uuid, status="cancelling")
 
-        return {"success": True, "message": "任务已取消"}
+        return {"success": True, "message": "任务取消请求已提交，正在等待当前步骤收尾"}
 
 
 @router.delete("/tasks/{task_uuid}")
@@ -1577,6 +1674,10 @@ async def run_outlook_batch_registration(
             )
             task_uuids.append(task_uuid)
 
+    task_manager.bind_batch_tasks(batch_id, task_uuids)
+    if batch_tasks.get(batch_id, {}).get("cancelled"):
+        task_manager.cancel_batch(batch_id)
+
     # 复用通用并发逻辑（outlook 服务类型，每个任务通过 email_service_id 定位账户）
     await run_batch_registration(
         batch_id=batch_id,
@@ -1714,6 +1815,7 @@ async def cancel_outlook_batch(batch_id: str):
 
     # 同时更新两个系统的取消状态
     batch["cancelled"] = True
+    task_manager.bind_batch_tasks(batch_id, batch.get("task_uuids", []))
     task_manager.cancel_batch(batch_id)
 
     return {"success": True, "message": "批量任务取消请求已提交，正在让它们有序收工"}

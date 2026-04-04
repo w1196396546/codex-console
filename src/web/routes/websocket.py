@@ -7,6 +7,8 @@ import asyncio
 import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from ...database import crud
+from ...database.session import get_db
 from ..task_manager import task_manager
 
 logger = logging.getLogger(__name__)
@@ -66,6 +68,14 @@ async def task_websocket(websocket: WebSocket, task_uuid: str):
                 # 处理取消请求
                 elif data.get("type") == "cancel":
                     task_manager.cancel_task(task_uuid)
+                    task_manager.update_status(task_uuid, "cancelling")
+                    try:
+                        with get_db() as db:
+                            task = crud.get_registration_task(db, task_uuid)
+                            if task and task.status in {"pending", "running"}:
+                                crud.update_registration_task(db, task_uuid, status="cancelling")
+                    except Exception as exc:
+                        logger.warning(f"同步任务取消状态到数据库失败: {exc}")
                     await websocket.send_json({
                         "type": "status",
                         "task_uuid": task_uuid,

@@ -125,10 +125,14 @@ def _settings():
     )
 
 
-def _build_engine(monkeypatch):
+def _build_engine(monkeypatch, *, reset_global_window=True):
     monkeypatch.setattr("src.core.anyauto.register_flow.get_settings", _settings)
     monkeypatch.setattr("src.core.anyauto.register_flow.ChatGPTClient", FakeChatGPTClient)
     monkeypatch.setattr("src.core.anyauto.register_flow.OAuthClient", FakeOAuthClient)
+    AnyAutoRegistrationEngine._refresh_token_slots = set()
+    AnyAutoRegistrationEngine._refresh_token_cooldowns = {}
+    if reset_global_window:
+        AnyAutoRegistrationEngine._refresh_token_global_next_allowed_at = 0.0
     return AnyAutoRegistrationEngine(email_service=DummyEmailService(), callback_logger=lambda _msg: None)
 
 
@@ -420,7 +424,7 @@ def test_run_existing_account_without_saved_password_fails_when_passwordless_oau
     FakeOAuthClient.passwordless_call_count = 0
     _patch_saved_account(monkeypatch, None)
 
-    engine = _build_engine(monkeypatch)
+    engine = _build_engine(monkeypatch, reset_global_window=False)
     result = engine.run()
 
     assert result["success"] is False
@@ -450,7 +454,7 @@ def test_run_skips_oauth_completion_when_cooldown_is_active(monkeypatch):
         {"refresh_token_cooldown_until": "2999-01-01T00:00:00"},
     )
 
-    engine = _build_engine(monkeypatch)
+    engine = _build_engine(monkeypatch, reset_global_window=False)
     result = engine.run()
 
     assert result["success"] is True
@@ -461,7 +465,7 @@ def test_run_skips_oauth_completion_when_cooldown_is_active(monkeypatch):
 
 
 def test_oauth_completion_slot_rejects_duplicate_inflight_attempts(monkeypatch):
-    engine = _build_engine(monkeypatch)
+    engine = _build_engine(monkeypatch, reset_global_window=False)
     email = "dedupe@example.com"
 
     first = engine._try_acquire_refresh_token_completion_slot(email)
@@ -493,7 +497,7 @@ def test_oauth_completion_waits_for_global_refresh_token_window(monkeypatch):
     monkeypatch.setattr(register_flow_module.time, "time", lambda: 100.0)
     monkeypatch.setattr(register_flow_module.time, "sleep", sleeps.append)
 
-    engine = _build_engine(monkeypatch)
+    engine = _build_engine(monkeypatch, reset_global_window=False)
     chatgpt_client = FakeChatGPTClient()
 
     result = engine._run_oauth_token_completion(
@@ -531,7 +535,7 @@ def test_oauth_completion_without_password_uses_passwordless_flow_under_global_w
     monkeypatch.setattr(register_flow_module.time, "time", lambda: 100.0)
     monkeypatch.setattr(register_flow_module.time, "sleep", sleeps.append)
 
-    engine = _build_engine(monkeypatch)
+    engine = _build_engine(monkeypatch, reset_global_window=False)
     chatgpt_client = FakeChatGPTClient()
 
     result = engine._run_oauth_token_completion(

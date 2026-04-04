@@ -111,6 +111,7 @@ func (h *Handler) sendSnapshot(
 		if err := socket.writeJSON(map[string]string{
 			"type":      "log",
 			"task_uuid": taskUUID,
+			"message":   item.Message,
 			"log":       item.Message,
 		}); err != nil {
 			return err
@@ -225,6 +226,7 @@ func (h *Handler) pollLoop(
 				if err := socket.writeJSON(map[string]string{
 					"type":      "log",
 					"task_uuid": taskUUID,
+					"message":   logs[index].Message,
 					"log":       logs[index].Message,
 				}); err != nil {
 					return err

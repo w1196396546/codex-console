@@ -36,12 +36,12 @@ func NewAvailableServicesService(repo availableServicesRepository) *AvailableSer
 
 func (s *AvailableServicesService) ListAvailableServices(ctx context.Context) (AvailableServicesResponse, error) {
 	settings, err := s.repo.GetSettings(ctx, []string{
-		"tempmail_enabled",
-		"yyds_mail_enabled",
-		"yyds_mail_api_key",
-		"yyds_mail_default_domain",
-		"custom_domain_base_url",
-		"custom_domain_api_key",
+		"tempmail.enabled",
+		"yyds_mail.enabled",
+		"yyds_mail.api_key",
+		"yyds_mail.default_domain",
+		"custom_domain.base_url",
+		"custom_domain.api_key",
 	})
 	if err != nil {
 		return nil, err
@@ -68,7 +68,7 @@ func BuildAvailableServices(settings map[string]string, services []EmailServiceR
 		"luckmail":  newAvailableServiceGroup(),
 	}
 
-	if parseBoolSetting(settings["tempmail_enabled"]) {
+	if parseBoolSetting(settings["tempmail.enabled"]) {
 		appendAvailableService(result, "tempmail", map[string]any{
 			"id":          nil,
 			"name":        "Tempmail.lol",
@@ -77,12 +77,12 @@ func BuildAvailableServices(settings map[string]string, services []EmailServiceR
 		})
 	}
 
-	if parseBoolSetting(settings["yyds_mail_enabled"]) && strings.TrimSpace(settings["yyds_mail_api_key"]) != "" {
+	if parseBoolSetting(settings["yyds_mail.enabled"]) && strings.TrimSpace(settings["yyds_mail.api_key"]) != "" {
 		appendAvailableService(result, "yyds_mail", map[string]any{
 			"id":             nil,
 			"name":           "YYDS Mail",
 			"type":           "yyds_mail",
-			"default_domain": emptyStringAsNil(settings["yyds_mail_default_domain"]),
+			"default_domain": emptyStringAsNil(settings["yyds_mail.default_domain"]),
 			"description":    "YYDS Mail API 临时邮箱",
 		})
 	}
@@ -160,8 +160,8 @@ func BuildAvailableServices(settings map[string]string, services []EmailServiceR
 	}
 
 	if result["moe_mail"].Count == 0 &&
-		strings.TrimSpace(settings["custom_domain_base_url"]) != "" &&
-		strings.TrimSpace(settings["custom_domain_api_key"]) != "" {
+		strings.TrimSpace(settings["custom_domain.base_url"]) != "" &&
+		strings.TrimSpace(settings["custom_domain.api_key"]) != "" {
 		appendAvailableService(result, "moe_mail", map[string]any{
 			"id":            nil,
 			"name":          "默认自定义域名服务",

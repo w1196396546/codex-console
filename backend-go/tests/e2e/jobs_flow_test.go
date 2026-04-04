@@ -177,8 +177,8 @@ func TestRegistrationWebSocketCompatibility(t *testing.T) {
 			}
 		case "log":
 			assertWebSocketMessageField(t, message, "task_uuid", taskUUID)
-			if _, ok := message["log"].(string); !ok {
-				t.Fatalf("expected websocket log message to include string log, got %#v", message["log"])
+			if _, ok := message["message"].(string); !ok {
+				t.Fatalf("expected websocket log message to include string message, got %#v", message["message"])
 			}
 			sawLog = true
 		}

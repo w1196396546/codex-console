@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -30,11 +31,15 @@ func (r *AvailableServicesPostgresRepository) GetSettings(ctx context.Context, k
 	settings := make(map[string]string, len(keys))
 	for rows.Next() {
 		var key string
-		var value string
+		var value pgtype.Text
 		if err := rows.Scan(&key, &value); err != nil {
 			return nil, fmt.Errorf("scan settings: %w", err)
 		}
-		settings[key] = value
+		if value.Valid {
+			settings[key] = value.String
+			continue
+		}
+		settings[key] = ""
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate settings: %w", err)

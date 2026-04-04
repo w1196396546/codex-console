@@ -102,6 +102,7 @@ func (h *Handler) GetAvailableServices(w nethttp.ResponseWriter, r *nethttp.Requ
 		"duck_mail": {Available: false, Count: 0, Services: []map[string]any{}},
 		"luckmail":  {Available: false, Count: 0, Services: []map[string]any{}},
 		"freemail":  {Available: false, Count: 0, Services: []map[string]any{}},
+		"imap_mail": {Available: false, Count: 0, Services: []map[string]any{}},
 	})
 }
 

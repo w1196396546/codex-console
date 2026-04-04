@@ -137,6 +137,7 @@ func TestAvailableServicesEndpointFallbackShape(t *testing.T) {
 		"duck_mail",
 		"luckmail",
 		"freemail",
+		"imap_mail",
 	} {
 		group, ok := resp[serviceType].(map[string]any)
 		if !ok {

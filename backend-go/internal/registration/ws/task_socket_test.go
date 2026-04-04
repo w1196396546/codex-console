@@ -62,12 +62,12 @@ func TestTaskSocketSendsCurrentStatusAndLogs(t *testing.T) {
 	firstLog := conn.readJSON(t)
 	assertMessageField(t, firstLog, "type", "log")
 	assertMessageField(t, firstLog, "task_uuid", job.JobID)
-	assertMessageField(t, firstLog, "log", "first log")
+	assertMessageField(t, firstLog, "message", "first log")
 
 	secondLog := conn.readJSON(t)
 	assertMessageField(t, secondLog, "type", "log")
 	assertMessageField(t, secondLog, "task_uuid", job.JobID)
-	assertMessageField(t, secondLog, "log", "second log")
+	assertMessageField(t, secondLog, "message", "second log")
 
 	conn.writeJSON(t, map[string]any{"type": "ping"})
 	pong := conn.readJSON(t)
@@ -96,13 +96,13 @@ func TestTaskSocketSendsCurrentStatusAndLogs(t *testing.T) {
 			return message["status"] == jobs.StatusRunning
 		}
 		if messageType == "log" {
-			return message["log"] == "third log"
+			return message["message"] == "third log"
 		}
 		return false
 	})
 	assertContainsMessage(t, updates, "status", "type", "status")
 	assertContainsMessage(t, updates, jobs.StatusRunning, "status", "status")
-	assertContainsMessage(t, updates, "third log", "log", "log")
+	assertContainsMessage(t, updates, "third log", "message", "message")
 
 	conn.writeJSON(t, map[string]any{"type": "cancel"})
 	cancelled := conn.readJSON(t)

@@ -7,11 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	internalhttp "github.com/dou-jiang/codex-console/backend-go/internal/http"
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
 	"github.com/dou-jiang/codex-console/backend-go/internal/registration"
+	"github.com/gorilla/websocket"
 	"github.com/hibiken/asynq"
 )
 
@@ -126,6 +129,63 @@ func TestRegistrationCompatibilityFlow(t *testing.T) {
 	}
 	if clampedOffset < logNextOffset {
 		t.Fatalf("expected clamped log_offset >= previous log_next_offset, got %#v", clampedLogs)
+	}
+}
+
+func TestRegistrationWebSocketCompatibility(t *testing.T) {
+	repo := jobs.NewInMemoryRepository()
+	queue := &capturingQueue{}
+	jobService := jobs.NewService(repo, queue)
+	registrationService := registration.NewService(jobService)
+	server := httptest.NewServer(internalhttp.NewRouter(jobService, registrationService))
+	defer server.Close()
+
+	taskUUID := startRegistrationThroughCompatAPI(t, server.URL)
+	if queue.task == nil {
+		t.Fatal("expected registration start to enqueue a job")
+	}
+
+	conn := dialTestWebSocket(t, server.URL+"/api/ws/task/"+taskUUID)
+	defer conn.Close()
+
+	initialStatus := conn.readJSON(t)
+	assertWebSocketMessageField(t, initialStatus, "type", "status")
+	assertWebSocketMessageField(t, initialStatus, "task_uuid", taskUUID)
+	assertWebSocketMessageField(t, initialStatus, "status", jobs.StatusPending)
+
+	worker := jobs.NewWorker(jobService)
+	done := make(chan error, 1)
+	go func() {
+		done <- worker.HandleTask(context.Background(), queue.task)
+	}()
+
+	var sawCompletedStatus bool
+	var sawLog bool
+	deadline := time.Now().Add(2 * time.Second)
+	for !(sawCompletedStatus && sawLog) {
+		if time.Now().After(deadline) {
+			t.Fatalf("expected websocket to deliver both completed status and log, got completed=%v log=%v", sawCompletedStatus, sawLog)
+		}
+
+		message := conn.readJSON(t)
+		messageType, _ := message["type"].(string)
+		switch messageType {
+		case "status":
+			assertWebSocketMessageField(t, message, "task_uuid", taskUUID)
+			if message["status"] == jobs.StatusCompleted {
+				sawCompletedStatus = true
+			}
+		case "log":
+			assertWebSocketMessageField(t, message, "task_uuid", taskUUID)
+			if _, ok := message["log"].(string); !ok {
+				t.Fatalf("expected websocket log message to include string log, got %#v", message["log"])
+			}
+			sawLog = true
+		}
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("unexpected worker error: %v", err)
 	}
 }
 
@@ -379,4 +439,56 @@ type capturingQueue struct {
 func (q *capturingQueue) Enqueue(_ context.Context, task *asynq.Task) error {
 	q.task = task
 	return nil
+}
+
+func assertWebSocketMessageField(t *testing.T, payload map[string]any, key string, want string) {
+	t.Helper()
+
+	got, ok := payload[key].(string)
+	if !ok {
+		t.Fatalf("expected websocket %s to be string, got %#v", key, payload[key])
+	}
+	if got != want {
+		t.Fatalf("expected websocket %s=%q, got %#v", key, want, payload[key])
+	}
+}
+
+type testWebSocketConn struct {
+	conn *websocket.Conn
+}
+
+func (c *testWebSocketConn) Close() error {
+	if c == nil || c.conn == nil {
+		return nil
+	}
+	return c.conn.Close()
+}
+
+func dialTestWebSocket(t *testing.T, rawURL string) *testWebSocketConn {
+	t.Helper()
+
+	wsURL := "ws" + strings.TrimPrefix(rawURL, "http")
+	conn, response, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		statusCode := 0
+		if response != nil {
+			statusCode = response.StatusCode
+		}
+		t.Fatalf("dial websocket: status=%d err=%v", statusCode, err)
+	}
+	return &testWebSocketConn{conn: conn}
+}
+
+func (c *testWebSocketConn) readJSON(t *testing.T) map[string]any {
+	t.Helper()
+
+	if err := c.conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+
+	var message map[string]any
+	if err := c.conn.ReadJSON(&message); err != nil {
+		t.Fatalf("read websocket json: %v", err)
+	}
+	return message
 }

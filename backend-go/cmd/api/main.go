@@ -11,6 +11,7 @@ import (
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
 	postgresplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/postgres"
 	redisplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/redis"
+	"github.com/dou-jiang/codex-console/backend-go/internal/registration"
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgxpool"
 	redisv9 "github.com/redis/go-redis/v9"
@@ -33,8 +34,9 @@ func main() {
 	log.Printf("api listening on %s", deps.Config.HTTPAddr)
 
 	jobService := jobs.NewService(jobs.NewRepository(deps.Postgres), deps.Queue)
+	registrationService := registration.NewService(jobService)
 
-	if err := http.ListenAndServe(deps.Config.HTTPAddr, internalhttp.NewRouter(jobService)); err != nil {
+	if err := http.ListenAndServe(deps.Config.HTTPAddr, internalhttp.NewRouter(jobService, registrationService)); err != nil {
 		log.Fatal(err)
 	}
 }

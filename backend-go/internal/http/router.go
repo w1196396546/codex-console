@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
+	accountshttp "github.com/dou-jiang/codex-console/backend-go/internal/accounts/http"
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
 	jobshttp "github.com/dou-jiang/codex-console/backend-go/internal/jobs/http"
 	"github.com/dou-jiang/codex-console/backend-go/internal/registration"
@@ -30,11 +32,16 @@ type outlookRouteService interface {
 	GetOutlookBatch(ctx context.Context, batchID string, logOffset int) (registration.OutlookBatchStatusResponse, error)
 }
 
+type accountsRouteService interface {
+	ListAccounts(ctx context.Context, req accounts.ListAccountsRequest) (accounts.AccountListResponse, error)
+}
+
 func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 	var registrationService *registration.Service
 	var batchService *registration.BatchService
 	var availableServices availableServicesRouteService
 	var outlookService outlookRouteService
+	var accountsService accountsRouteService
 	var taskSocketHandler taskSocketRouteHandler
 	var batchSocketHandler batchSocketRouteHandler
 	for _, dependency := range dependencies {
@@ -55,6 +62,10 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 			if outlookService == nil {
 				outlookService = value
 			}
+		case accountsRouteService:
+			if accountsService == nil {
+				accountsService = value
+			}
 		case taskSocketRouteHandler:
 			if taskSocketHandler == nil {
 				taskSocketHandler = value
@@ -66,7 +77,7 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 		}
 	}
 
-	return newRouter(jobService, registrationService, batchService, availableServices, outlookService, taskSocketHandler, batchSocketHandler)
+	return newRouter(jobService, registrationService, batchService, availableServices, outlookService, accountsService, taskSocketHandler, batchSocketHandler)
 }
 
 func NewRouterWithTaskSocket(
@@ -74,7 +85,7 @@ func NewRouterWithTaskSocket(
 	registrationService *registration.Service,
 	taskSocketHandler taskSocketRouteHandler,
 ) *chi.Mux {
-	return newRouter(jobService, registrationService, nil, nil, nil, taskSocketHandler, nil)
+	return newRouter(jobService, registrationService, nil, nil, nil, nil, taskSocketHandler, nil)
 }
 
 func newRouter(
@@ -83,6 +94,7 @@ func newRouter(
 	batchService *registration.BatchService,
 	availableServices availableServicesRouteService,
 	outlookService outlookRouteService,
+	accountsService accountsRouteService,
 	taskSocketHandler taskSocketRouteHandler,
 	batchSocketHandler batchSocketRouteHandler,
 ) *chi.Mux {
@@ -91,6 +103,9 @@ func newRouter(
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	if accountsService != nil {
+		accountshttp.NewHandler(accountsService).RegisterRoutes(r)
+	}
 	if jobService != nil {
 		jobshttp.NewHandler(jobService).RegisterRoutes(r)
 		if taskSocketHandler == nil {

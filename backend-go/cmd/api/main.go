@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
 	"github.com/dou-jiang/codex-console/backend-go/internal/config"
 	internalhttp "github.com/dou-jiang/codex-console/backend-go/internal/http"
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
@@ -44,12 +45,15 @@ func main() {
 		registration.NewOutlookPostgresRepository(deps.Postgres),
 		batchService,
 	)
+	accountsService := accounts.NewService(
+		accounts.NewPostgresRepository(deps.Postgres),
+	)
 	taskSocketHandler := registrationws.NewHandler(jobService)
 	batchSocketHandler := registrationws.NewBatchHandler(batchService)
 
 	if err := http.ListenAndServe(
 		deps.Config.HTTPAddr,
-		internalhttp.NewRouter(jobService, registrationService, batchService, availableServices, outlookService, taskSocketHandler, batchSocketHandler),
+		internalhttp.NewRouter(jobService, registrationService, batchService, availableServices, outlookService, accountsService, taskSocketHandler, batchSocketHandler),
 	); err != nil {
 		log.Fatal(err)
 	}

@@ -50,10 +50,47 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 
 func (h *Handler) GetAvailableServices(w nethttp.ResponseWriter, _ *nethttp.Request) {
 	writeJSON(w, nethttp.StatusOK, map[string]any{
-		"services": []map[string]any{
-			{"type": "tempmail", "available": true},
-			{"type": "mailtm", "available": false},
-			{"type": "outlook", "available": false},
+		"tempmail": map[string]any{
+			"available": true,
+			"count":     1,
+			"services": []map[string]any{
+				{"id": "default", "name": "TempMail"},
+			},
+		},
+		"yyds_mail": map[string]any{
+			"available": false,
+			"count":     0,
+			"services":  []any{},
+		},
+		"outlook": map[string]any{
+			"available": false,
+			"count":     0,
+			"services":  []any{},
+		},
+		"moe_mail": map[string]any{
+			"available": false,
+			"count":     0,
+			"services":  []any{},
+		},
+		"temp_mail": map[string]any{
+			"available": false,
+			"count":     0,
+			"services":  []any{},
+		},
+		"duck_mail": map[string]any{
+			"available": false,
+			"count":     0,
+			"services":  []any{},
+		},
+		"luckmail": map[string]any{
+			"available": false,
+			"count":     0,
+			"services":  []any{},
+		},
+		"freemail": map[string]any{
+			"available": false,
+			"count":     0,
+			"services":  []any{},
 		},
 	})
 }

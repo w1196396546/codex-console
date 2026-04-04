@@ -99,7 +99,7 @@ func TestRegistrationCompatibleEndpoints(t *testing.T) {
 	assertTaskControlStatus(t, router, taskUUID, "cancel", jobs.StatusCancelled)
 }
 
-func TestAvailableServicesEndpoint(t *testing.T) {
+func TestAvailableServicesEndpointMatchesFrontendShape(t *testing.T) {
 	router, _, _ := newRegistrationRouter(t)
 	rec := httptest.NewRecorder()
 
@@ -114,28 +114,44 @@ func TestAvailableServicesEndpoint(t *testing.T) {
 		t.Fatalf("unexpected response json error: %v", err)
 	}
 
-	services, ok := resp["services"].([]any)
-	if !ok || len(services) == 0 {
-		t.Fatalf("expected services array, got %#v", resp["services"])
+	tempmail, ok := resp["tempmail"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected tempmail object, got %#v", resp["tempmail"])
+	}
+	if tempmail["available"] != true {
+		t.Fatalf("expected tempmail available=true, got %#v", tempmail["available"])
+	}
+	if tempmail["count"] != float64(1) {
+		t.Fatalf("expected tempmail count=1, got %#v", tempmail["count"])
+	}
+	tempmailServices, ok := tempmail["services"].([]any)
+	if !ok || len(tempmailServices) != 1 {
+		t.Fatalf("expected tempmail services length=1, got %#v", tempmail["services"])
 	}
 
-	var foundTempmail bool
-	for _, item := range services {
-		service, ok := item.(map[string]any)
+	for _, serviceType := range []string{
+		"yyds_mail",
+		"outlook",
+		"moe_mail",
+		"temp_mail",
+		"duck_mail",
+		"luckmail",
+		"freemail",
+	} {
+		group, ok := resp[serviceType].(map[string]any)
 		if !ok {
-			t.Fatalf("expected service object, got %#v", item)
+			t.Fatalf("expected %s object, got %#v", serviceType, resp[serviceType])
 		}
-		serviceType, _ := service["type"].(string)
-		if serviceType == "tempmail" {
-			foundTempmail = true
-			if service["available"] != true {
-				t.Fatalf("expected tempmail available=true, got %#v", service["available"])
-			}
+		if group["available"] != false {
+			t.Fatalf("expected %s available=false, got %#v", serviceType, group["available"])
 		}
-	}
-
-	if !foundTempmail {
-		t.Fatal("expected tempmail service in response")
+		if group["count"] != float64(0) {
+			t.Fatalf("expected %s count=0, got %#v", serviceType, group["count"])
+		}
+		services, ok := group["services"].([]any)
+		if !ok || len(services) != 0 {
+			t.Fatalf("expected %s services empty, got %#v", serviceType, group["services"])
+		}
 	}
 }
 

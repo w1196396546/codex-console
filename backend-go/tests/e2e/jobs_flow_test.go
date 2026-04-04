@@ -63,7 +63,13 @@ func TestRegistrationCompatibilityFlow(t *testing.T) {
 	server := httptest.NewServer(internalhttp.NewRouter(jobService, registrationService))
 	defer server.Close()
 
+	availableServices := getRegistrationAvailableServicesThroughCompatAPI(t, server.URL)
+	assertRegistrationCompatAvailableServices(t, availableServices)
+
 	taskUUID := startRegistrationThroughCompatAPI(t, server.URL)
+	if queue.task == nil {
+		t.Fatal("expected registration start to enqueue a job")
+	}
 
 	task := getRegistrationTaskThroughCompatAPI(t, server.URL, taskUUID)
 	assertRegistrationCompatTaskFields(t, task, taskUUID, jobs.StatusPending)
@@ -89,18 +95,78 @@ func TestRegistrationCompatibilityFlow(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected logs array, got %#v", logs["logs"])
 	}
-	if len(logItems) != 1 {
-		t.Fatalf("expected one incremental log item, got %#v", logs["logs"])
+	if len(logItems) == 0 {
+		t.Fatalf("expected at least one incremental log item, got %#v", logs["logs"])
+	}
+	for _, item := range logItems {
+		if _, ok := item.(string); !ok {
+			t.Fatalf("expected log item to be string, got %#v", item)
+		}
+	}
+	logNextOffset, ok := logs["log_next_offset"].(float64)
+	if !ok {
+		t.Fatalf("expected numeric log_next_offset, got %#v", logs["log_next_offset"])
+	}
+	if logNextOffset < logs["log_offset"].(float64) {
+		t.Fatalf("expected log_next_offset >= log_offset, got %#v", logs)
 	}
 
 	clampedLogs := getRegistrationLogsThroughCompatAPI(t, server.URL, taskUUID, 999)
-	assertRegistrationCompatLogFields(t, clampedLogs, taskUUID, jobs.StatusCompleted, 2, 2)
+	clampedOffset, ok := clampedLogs["log_offset"].(float64)
+	if !ok {
+		t.Fatalf("expected numeric clamped log_offset, got %#v", clampedLogs["log_offset"])
+	}
+	assertRegistrationCompatLogFields(t, clampedLogs, taskUUID, jobs.StatusCompleted, clampedOffset, clampedOffset)
 	clampedItems, ok := clampedLogs["logs"].([]any)
 	if !ok {
 		t.Fatalf("expected clamped logs array, got %#v", clampedLogs["logs"])
 	}
 	if len(clampedItems) != 0 {
 		t.Fatalf("expected no clamped logs, got %#v", clampedItems)
+	}
+	if clampedOffset < logNextOffset {
+		t.Fatalf("expected clamped log_offset >= previous log_next_offset, got %#v", clampedLogs)
+	}
+}
+
+func assertRegistrationCompatAvailableServices(t *testing.T, payload map[string]any) {
+	t.Helper()
+
+	serviceKeys := []string{
+		"tempmail",
+		"yyds_mail",
+		"outlook",
+		"moe_mail",
+		"temp_mail",
+		"duck_mail",
+		"luckmail",
+		"freemail",
+	}
+	for _, key := range serviceKeys {
+		service, ok := payload[key].(map[string]any)
+		if !ok {
+			t.Fatalf("expected %s object, got %#v", key, payload[key])
+		}
+		if _, ok := service["available"].(bool); !ok {
+			t.Fatalf("expected %s available bool, got %#v", key, service["available"])
+		}
+		if _, ok := service["services"].([]any); !ok {
+			t.Fatalf("expected %s services array, got %#v", key, service["services"])
+		}
+	}
+
+	tempmail, ok := payload["tempmail"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected tempmail object, got %#v", payload["tempmail"])
+	}
+	if tempmail["available"] != true {
+		t.Fatalf("expected tempmail available=true, got %#v", tempmail["available"])
+	}
+	if tempmail["count"] != float64(1) {
+		t.Fatalf("expected tempmail count=1, got %#v", tempmail["count"])
+	}
+	if _, ok := tempmail["services"].([]any); !ok {
+		t.Fatalf("expected tempmail services array, got %#v", tempmail["services"])
 	}
 }
 
@@ -262,6 +328,26 @@ func getRegistrationTaskThroughCompatAPI(t *testing.T, baseURL string, taskUUID 
 	var payload map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode registration task response: %v", err)
+	}
+	return payload
+}
+
+func getRegistrationAvailableServicesThroughCompatAPI(t *testing.T, baseURL string) map[string]any {
+	t.Helper()
+
+	resp, err := http.Get(baseURL + "/api/registration/available-services")
+	if err != nil {
+		t.Fatalf("get registration available services request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected get registration available services 200, got %d", resp.StatusCode)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode registration available services response: %v", err)
 	}
 	return payload
 }

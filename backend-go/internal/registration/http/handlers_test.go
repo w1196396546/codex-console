@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"sync"
 	"testing"
@@ -29,8 +30,8 @@ func TestRegistrationCompatibleEndpoints(t *testing.T) {
 
 	router.ServeHTTP(startRec, startReq)
 
-	if startRec.Code != http.StatusAccepted {
-		t.Fatalf("expected start 202, got %d", startRec.Code)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("expected start 200, got %d", startRec.Code)
 	}
 	if queue.task == nil {
 		t.Fatal("expected start to enqueue a job")
@@ -47,6 +48,12 @@ func TestRegistrationCompatibleEndpoints(t *testing.T) {
 	}
 	if startResp["status"] != jobs.StatusPending {
 		t.Fatalf("expected pending status, got %#v", startResp["status"])
+	}
+	if startResp["email_service"] != "tempmail" {
+		t.Fatalf("expected start email_service=tempmail, got %#v", startResp["email_service"])
+	}
+	if startResp["email"] != nil {
+		t.Fatalf("expected start email=nil, got %#v", startResp["email"])
 	}
 
 	if err := repo.AppendJobLog(context.Background(), taskUUID, "info", "compat log"); err != nil {
@@ -75,6 +82,34 @@ func TestRegistrationCompatibleEndpoints(t *testing.T) {
 	}
 	if getTaskResp["email"] != nil {
 		t.Fatalf("expected email=nil, got %#v", getTaskResp["email"])
+	}
+
+	listRec := httptest.NewRecorder()
+	router.ServeHTTP(listRec, httptest.NewRequest(http.MethodGet, "/api/registration/tasks?page=1&page_size=20", nil))
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list tasks 200, got %d", listRec.Code)
+	}
+
+	var listResp map[string]any
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listResp); err != nil {
+		t.Fatalf("unexpected list tasks response json error: %v", err)
+	}
+	if listResp["total"] != float64(1) {
+		t.Fatalf("expected list total=1, got %#v", listResp["total"])
+	}
+	listItems, ok := listResp["tasks"].([]any)
+	if !ok || len(listItems) != 1 {
+		t.Fatalf("expected single task in list, got %#v", listResp["tasks"])
+	}
+	listTask, ok := listItems[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected list task object, got %#v", listItems[0])
+	}
+	if listTask["task_uuid"] != taskUUID {
+		t.Fatalf("expected listed task_uuid %q, got %#v", taskUUID, listTask["task_uuid"])
+	}
+	if listTask["email_service"] != "tempmail" {
+		t.Fatalf("expected listed email_service=tempmail, got %#v", listTask["email_service"])
 	}
 
 	logsRec := httptest.NewRecorder()
@@ -109,6 +144,26 @@ func TestRegistrationCompatibleEndpoints(t *testing.T) {
 	assertTaskControlStatus(t, router, taskUUID, "pause", jobs.StatusPaused)
 	assertTaskControlStatus(t, router, taskUUID, "resume", jobs.StatusPending)
 	assertTaskControlStatus(t, router, taskUUID, "cancel", jobs.StatusCancelled)
+
+	deleteRec := httptest.NewRecorder()
+	router.ServeHTTP(deleteRec, httptest.NewRequest(http.MethodDelete, "/api/registration/tasks/"+taskUUID, nil))
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("expected delete task 200, got %d", deleteRec.Code)
+	}
+
+	var deleteResp map[string]any
+	if err := json.Unmarshal(deleteRec.Body.Bytes(), &deleteResp); err != nil {
+		t.Fatalf("unexpected delete task response json error: %v", err)
+	}
+	if success, ok := deleteResp["success"].(bool); !ok || !success {
+		t.Fatalf("expected delete success=true, got %#v", deleteResp["success"])
+	}
+
+	getDeletedRec := httptest.NewRecorder()
+	router.ServeHTTP(getDeletedRec, httptest.NewRequest(http.MethodGet, "/api/registration/tasks/"+taskUUID, nil))
+	if getDeletedRec.Code != http.StatusNotFound {
+		t.Fatalf("expected deleted task 404, got %d", getDeletedRec.Code)
+	}
 }
 
 func TestAvailableServicesEndpointFallbackShape(t *testing.T) {
@@ -292,8 +347,8 @@ func TestBatchEndpoints(t *testing.T) {
 
 	router.ServeHTTP(startRec, startReq)
 
-	if startRec.Code != http.StatusAccepted {
-		t.Fatalf("expected batch start 202, got %d", startRec.Code)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("expected batch start 200, got %d", startRec.Code)
 	}
 	if len(queue.tasks) != 2 {
 		t.Fatalf("expected 2 queued tasks, got %d", len(queue.tasks))
@@ -363,6 +418,12 @@ func TestBatchEndpoints(t *testing.T) {
 	if getResp["failed"] != float64(0) {
 		t.Fatalf("expected failed=0, got %#v", getResp["failed"])
 	}
+	if getResp["skipped"] != float64(0) {
+		t.Fatalf("expected skipped=0, got %#v", getResp["skipped"])
+	}
+	if getResp["current_index"] != float64(0) {
+		t.Fatalf("expected current_index=0, got %#v", getResp["current_index"])
+	}
 	if getResp["paused"] != false {
 		t.Fatalf("expected paused=false, got %#v", getResp["paused"])
 	}
@@ -377,6 +438,9 @@ func TestBatchEndpoints(t *testing.T) {
 	}
 	if getResp["log_offset"] != float64(0) {
 		t.Fatalf("expected log_offset=0, got %#v", getResp["log_offset"])
+	}
+	if getResp["log_base_index"] != float64(0) {
+		t.Fatalf("expected log_base_index=0, got %#v", getResp["log_base_index"])
 	}
 	if getResp["log_next_offset"] != float64(1) {
 		t.Fatalf("expected log_next_offset=1, got %#v", getResp["log_next_offset"])
@@ -412,17 +476,7 @@ func TestBatchEndpoints(t *testing.T) {
 		t.Fatalf("expected resume success=true, got %#v", resumeResp["success"])
 	}
 
-	cancelRec := httptest.NewRecorder()
-	router.ServeHTTP(cancelRec, httptest.NewRequest(http.MethodPost, "/api/registration/batch/"+batchID+"/cancel", nil))
-
-	if cancelRec.Code != http.StatusOK {
-		t.Fatalf("expected cancel 200, got %d", cancelRec.Code)
-	}
-
-	var cancelResp map[string]any
-	if err := json.Unmarshal(cancelRec.Body.Bytes(), &cancelResp); err != nil {
-		t.Fatalf("unexpected cancel response json error: %v", err)
-	}
+	cancelResp := assertBatchControlStatus(t, router, batchID, "cancel", "cancelling")
 	if cancelResp["success"] != true {
 		t.Fatalf("expected cancel success=true, got %#v", cancelResp["success"])
 	}
@@ -439,11 +493,34 @@ func TestBatchEndpoints(t *testing.T) {
 	if err := json.Unmarshal(cancelledState.Body.Bytes(), &cancelledResp); err != nil {
 		t.Fatalf("unexpected cancelled batch response json error: %v", err)
 	}
+	if cancelledResp["status"] != "cancelling" {
+		t.Fatalf("expected first cancelled batch state to be cancelling, got %#v", cancelledResp["status"])
+	}
 	if cancelledResp["cancelled"] != true {
 		t.Fatalf("expected cancelled=true, got %#v", cancelledResp["cancelled"])
 	}
-	if cancelledResp["finished"] != true {
-		t.Fatalf("expected finished=true after cancel, got %#v", cancelledResp["finished"])
+	if cancelledResp["finished"] != false {
+		t.Fatalf("expected finished=false during cancelling, got %#v", cancelledResp["finished"])
+	}
+
+	settledState := httptest.NewRecorder()
+	router.ServeHTTP(
+		settledState,
+		httptest.NewRequest(http.MethodGet, "/api/registration/batch/"+batchID+"?log_offset=1", nil),
+	)
+	if settledState.Code != http.StatusOK {
+		t.Fatalf("expected settled batch get 200, got %d", settledState.Code)
+	}
+
+	var settledResp map[string]any
+	if err := json.Unmarshal(settledState.Body.Bytes(), &settledResp); err != nil {
+		t.Fatalf("unexpected settled batch response json error: %v", err)
+	}
+	if settledResp["status"] != jobs.StatusCancelled {
+		t.Fatalf("expected settled cancelled status, got %#v", settledResp["status"])
+	}
+	if settledResp["finished"] != true {
+		t.Fatalf("expected finished=true after cancellation settles, got %#v", settledResp["finished"])
 	}
 }
 
@@ -459,8 +536,8 @@ func TestBatchEndpointsRejectInvalidTransitions(t *testing.T) {
 	startRec := httptest.NewRecorder()
 	router.ServeHTTP(startRec, startReq)
 
-	if startRec.Code != http.StatusAccepted {
-		t.Fatalf("expected batch start 202, got %d", startRec.Code)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("expected batch start 200, got %d", startRec.Code)
 	}
 
 	var startResp map[string]any
@@ -635,8 +712,8 @@ func TestOutlookBatchEndpoints(t *testing.T) {
 	startRec := httptest.NewRecorder()
 	router.ServeHTTP(startRec, startReq)
 
-	if startRec.Code != http.StatusAccepted {
-		t.Fatalf("expected outlook batch start 202, got %d", startRec.Code)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("expected outlook batch start 200, got %d", startRec.Code)
 	}
 	if len(queue.tasks) != 2 {
 		t.Fatalf("expected 2 queued tasks, got %d", len(queue.tasks))
@@ -699,6 +776,12 @@ func TestOutlookBatchEndpoints(t *testing.T) {
 	if getResp["skipped"] != float64(0) {
 		t.Fatalf("expected skipped=0, got %#v", getResp["skipped"])
 	}
+	if getResp["current_index"] != float64(0) {
+		t.Fatalf("expected current_index=0, got %#v", getResp["current_index"])
+	}
+	if getResp["log_base_index"] != float64(0) {
+		t.Fatalf("expected log_base_index=0, got %#v", getResp["log_base_index"])
+	}
 	logs, ok := getResp["logs"].([]any)
 	if !ok || len(logs) != 1 || logs[0] != "outlook compat log" {
 		t.Fatalf("expected one outlook batch log, got %#v", getResp["logs"])
@@ -731,7 +814,7 @@ func TestOutlookBatchEndpoints(t *testing.T) {
 		t.Fatalf("expected resume success=true, got %#v", resumeResp["success"])
 	}
 
-	cancelResp := assertOutlookBatchControlStatus(t, router, batchID, "cancel", "cancelled")
+	cancelResp := assertOutlookBatchControlStatus(t, router, batchID, "cancel", "cancelling")
 	if cancelResp["success"] != true {
 		t.Fatalf("expected cancel success=true, got %#v", cancelResp["success"])
 	}
@@ -749,8 +832,25 @@ func TestOutlookBatchEndpoints(t *testing.T) {
 	if err := json.Unmarshal(cancelledRec.Body.Bytes(), &cancelledResp); err != nil {
 		t.Fatalf("unexpected cancelled response json error: %v", err)
 	}
-	if cancelledResp["cancelled"] != true || cancelledResp["finished"] != true {
-		t.Fatalf("expected cancelled finished outlook batch state, got %#v", cancelledResp)
+	if cancelledResp["status"] != "cancelling" || cancelledResp["cancelled"] != true || cancelledResp["finished"] != false {
+		t.Fatalf("expected cancelling outlook batch state, got %#v", cancelledResp)
+	}
+
+	settledRec := httptest.NewRecorder()
+	router.ServeHTTP(
+		settledRec,
+		httptest.NewRequest(http.MethodGet, "/api/registration/outlook-batch/"+batchID+"?log_offset=1", nil),
+	)
+	if settledRec.Code != http.StatusOK {
+		t.Fatalf("expected settled outlook batch get 200, got %d", settledRec.Code)
+	}
+
+	var settledResp map[string]any
+	if err := json.Unmarshal(settledRec.Body.Bytes(), &settledResp); err != nil {
+		t.Fatalf("unexpected settled outlook response json error: %v", err)
+	}
+	if settledResp["status"] != jobs.StatusCancelled || settledResp["cancelled"] != true || settledResp["finished"] != true {
+		t.Fatalf("expected settled cancelled finished outlook batch state, got %#v", settledResp)
 	}
 }
 
@@ -952,6 +1052,78 @@ func (r *registrationTestRepository) ListJobLogs(_ context.Context, jobID string
 	logs := make([]jobs.JobLog, len(r.logs[jobID]))
 	copy(logs, r.logs[jobID])
 	return logs, nil
+}
+
+func (r *registrationTestRepository) ListJobs(_ context.Context, params jobs.ListJobsParams) (jobs.ListJobsResult, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	scopeTypes := make(map[string]struct{}, len(params.ScopeTypes))
+	for _, scopeType := range params.ScopeTypes {
+		if scopeType == "" {
+			continue
+		}
+		scopeTypes[scopeType] = struct{}{}
+	}
+
+	items := make([]jobs.Job, 0, len(r.jobs))
+	for _, job := range r.jobs {
+		if params.JobType != "" && job.JobType != params.JobType {
+			continue
+		}
+		if params.Status != "" && job.Status != params.Status {
+			continue
+		}
+		if len(scopeTypes) > 0 {
+			if _, ok := scopeTypes[job.ScopeType]; !ok {
+				continue
+			}
+		}
+		items = append(items, cloneRegistrationJob(job))
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].JobID > items[j].JobID
+	})
+
+	total := len(items)
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+
+	page := make([]jobs.Job, 0, end-offset)
+	for _, job := range items[offset:end] {
+		page = append(page, cloneRegistrationJob(job))
+	}
+
+	return jobs.ListJobsResult{
+		Total: total,
+		Jobs:  page,
+	}, nil
+}
+
+func (r *registrationTestRepository) DeleteJob(_ context.Context, jobID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, ok := r.jobs[jobID]; !ok {
+		return jobs.ErrJobNotFound
+	}
+	delete(r.jobs, jobID)
+	delete(r.logs, jobID)
+	return nil
 }
 
 func registrationBatchJobIDsByScope(repo *registrationTestRepository, batchID string) []string {

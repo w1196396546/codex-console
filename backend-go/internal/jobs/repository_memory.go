@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -129,6 +130,79 @@ func (r *InMemoryRepository) ListJobLogs(_ context.Context, jobID string) ([]Job
 		logs = append(logs, item)
 	}
 	return logs, nil
+}
+
+func (r *InMemoryRepository) ListJobs(_ context.Context, params ListJobsParams) (ListJobsResult, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	scopeTypes := make(map[string]struct{}, len(params.ScopeTypes))
+	for _, scopeType := range params.ScopeTypes {
+		if scopeType == "" {
+			continue
+		}
+		scopeTypes[scopeType] = struct{}{}
+	}
+
+	items := make([]Job, 0, len(r.jobs))
+	for _, job := range r.jobs {
+		if params.JobType != "" && job.JobType != params.JobType {
+			continue
+		}
+		if params.Status != "" && job.Status != params.Status {
+			continue
+		}
+		if len(scopeTypes) > 0 {
+			if _, ok := scopeTypes[job.ScopeType]; !ok {
+				continue
+			}
+		}
+		items = append(items, cloneStoredJob(job))
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].JobID > items[j].JobID
+	})
+
+	total := len(items)
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+
+	page := make([]Job, 0, end-offset)
+	for _, job := range items[offset:end] {
+		page = append(page, cloneStoredJob(job))
+	}
+
+	return ListJobsResult{
+		Total: total,
+		Jobs:  page,
+	}, nil
+}
+
+func (r *InMemoryRepository) DeleteJob(_ context.Context, jobID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, ok := r.jobs[jobID]; !ok {
+		return ErrJobNotFound
+	}
+	delete(r.jobs, jobID)
+	delete(r.logs, jobID)
+	return nil
 }
 
 func cloneStoredJob(job Job) Job {

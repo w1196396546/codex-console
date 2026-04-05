@@ -42,8 +42,29 @@ type logsRepository interface {
 	ListJobLogs(ctx context.Context, jobID string) ([]JobLog, error)
 }
 
+type listJobsRepository interface {
+	ListJobs(ctx context.Context, params ListJobsParams) (ListJobsResult, error)
+}
+
+type deleteJobRepository interface {
+	DeleteJob(ctx context.Context, jobID string) error
+}
+
 type appendLogsRepository interface {
 	AppendJobLog(ctx context.Context, jobID string, level string, message string) error
+}
+
+type ListJobsParams struct {
+	JobType    string
+	ScopeTypes []string
+	Status     string
+	Limit      int
+	Offset     int
+}
+
+type ListJobsResult struct {
+	Total int
+	Jobs  []Job
 }
 
 type Service struct {
@@ -75,6 +96,14 @@ func (s *Service) GetJob(ctx context.Context, jobID string) (Job, error) {
 	return s.repository.GetJob(ctx, jobID)
 }
 
+func (s *Service) ListJobs(ctx context.Context, params ListJobsParams) (ListJobsResult, error) {
+	if listRepo, ok := s.repository.(listJobsRepository); ok {
+		return listRepo.ListJobs(ctx, params)
+	}
+
+	return ListJobsResult{}, ErrControlNotSupported
+}
+
 func (s *Service) EnqueueJob(ctx context.Context, jobID string) error {
 	if s.queue == nil {
 		return ErrQueueNotConfigured
@@ -98,6 +127,14 @@ func (s *Service) ResumeJob(ctx context.Context, jobID string) (Job, error) {
 
 func (s *Service) CancelJob(ctx context.Context, jobID string) (Job, error) {
 	return s.updateJobStatus(ctx, jobID, StatusCancelled)
+}
+
+func (s *Service) DeleteJob(ctx context.Context, jobID string) error {
+	if deleteRepo, ok := s.repository.(deleteJobRepository); ok {
+		return deleteRepo.DeleteJob(ctx, jobID)
+	}
+
+	return ErrControlNotSupported
 }
 
 func (s *Service) ListJobLogs(ctx context.Context, jobID string) ([]JobLog, error) {

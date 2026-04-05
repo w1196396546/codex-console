@@ -77,6 +77,20 @@ func TestRegistrationCompatibilityFlow(t *testing.T) {
 	task := getRegistrationTaskThroughCompatAPI(t, server.URL, taskUUID)
 	assertRegistrationCompatTaskFields(t, task, taskUUID, jobs.StatusPending, nil, "tempmail")
 
+	listing := listRegistrationTasksThroughCompatAPI(t, server.URL)
+	if listing["total"] != float64(1) {
+		t.Fatalf("expected task listing total=1, got %#v", listing["total"])
+	}
+	listItems, ok := listing["tasks"].([]any)
+	if !ok || len(listItems) != 1 {
+		t.Fatalf("expected one task in listing, got %#v", listing["tasks"])
+	}
+	listTask, ok := listItems[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected listed task object, got %#v", listItems[0])
+	}
+	assertRegistrationCompatTaskFields(t, listTask, taskUUID, jobs.StatusPending, nil, "tempmail")
+
 	initialLogs := getRegistrationLogsThroughCompatAPI(t, server.URL, taskUUID, 0)
 	assertRegistrationCompatLogFields(t, initialLogs, taskUUID, jobs.StatusPending, nil, "tempmail", 0, 0)
 	initialLogItems, ok := initialLogs["logs"].([]any)
@@ -129,6 +143,17 @@ func TestRegistrationCompatibilityFlow(t *testing.T) {
 	}
 	if clampedOffset < logNextOffset {
 		t.Fatalf("expected clamped log_offset >= previous log_next_offset, got %#v", clampedLogs)
+	}
+
+	deleteRegistrationTaskThroughCompatAPI(t, server.URL, taskUUID)
+
+	resp, err := http.Get(server.URL + "/api/registration/tasks/" + taskUUID)
+	if err != nil {
+		t.Fatalf("get deleted task request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected deleted task 404, got %d", resp.StatusCode)
 	}
 }
 
@@ -213,7 +238,7 @@ func TestRegistrationBatchCompatibilityFlow(t *testing.T) {
 	}
 
 	initial := getRegistrationBatchThroughCompatAPI(t, server.URL, batchID, 0)
-	assertRegistrationBatchCompatFields(t, initial, batchID, "running", 2, 0, 0, 0, false, false, false, 0, 0)
+	assertRegistrationBatchCompatFields(t, initial, batchID, "running", 2, 0, 0, 0, 0, 0, false, false, false, 0, 0, 0)
 	initialLogs, ok := initial["logs"].([]any)
 	if !ok {
 		t.Fatalf("expected initial batch logs array, got %#v", initial["logs"])
@@ -228,7 +253,7 @@ func TestRegistrationBatchCompatibilityFlow(t *testing.T) {
 	}
 
 	paused := getRegistrationBatchThroughCompatAPI(t, server.URL, batchID, 0)
-	assertRegistrationBatchCompatFields(t, paused, batchID, jobs.StatusPaused, 2, 0, 0, 0, true, false, false, 0, 0)
+	assertRegistrationBatchCompatFields(t, paused, batchID, jobs.StatusPaused, 2, 0, 0, 0, 0, 0, true, false, false, 0, 0, 0)
 
 	resumeResp := controlRegistrationBatchThroughCompatAPI(t, server.URL, batchID, "resume")
 	if resumeResp["status"] != jobs.StatusRunning {
@@ -259,10 +284,10 @@ func TestRegistrationBatchCompatibilityFlow(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected numeric log_next_offset, got %#v", completed["log_next_offset"])
 	}
-	assertRegistrationBatchCompatFields(t, completed, batchID, jobs.StatusCompleted, 2, 2, 2, 0, false, false, true, 0, nextOffset)
+	assertRegistrationBatchCompatFields(t, completed, batchID, jobs.StatusCompleted, 2, 2, 2, 0, 0, 2, false, false, true, 0, 0, nextOffset)
 
 	clamped := getRegistrationBatchThroughCompatAPI(t, server.URL, batchID, 999)
-	assertRegistrationBatchCompatFields(t, clamped, batchID, jobs.StatusCompleted, 2, 2, 2, 0, false, false, true, nextOffset, nextOffset)
+	assertRegistrationBatchCompatFields(t, clamped, batchID, jobs.StatusCompleted, 2, 2, 2, 0, 0, 2, false, false, true, 0, nextOffset, nextOffset)
 	clampedLogs, ok := clamped["logs"].([]any)
 	if !ok {
 		t.Fatalf("expected clamped batch logs array, got %#v", clamped["logs"])
@@ -281,8 +306,11 @@ func TestRegistrationBatchCompatibilityFlow(t *testing.T) {
 		t.Fatalf("expected cancel success=true, got %#v", cancelResp["success"])
 	}
 
+	cancelling := getRegistrationBatchThroughCompatAPI(t, server.URL, cancelBatchID, 0)
+	assertRegistrationBatchCompatFields(t, cancelling, cancelBatchID, "cancelling", 1, 1, 0, 0, 0, 1, false, true, false, 0, 0, 0)
+
 	cancelled := getRegistrationBatchThroughCompatAPI(t, server.URL, cancelBatchID, 0)
-	assertRegistrationBatchCompatFields(t, cancelled, cancelBatchID, jobs.StatusCancelled, 1, 1, 0, 0, false, true, true, 0, 0)
+	assertRegistrationBatchCompatFields(t, cancelled, cancelBatchID, jobs.StatusCancelled, 1, 1, 0, 0, 0, 1, false, true, true, 0, 0, 0)
 }
 
 func TestRegistrationBatchWebSocketCompatibility(t *testing.T) {
@@ -501,7 +529,7 @@ func TestRegistrationOutlookBatchCompatibility(t *testing.T) {
 	}
 
 	initial := getOutlookBatchThroughCompatAPI(t, server.URL, batchID, 0)
-	assertRegistrationOutlookBatchCompatFields(t, initial, batchID, jobs.StatusRunning, 2, 0, 0, 0, 0, false, false, false)
+	assertRegistrationOutlookBatchCompatFields(t, initial, batchID, jobs.StatusRunning, 2, 0, 0, 0, 0, 0, 0, false, false, false)
 
 	pauseResp := controlOutlookBatchThroughCompatAPI(t, server.URL, batchID, "pause")
 	if pauseResp["status"] != jobs.StatusPaused {
@@ -574,6 +602,9 @@ func TestRegistrationOutlookBatchCompatibility(t *testing.T) {
 		t.Fatalf("expected cancel success=true, got %#v", cancelResp["success"])
 	}
 
+	cancelling := getOutlookBatchThroughCompatAPI(t, server.URL, batchID, 0)
+	assertRegistrationOutlookBatchCompatFields(t, cancelling, batchID, "cancelling", 2, 2, 1, 0, 0, 2, 0, false, true, false)
+
 	cancelDeadline := time.Now().Add(3 * time.Second)
 	for {
 		if time.Now().After(cancelDeadline) {
@@ -594,7 +625,7 @@ func TestRegistrationOutlookBatchCompatibility(t *testing.T) {
 	}
 
 	cancelled := getOutlookBatchThroughCompatAPI(t, server.URL, batchID, 0)
-	assertRegistrationOutlookBatchCompatFields(t, cancelled, batchID, jobs.StatusCancelled, 2, 2, 1, 0, 0, false, true, true)
+	assertRegistrationOutlookBatchCompatFields(t, cancelled, batchID, jobs.StatusCancelled, 2, 2, 1, 0, 0, 2, 0, false, true, true)
 }
 
 func TestRegistrationStatsCompatibilityEndpoint(t *testing.T) {
@@ -757,9 +788,12 @@ func assertRegistrationBatchCompatFields(
 	completed float64,
 	success float64,
 	failed float64,
+	skipped float64,
+	currentIndex float64,
 	paused bool,
 	cancelled bool,
 	finished bool,
+	logBaseIndex float64,
 	offset float64,
 	nextOffset float64,
 ) {
@@ -783,6 +817,12 @@ func assertRegistrationBatchCompatFields(
 	if payload["failed"] != failed {
 		t.Fatalf("expected failed=%v, got %#v", failed, payload["failed"])
 	}
+	if payload["skipped"] != skipped {
+		t.Fatalf("expected skipped=%v, got %#v", skipped, payload["skipped"])
+	}
+	if payload["current_index"] != currentIndex {
+		t.Fatalf("expected current_index=%v, got %#v", currentIndex, payload["current_index"])
+	}
 	if payload["paused"] != paused {
 		t.Fatalf("expected paused=%v, got %#v", paused, payload["paused"])
 	}
@@ -797,6 +837,9 @@ func assertRegistrationBatchCompatFields(
 	}
 	if payload["log_offset"] != offset {
 		t.Fatalf("expected log_offset=%v, got %#v", offset, payload["log_offset"])
+	}
+	if payload["log_base_index"] != logBaseIndex {
+		t.Fatalf("expected log_base_index=%v, got %#v", logBaseIndex, payload["log_base_index"])
 	}
 	if payload["log_next_offset"] != nextOffset {
 		t.Fatalf("expected log_next_offset=%v, got %#v", nextOffset, payload["log_next_offset"])
@@ -813,6 +856,8 @@ func assertRegistrationOutlookBatchCompatFields(
 	success float64,
 	failed float64,
 	skipped float64,
+	currentIndex float64,
+	logBaseIndex float64,
 	paused bool,
 	cancelled bool,
 	finished bool,
@@ -836,15 +881,15 @@ func assertRegistrationOutlookBatchCompatFields(
 		completed,
 		success,
 		failed,
+		skipped,
+		currentIndex,
 		paused,
 		cancelled,
 		finished,
+		logBaseIndex,
 		logOffset,
 		logNextOffset,
 	)
-	if payload["skipped"] != skipped {
-		t.Fatalf("expected skipped=%v, got %#v", skipped, payload["skipped"])
-	}
 }
 
 func createJobThroughAPI(t *testing.T, baseURL string) map[string]any {
@@ -923,8 +968,8 @@ func startRegistrationThroughCompatAPI(t *testing.T, baseURL string) string {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("expected start 202, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected start 200, got %d", resp.StatusCode)
 	}
 
 	var payload map[string]any
@@ -949,8 +994,8 @@ func startRegistrationBatchThroughCompatAPI(t *testing.T, baseURL string, count 
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("expected batch start 202, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected batch start 200, got %d", resp.StatusCode)
 	}
 
 	var payload map[string]any
@@ -976,6 +1021,26 @@ func getRegistrationTaskThroughCompatAPI(t *testing.T, baseURL string, taskUUID 
 	var payload map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode registration task response: %v", err)
+	}
+	return payload
+}
+
+func listRegistrationTasksThroughCompatAPI(t *testing.T, baseURL string) map[string]any {
+	t.Helper()
+
+	resp, err := http.Get(baseURL + "/api/registration/tasks?page=1&page_size=20")
+	if err != nil {
+		t.Fatalf("list registration tasks request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected list registration tasks 200, got %d", resp.StatusCode)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode registration task list response: %v", err)
 	}
 	return payload
 }
@@ -1018,6 +1083,33 @@ func getRegistrationLogsThroughCompatAPI(t *testing.T, baseURL string, taskUUID 
 		t.Fatalf("decode registration logs response: %v", err)
 	}
 	return payload
+}
+
+func deleteRegistrationTaskThroughCompatAPI(t *testing.T, baseURL string, taskUUID string) {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodDelete, baseURL+"/api/registration/tasks/"+taskUUID, nil)
+	if err != nil {
+		t.Fatalf("create delete registration task request failed: %v", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("delete registration task request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected delete registration task 200, got %d", resp.StatusCode)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode delete registration task response: %v", err)
+	}
+	if success, ok := payload["success"].(bool); !ok || !success {
+		t.Fatalf("expected delete success=true, got %#v", payload["success"])
+	}
 }
 
 func getRegistrationBatchThroughCompatAPI(t *testing.T, baseURL string, batchID string, logOffset int) map[string]any {
@@ -1105,8 +1197,8 @@ func startOutlookBatchThroughCompatAPI(t *testing.T, baseURL string, serviceIDs 
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("expected start outlook batch 202, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected start outlook batch 200, got %d", resp.StatusCode)
 	}
 
 	var payload map[string]any

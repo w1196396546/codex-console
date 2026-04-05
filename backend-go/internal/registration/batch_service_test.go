@@ -252,6 +252,61 @@ func TestGetBatchReturnsStableIncrementalLogs(t *testing.T) {
 	}
 }
 
+func TestBatchEndpointsCompatibilityProgressFields(t *testing.T) {
+	repo := jobs.NewInMemoryRepository()
+	queue := &batchFakeQueue{}
+	svc := registration.NewBatchService(jobs.NewService(repo, queue))
+
+	startResp, err := svc.StartBatch(context.Background(), registration.BatchStartRequest{
+		Count:            2,
+		EmailServiceType: "tempmail",
+	})
+	if err != nil {
+		t.Fatalf("unexpected start error: %v", err)
+	}
+
+	initial, err := svc.GetBatch(context.Background(), startResp.BatchID, 0)
+	if err != nil {
+		t.Fatalf("unexpected initial get error: %v", err)
+	}
+	if initial.Skipped != 0 {
+		t.Fatalf("expected skipped=0, got %#v", initial.Skipped)
+	}
+	if initial.CurrentIndex != 0 {
+		t.Fatalf("expected current_index=0, got %#v", initial.CurrentIndex)
+	}
+	if initial.LogBaseIndex != 0 {
+		t.Fatalf("expected log_base_index=0, got %#v", initial.LogBaseIndex)
+	}
+
+	cancelResp, err := svc.CancelBatch(context.Background(), startResp.BatchID)
+	if err != nil {
+		t.Fatalf("unexpected cancel error: %v", err)
+	}
+	if cancelResp.Status != "cancelling" {
+		t.Fatalf("expected cancel control status=cancelling, got %#v", cancelResp.Status)
+	}
+
+	cancelling, err := svc.GetBatch(context.Background(), startResp.BatchID, 0)
+	if err != nil {
+		t.Fatalf("unexpected cancelling get error: %v", err)
+	}
+	if cancelling.Status != "cancelling" || !cancelling.Cancelled || cancelling.Finished {
+		t.Fatalf("expected cancelling snapshot, got %+v", cancelling)
+	}
+
+	settled, err := svc.GetBatch(context.Background(), startResp.BatchID, 0)
+	if err != nil {
+		t.Fatalf("unexpected settled get error: %v", err)
+	}
+	if settled.Status != jobs.StatusCancelled || !settled.Cancelled || !settled.Finished {
+		t.Fatalf("expected settled cancelled snapshot, got %+v", settled)
+	}
+	if settled.CurrentIndex != 2 {
+		t.Fatalf("expected current_index=2 after cancellation settles, got %#v", settled.CurrentIndex)
+	}
+}
+
 type batchFakeQueue struct {
 	tasks []*asynq.Task
 }

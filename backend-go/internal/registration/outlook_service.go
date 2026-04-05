@@ -72,10 +72,12 @@ type OutlookBatchStatusResponse struct {
 	Success       int      `json:"success"`
 	Failed        int      `json:"failed"`
 	Skipped       int      `json:"skipped"`
+	CurrentIndex  int      `json:"current_index"`
 	Paused        bool     `json:"paused"`
 	Cancelled     bool     `json:"cancelled"`
 	Finished      bool     `json:"finished"`
 	Logs          []string `json:"logs"`
+	LogBaseIndex  int      `json:"log_base_index"`
 	LogOffset     int      `json:"log_offset"`
 	LogNextOffset int      `json:"log_next_offset"`
 	Progress      string   `json:"progress"`
@@ -260,10 +262,12 @@ func (s *OutlookService) GetOutlookBatch(ctx context.Context, batchID string, lo
 		Success:       status.Success,
 		Failed:        status.Failed,
 		Skipped:       metadata.Skipped,
+		CurrentIndex:  status.CurrentIndex,
 		Paused:        status.Paused,
 		Cancelled:     status.Cancelled,
 		Finished:      status.Finished,
 		Logs:          append([]string(nil), status.Logs...),
+		LogBaseIndex:  status.LogBaseIndex,
 		LogOffset:     status.LogOffset,
 		LogNextOffset: status.LogNextOffset,
 		Progress:      status.Progress,

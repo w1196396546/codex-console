@@ -42,7 +42,9 @@ func (s *Service) StartRegistration(ctx context.Context, req StartRequest) (Task
 	}
 
 	return TaskResponse{
-		TaskUUID: job.JobID,
-		Status:   job.Status,
+		TaskUUID:     job.JobID,
+		Status:       job.Status,
+		Email:        nil,
+		EmailService: req.EmailServiceType,
 	}, nil
 }

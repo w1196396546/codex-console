@@ -27,6 +27,20 @@ func TestRegistrationStartAndTaskReadback(t *testing.T) {
 	task := getRegistrationTask(t, server.URL, taskUUID)
 	assertRegistrationTaskFrontendFields(t, task, taskUUID, jobs.StatusPending, nil, "tempmail")
 
+	listing := listRegistrationTasks(t, server.URL)
+	if listing["total"] != float64(1) {
+		t.Fatalf("expected task listing total=1, got %#v", listing["total"])
+	}
+	listItems, ok := listing["tasks"].([]any)
+	if !ok || len(listItems) != 1 {
+		t.Fatalf("expected one listed task, got %#v", listing["tasks"])
+	}
+	listTask, ok := listItems[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected listed task object, got %#v", listItems[0])
+	}
+	assertRegistrationTaskFrontendFields(t, listTask, taskUUID, jobs.StatusPending, nil, "tempmail")
+
 	initialLogs := getRegistrationLogs(t, server.URL, taskUUID, 0)
 	assertRegistrationLogFrontendFields(t, initialLogs, taskUUID, jobs.StatusPending, nil, "tempmail", 0, 0)
 	initialLogItems, ok := initialLogs["logs"].([]any)
@@ -50,6 +64,17 @@ func TestRegistrationStartAndTaskReadback(t *testing.T) {
 	}
 	if len(logItems) != 2 {
 		t.Fatalf("expected two log items, got %#v", logs["logs"])
+	}
+
+	deleteRegistrationTask(t, server.URL, taskUUID)
+
+	resp, err := http.Get(server.URL + "/api/registration/tasks/" + taskUUID)
+	if err != nil {
+		t.Fatalf("get deleted task request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected deleted task 404, got %d", resp.StatusCode)
 	}
 }
 
@@ -132,7 +157,7 @@ func TestRegistrationLogsExposeCompletedEmailFromJobResult(t *testing.T) {
 	assertRegistrationLogFrontendFields(t, logs, taskUUID, jobs.StatusCompleted, ptr("alice@example.com"), "tempmail", 0, 2)
 }
 
-func TestRegistrationWorkerUsesRegistrationExecutorBridge(t *testing.T) {
+func TestRegistrationWorkerUsesRegistrationExecutorRunner(t *testing.T) {
 	repo := jobs.NewInMemoryRepository()
 	queue := &fakeQueue{}
 	jobService := jobs.NewService(repo, queue)
@@ -140,18 +165,23 @@ func TestRegistrationWorkerUsesRegistrationExecutorBridge(t *testing.T) {
 	server := httptest.NewServer(internalhttp.NewRouter(jobService, registrationService))
 	defer server.Close()
 
-	taskUUID := startRegistration(t, server.URL)
+	taskUUID := startRegistrationWithPayload(t, server.URL, []byte(`{
+		"email_service_type":"tempmail",
+		"email_service_config":{
+			"base_url":"https://api.tempmail.example/v2"
+		}
+	}`))
 
 	worker := jobs.NewWorkerWithIDAndExecutor(
 		jobService,
-		"worker-bridge",
+		"worker-runner",
 		registration.NewExecutor(jobService, &fakeRegistrationRunner{
 			result: map[string]any{
-				"email":   "bridge@example.com",
+				"email":   "runner@example.com",
 				"success": true,
 			},
 			logs: []runnerLog{
-				{level: "info", message: "python bridge started"},
+				{level: "info", message: "registration started"},
 			},
 		}),
 	)
@@ -160,10 +190,10 @@ func TestRegistrationWorkerUsesRegistrationExecutorBridge(t *testing.T) {
 	}
 
 	task := getRegistrationTask(t, server.URL, taskUUID)
-	assertRegistrationTaskFrontendFields(t, task, taskUUID, jobs.StatusCompleted, ptr("bridge@example.com"), "tempmail")
+	assertRegistrationTaskFrontendFields(t, task, taskUUID, jobs.StatusCompleted, ptr("runner@example.com"), "tempmail")
 
 	logs := getRegistrationLogs(t, server.URL, taskUUID, 0)
-	assertRegistrationLogFrontendFields(t, logs, taskUUID, jobs.StatusCompleted, ptr("bridge@example.com"), "tempmail", 0, 3)
+	assertRegistrationLogFrontendFields(t, logs, taskUUID, jobs.StatusCompleted, ptr("runner@example.com"), "tempmail", 0, 3)
 	logItems, ok := logs["logs"].([]any)
 	if !ok {
 		t.Fatalf("expected logs array, got %#v", logs["logs"])
@@ -171,8 +201,8 @@ func TestRegistrationWorkerUsesRegistrationExecutorBridge(t *testing.T) {
 	if len(logItems) != 3 {
 		t.Fatalf("expected three log items, got %#v", logItems)
 	}
-	if logItems[1] != "python bridge started" {
-		t.Fatalf("expected bridge log in middle, got %#v", logItems)
+	if logItems[1] != "registration started" {
+		t.Fatalf("expected runner log in middle, got %#v", logItems)
 	}
 }
 
@@ -242,16 +272,16 @@ type fakeRegistrationRunner struct {
 	err    error
 }
 
-func (f *fakeRegistrationRunner) Run(_ context.Context, _ registration.RunnerRequest, logf func(level string, message string) error) (map[string]any, error) {
+func (f *fakeRegistrationRunner) Run(_ context.Context, _ registration.RunnerRequest, logf func(level string, message string) error) (registration.RunnerOutput, error) {
 	for _, entry := range f.logs {
 		if err := logf(entry.level, entry.message); err != nil {
-			return nil, err
+			return registration.RunnerOutput{}, err
 		}
 	}
 	if f.err != nil {
-		return nil, f.err
+		return registration.RunnerOutput{}, f.err
 	}
-	return f.result, nil
+	return registration.RunnerOutput{Result: f.result}, nil
 }
 
 type runnerLog struct {
@@ -262,15 +292,20 @@ type runnerLog struct {
 func startRegistration(t *testing.T, baseURL string) string {
 	t.Helper()
 
-	body := []byte(`{"email_service_type":"tempmail"}`)
+	return startRegistrationWithPayload(t, baseURL, []byte(`{"email_service_type":"tempmail"}`))
+}
+
+func startRegistrationWithPayload(t *testing.T, baseURL string, body []byte) string {
+	t.Helper()
+
 	resp, err := http.Post(baseURL+"/api/registration/start", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("start registration request failed: %v", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("expected start 202, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected start 200, got %d", resp.StatusCode)
 	}
 
 	var payload map[string]any
@@ -323,4 +358,51 @@ func getRegistrationLogs(t *testing.T, baseURL string, taskUUID string, offset i
 		t.Fatalf("decode logs response: %v", err)
 	}
 	return payload
+}
+
+func listRegistrationTasks(t *testing.T, baseURL string) map[string]any {
+	t.Helper()
+
+	resp, err := http.Get(baseURL + "/api/registration/tasks?page=1&page_size=20")
+	if err != nil {
+		t.Fatalf("list tasks request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected list tasks 200, got %d", resp.StatusCode)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode list tasks response: %v", err)
+	}
+	return payload
+}
+
+func deleteRegistrationTask(t *testing.T, baseURL string, taskUUID string) {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodDelete, baseURL+"/api/registration/tasks/"+taskUUID, nil)
+	if err != nil {
+		t.Fatalf("create delete task request: %v", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("delete task request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected delete task 200, got %d", resp.StatusCode)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode delete task response: %v", err)
+	}
+	if success, ok := payload["success"].(bool); !ok || !success {
+		t.Fatalf("expected delete success=true, got %#v", payload["success"])
+	}
 }

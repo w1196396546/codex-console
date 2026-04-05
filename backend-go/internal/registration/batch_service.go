@@ -60,10 +60,13 @@ type BatchStatusResponse struct {
 	Completed     int      `json:"completed"`
 	Success       int      `json:"success"`
 	Failed        int      `json:"failed"`
+	Skipped       int      `json:"skipped"`
+	CurrentIndex  int      `json:"current_index"`
 	Paused        bool     `json:"paused"`
 	Cancelled     bool     `json:"cancelled"`
 	Finished      bool     `json:"finished"`
 	Logs          []string `json:"logs"`
+	LogBaseIndex  int      `json:"log_base_index"`
 	LogOffset     int      `json:"log_offset"`
 	LogNextOffset int      `json:"log_next_offset"`
 	Progress      string   `json:"progress"`
@@ -90,7 +93,9 @@ type batchRecord struct {
 	taskUUIDs       []string
 	logs            []string
 	logOffsets      map[string]int
+	logBaseIndex    int
 	cancelRequested bool
+	cancelSettled   bool
 }
 
 type BatchService struct {
@@ -150,10 +155,11 @@ func (s *BatchService) startBatchRequests(ctx context.Context, requests []StartR
 
 	s.mu.Lock()
 	s.batches[batchID] = batchRecord{
-		count:      len(requests),
-		taskUUIDs:  make([]string, 0, len(requests)),
-		logs:       make([]string, 0),
-		logOffsets: make(map[string]int, len(requests)),
+		count:        len(requests),
+		taskUUIDs:    make([]string, 0, len(requests)),
+		logs:         make([]string, 0),
+		logOffsets:   make(map[string]int, len(requests)),
+		logBaseIndex: 0,
 	}
 	s.mu.Unlock()
 
@@ -245,10 +251,13 @@ func (s *BatchService) GetBatch(ctx context.Context, batchID string, logOffset i
 		Completed:     stats.completed,
 		Success:       stats.success,
 		Failed:        stats.failed,
+		Skipped:       0,
+		CurrentIndex:  stats.currentIndex,
 		Paused:        stats.paused,
 		Cancelled:     stats.cancelled,
 		Finished:      stats.finished,
 		Logs:          incrementalLogs,
+		LogBaseIndex:  record.logBaseIndex,
 		LogOffset:     offset,
 		LogNextOffset: len(stats.logs),
 		Progress:      fmt.Sprintf("%d/%d", stats.completed, record.count),
@@ -317,25 +326,27 @@ func (s *BatchService) CancelBatch(ctx context.Context, batchID string) (BatchCo
 	s.mu.Lock()
 	stored := s.batches[batchID]
 	stored.cancelRequested = true
+	stored.cancelSettled = false
 	s.batches[batchID] = stored
 	s.mu.Unlock()
 
 	return BatchControlResponse{
 		Success: true,
-		Status:  jobs.StatusCancelled,
+		Status:  "cancelling",
 		Message: "batch cancellation requested",
 	}, nil
 }
 
 type batchStats struct {
-	status    string
-	completed int
-	success   int
-	failed    int
-	paused    bool
-	cancelled bool
-	finished  bool
-	logs      []string
+	status       string
+	completed    int
+	success      int
+	failed       int
+	currentIndex int
+	paused       bool
+	cancelled    bool
+	finished     bool
+	logs         []string
 }
 
 func (s *BatchService) snapshotBatch(ctx context.Context, batchID string) (batchRecord, batchStats, error) {
@@ -402,8 +413,16 @@ func (s *BatchService) snapshotBatch(ctx context.Context, batchID string) (batch
 	stats.finished = terminalCount == len(record.taskUUIDs)
 	stats.paused = unfinishedCount > 0 && pausedCount == unfinishedCount && !record.cancelRequested
 	stats.cancelled = cancelledCount > 0 || record.cancelRequested
+	stats.currentIndex = stats.completed
+	if stats.currentIndex > len(record.taskUUIDs) {
+		stats.currentIndex = len(record.taskUUIDs)
+	}
 
 	switch {
+	case record.cancelRequested && stats.finished && !record.cancelSettled:
+		stats.status = "cancelling"
+		stats.finished = false
+		record.cancelSettled = true
 	case stats.finished && stats.cancelled:
 		stats.status = jobs.StatusCancelled
 	case stats.finished && stats.success == 0 && stats.failed > 0:
@@ -468,7 +487,9 @@ func cloneBatchRecord(record batchRecord) batchRecord {
 		count:           record.count,
 		taskUUIDs:       append([]string(nil), record.taskUUIDs...),
 		logs:            append([]string(nil), record.logs...),
+		logBaseIndex:    record.logBaseIndex,
 		cancelRequested: record.cancelRequested,
+		cancelSettled:   record.cancelSettled,
 	}
 	if record.logOffsets != nil {
 		cloned.logOffsets = make(map[string]int, len(record.logOffsets))

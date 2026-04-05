@@ -18,6 +18,13 @@ type StartRequest struct {
 }
 
 type TaskResponse struct {
-	TaskUUID string `json:"task_uuid"`
-	Status   string `json:"status"`
+	TaskUUID     string `json:"task_uuid"`
+	Status       string `json:"status"`
+	Email        any    `json:"email"`
+	EmailService any    `json:"email_service"`
+}
+
+type TaskListResponse struct {
+	Total int            `json:"total"`
+	Tasks []TaskResponse `json:"tasks"`
 }

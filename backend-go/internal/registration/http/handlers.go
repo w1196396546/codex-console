@@ -18,10 +18,12 @@ type startService interface {
 
 type taskService interface {
 	GetJob(ctx context.Context, jobID string) (jobs.Job, error)
+	ListJobs(ctx context.Context, params jobs.ListJobsParams) (jobs.ListJobsResult, error)
 	ListJobLogs(ctx context.Context, jobID string) ([]jobs.JobLog, error)
 	PauseJob(ctx context.Context, jobID string) (jobs.Job, error)
 	ResumeJob(ctx context.Context, jobID string) (jobs.Job, error)
 	CancelJob(ctx context.Context, jobID string) (jobs.Job, error)
+	DeleteJob(ctx context.Context, jobID string) error
 }
 
 type batchService interface {
@@ -97,11 +99,13 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Post("/outlook-batch/{batchID}/resume", h.ResumeOutlookBatch)
 			r.Post("/outlook-batch/{batchID}/cancel", h.CancelOutlookBatch)
 		}
+		r.Get("/tasks", h.ListTasks)
 		r.Get("/tasks/{taskUUID}", h.GetTask)
 		r.Get("/tasks/{taskUUID}/logs", h.GetTaskLogs)
 		r.Post("/tasks/{taskUUID}/pause", h.PauseTask)
 		r.Post("/tasks/{taskUUID}/resume", h.ResumeTask)
 		r.Post("/tasks/{taskUUID}/cancel", h.CancelTask)
+		r.Delete("/tasks/{taskUUID}", h.DeleteTask)
 	})
 }
 
@@ -168,7 +172,7 @@ func (h *Handler) StartRegistration(w nethttp.ResponseWriter, r *nethttp.Request
 		return
 	}
 
-	writeJSON(w, nethttp.StatusAccepted, resp)
+	writeJSON(w, nethttp.StatusOK, resp)
 }
 
 func (h *Handler) StartBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -184,7 +188,7 @@ func (h *Handler) StartBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 
-	writeJSON(w, nethttp.StatusAccepted, resp)
+	writeJSON(w, nethttp.StatusOK, resp)
 }
 
 func (h *Handler) StartOutlookBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -200,7 +204,7 @@ func (h *Handler) StartOutlookBatch(w nethttp.ResponseWriter, r *nethttp.Request
 		return
 	}
 
-	writeJSON(w, nethttp.StatusAccepted, resp)
+	writeJSON(w, nethttp.StatusOK, resp)
 }
 
 func (h *Handler) GetBatch(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -243,20 +247,58 @@ func (h *Handler) GetOutlookBatch(w nethttp.ResponseWriter, r *nethttp.Request) 
 	writeJSON(w, nethttp.StatusOK, resp)
 }
 
+func (h *Handler) ListTasks(w nethttp.ResponseWriter, r *nethttp.Request) {
+	page := 1
+	if rawPage := r.URL.Query().Get("page"); rawPage != "" {
+		parsedPage, err := strconv.Atoi(rawPage)
+		if err != nil || parsedPage < 1 {
+			nethttp.Error(w, "invalid page", nethttp.StatusBadRequest)
+			return
+		}
+		page = parsedPage
+	}
+
+	pageSize := 20
+	if rawPageSize := r.URL.Query().Get("page_size"); rawPageSize != "" {
+		parsedPageSize, err := strconv.Atoi(rawPageSize)
+		if err != nil || parsedPageSize < 1 || parsedPageSize > 100 {
+			nethttp.Error(w, "invalid page_size", nethttp.StatusBadRequest)
+			return
+		}
+		pageSize = parsedPageSize
+	}
+
+	result, err := h.tasks.ListJobs(r.Context(), jobs.ListJobsParams{
+		JobType:    registration.JobTypeSingle,
+		ScopeTypes: []string{"registration", "registration_batch"},
+		Status:     r.URL.Query().Get("status"),
+		Limit:      pageSize,
+		Offset:     (page - 1) * pageSize,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	items := make([]registration.TaskResponse, 0, len(result.Jobs))
+	for _, job := range result.Jobs {
+		items = append(items, taskResponse(job))
+	}
+
+	writeJSON(w, nethttp.StatusOK, registration.TaskListResponse{
+		Total: result.Total,
+		Tasks: items,
+	})
+}
+
 func (h *Handler) GetTask(w nethttp.ResponseWriter, r *nethttp.Request) {
 	job, err := h.tasks.GetJob(r.Context(), chi.URLParam(r, "taskUUID"))
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
-	taskMetadata := registration.ResolveTaskMetadata(job)
 
-	writeJSON(w, nethttp.StatusOK, map[string]any{
-		"task_uuid":     job.JobID,
-		"status":        job.Status,
-		"email":         taskMetadata.Email,
-		"email_service": taskMetadata.EmailService,
-	})
+	writeJSON(w, nethttp.StatusOK, taskResponse(job))
 }
 
 func (h *Handler) GetTaskLogs(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -300,6 +342,28 @@ func (h *Handler) GetTaskLogs(w nethttp.ResponseWriter, r *nethttp.Request) {
 		"logs":            logMessages,
 		"log_offset":      offset,
 		"log_next_offset": len(logs),
+	})
+}
+
+func (h *Handler) DeleteTask(w nethttp.ResponseWriter, r *nethttp.Request) {
+	taskUUID := chi.URLParam(r, "taskUUID")
+	job, err := h.tasks.GetJob(r.Context(), taskUUID)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	if job.Status == jobs.StatusRunning {
+		nethttp.Error(w, "cannot delete running task", nethttp.StatusBadRequest)
+		return
+	}
+	if err := h.tasks.DeleteJob(r.Context(), taskUUID); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, nethttp.StatusOK, map[string]any{
+		"success": true,
+		"message": "task deleted",
 	})
 }
 
@@ -409,4 +473,14 @@ func writeJSON(w nethttp.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func taskResponse(job jobs.Job) registration.TaskResponse {
+	taskMetadata := registration.ResolveTaskMetadata(job)
+	return registration.TaskResponse{
+		TaskUUID:     job.JobID,
+		Status:       job.Status,
+		Email:        taskMetadata.Email,
+		EmailService: taskMetadata.EmailService,
+	}
 }

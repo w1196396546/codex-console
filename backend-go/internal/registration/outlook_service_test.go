@@ -187,6 +187,53 @@ func TestStartOutlookBatch(t *testing.T) {
 	}
 }
 
+func TestOutlookBatchEndpointsCompatibilityProgressFields(t *testing.T) {
+	jobsService := newRecordingBatchJobsService()
+	batchService := registration.NewBatchService(jobsService)
+	service := registration.NewOutlookService(outlookFakeRepository{}, batchService)
+
+	response, err := service.StartOutlookBatch(context.Background(), registration.OutlookBatchStartRequest{
+		ServiceIDs: []int{101, 202},
+	})
+	if err != nil {
+		t.Fatalf("unexpected start error: %v", err)
+	}
+
+	initial, err := service.GetOutlookBatch(context.Background(), response.BatchID, 0)
+	if err != nil {
+		t.Fatalf("unexpected initial get error: %v", err)
+	}
+	if initial.Skipped != 0 {
+		t.Fatalf("expected skipped=0, got %#v", initial.Skipped)
+	}
+	if initial.CurrentIndex != 0 {
+		t.Fatalf("expected current_index=0, got %#v", initial.CurrentIndex)
+	}
+	if initial.LogBaseIndex != 0 {
+		t.Fatalf("expected log_base_index=0, got %#v", initial.LogBaseIndex)
+	}
+
+	if _, err := batchService.CancelBatch(context.Background(), response.BatchID); err != nil {
+		t.Fatalf("unexpected cancel error: %v", err)
+	}
+
+	cancelling, err := service.GetOutlookBatch(context.Background(), response.BatchID, 0)
+	if err != nil {
+		t.Fatalf("unexpected cancelling get error: %v", err)
+	}
+	if cancelling.Status != "cancelling" || !cancelling.Cancelled || cancelling.Finished {
+		t.Fatalf("expected cancelling snapshot, got %+v", cancelling)
+	}
+
+	settled, err := service.GetOutlookBatch(context.Background(), response.BatchID, 0)
+	if err != nil {
+		t.Fatalf("unexpected settled get error: %v", err)
+	}
+	if settled.Status != jobs.StatusCancelled || !settled.Cancelled || !settled.Finished {
+		t.Fatalf("expected settled cancelled snapshot, got %+v", settled)
+	}
+}
+
 type outlookFakeRepository struct {
 	services []registration.EmailServiceRecord
 	accounts []registration.RegisteredAccountRecord

@@ -22,6 +22,13 @@ import (
 
 const defaultPollInterval = 250 * time.Millisecond
 
+const (
+	taskPausedMessage     = "任务已暂停，等待继续指令"
+	taskResumedMessage    = "任务已恢复执行"
+	taskCancellingMessage = "取消请求已提交，正在踩刹车，别慌"
+	taskCancellingStatus  = "cancelling"
+)
+
 type taskService interface {
 	GetJob(ctx context.Context, jobID string) (jobs.Job, error)
 	ListJobLogs(ctx context.Context, jobID string) ([]jobs.JobLog, error)
@@ -96,28 +103,16 @@ func (h *Handler) sendSnapshot(
 	if err != nil {
 		return err
 	}
-	taskMetadata := registration.ResolveTaskMetadata(job)
-	if err := socket.writeJSON(map[string]any{
-		"type":          "status",
-		"task_uuid":     taskUUID,
-		"status":        job.Status,
-		"email":         taskMetadata.Email,
-		"email_service": taskMetadata.EmailService,
-	}); err != nil {
-		return err
-	}
-
 	logs, err := h.tasks.ListJobLogs(ctx, taskUUID)
 	if err != nil {
 		return err
 	}
-	for _, item := range logs {
-		if err := socket.writeJSON(map[string]string{
-			"type":      "log",
-			"task_uuid": taskUUID,
-			"message":   item.Message,
-			"log":       item.Message,
-		}); err != nil {
+	if err := socket.writeJSON(taskStatusMessage(job, taskUUID, 0, len(logs), "")); err != nil {
+		return err
+	}
+
+	for index, item := range logs {
+		if err := socket.writeJSON(taskLogMessage(taskUUID, item.Message, index)); err != nil {
 			return err
 		}
 	}
@@ -151,15 +146,15 @@ func (h *Handler) readLoop(
 				return err
 			}
 		case "pause":
-			if err := h.writeStatusUpdate(ctx, socket, state, taskUUID, h.tasks.PauseJob); err != nil {
+			if err := h.writeStatusUpdate(ctx, socket, state, taskUUID, h.tasks.PauseJob, taskPausedMessage); err != nil {
 				return err
 			}
 		case "resume":
-			if err := h.writeStatusUpdate(ctx, socket, state, taskUUID, h.tasks.ResumeJob); err != nil {
+			if err := h.writeStatusUpdate(ctx, socket, state, taskUUID, h.tasks.ResumeJob, taskResumedMessage); err != nil {
 				return err
 			}
 		case "cancel":
-			if err := h.writeStatusUpdate(ctx, socket, state, taskUUID, h.tasks.CancelJob); err != nil {
+			if err := h.writeCancellingUpdate(ctx, socket, state, taskUUID); err != nil {
 				return err
 			}
 		}
@@ -172,24 +167,38 @@ func (h *Handler) writeStatusUpdate(
 	state *socketState,
 	taskUUID string,
 	update func(ctx context.Context, jobID string) (jobs.Job, error),
+	message string,
 ) error {
 	job, err := update(ctx, taskUUID)
 	if err != nil {
 		return err
 	}
-	taskMetadata := registration.ResolveTaskMetadata(job)
-	if err := socket.writeJSON(map[string]any{
-		"type":          "status",
-		"task_uuid":     taskUUID,
-		"status":        job.Status,
-		"email":         taskMetadata.Email,
-		"email_service": taskMetadata.EmailService,
-	}); err != nil {
+	_, logCount := state.get()
+	if err := socket.writeJSON(taskStatusMessage(job, taskUUID, logCount, logCount, message)); err != nil {
+		return err
+	}
+	state.set(job.Status, logCount)
+	return nil
+}
+
+func (h *Handler) writeCancellingUpdate(
+	ctx context.Context,
+	socket *taskSocketConn,
+	state *socketState,
+	taskUUID string,
+) error {
+	job, err := h.tasks.CancelJob(ctx, taskUUID)
+	if err != nil {
 		return err
 	}
 
 	_, logCount := state.get()
-	state.set(job.Status, logCount)
+	message := taskStatusMessage(job, taskUUID, logCount, logCount, taskCancellingMessage)
+	message["status"] = taskCancellingStatus
+	if err := socket.writeJSON(message); err != nil {
+		return err
+	}
+	state.set(taskCancellingStatus, logCount)
 	return nil
 }
 
@@ -218,32 +227,50 @@ func (h *Handler) pollLoop(
 
 			lastStatus, lastLogCount := state.get()
 			if job.Status != lastStatus {
-				taskMetadata := registration.ResolveTaskMetadata(job)
-				if err := socket.writeJSON(map[string]any{
-					"type":          "status",
-					"task_uuid":     taskUUID,
-					"status":        job.Status,
-					"email":         taskMetadata.Email,
-					"email_service": taskMetadata.EmailService,
-				}); err != nil {
+				if err := socket.writeJSON(taskStatusMessage(job, taskUUID, lastLogCount, len(logs), "")); err != nil {
 					return err
 				}
 				lastStatus = job.Status
 			}
 
 			for index := lastLogCount; index < len(logs); index++ {
-				if err := socket.writeJSON(map[string]string{
-					"type":      "log",
-					"task_uuid": taskUUID,
-					"message":   logs[index].Message,
-					"log":       logs[index].Message,
-				}); err != nil {
+				if err := socket.writeJSON(taskLogMessage(taskUUID, logs[index].Message, index)); err != nil {
 					return err
 				}
 			}
 
 			state.set(lastStatus, len(logs))
 		}
+	}
+}
+
+func taskStatusMessage(job jobs.Job, taskUUID string, logOffset int, logNextOffset int, message string) map[string]any {
+	taskMetadata := registration.ResolveTaskMetadata(job)
+	payload := map[string]any{
+		"type":            "status",
+		"task_uuid":       taskUUID,
+		"status":          job.Status,
+		"email":           taskMetadata.Email,
+		"email_service":   taskMetadata.EmailService,
+		"log_offset":      logOffset,
+		"log_next_offset": logNextOffset,
+		"timestamp":       time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if message != "" {
+		payload["message"] = message
+	}
+	return payload
+}
+
+func taskLogMessage(taskUUID string, message string, index int) map[string]any {
+	return map[string]any{
+		"type":            "log",
+		"task_uuid":       taskUUID,
+		"message":         message,
+		"log":             message,
+		"log_offset":      index,
+		"log_next_offset": index + 1,
+		"timestamp":       time.Now().UTC().Format(time.RFC3339Nano),
 	}
 }
 

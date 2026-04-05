@@ -8,7 +8,7 @@ import (
 	"github.com/dou-jiang/codex-console/backend-go/internal/uploader"
 )
 
-func TestNewAPIUploaderServiceInjectsUploadAccountStore(t *testing.T) {
+func TestAPISub2APIUploadServiceInjectsUploadAccountStore(t *testing.T) {
 	serviceID := 55
 	uploadedAt := time.Date(2026, 4, 5, 15, 0, 0, 0, time.UTC)
 	repo := &fakeAPIUploadAdminRepository{

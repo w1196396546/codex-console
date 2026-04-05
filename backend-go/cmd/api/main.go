@@ -60,7 +60,7 @@ func main() {
 		DatabaseAdmin: settings.NewPostgresDatabaseAdmin(deps.Postgres, deps.Config.DatabaseURL, ""),
 	})
 	emailServicesService := emailservices.NewService(emailservices.NewPostgresRepository(deps.Postgres), nil)
-	uploaderService := uploader.NewService(uploader.NewPostgresConfigRepository(deps.Postgres))
+	uploaderService := newAPIUploaderService(uploader.NewPostgresConfigRepository(deps.Postgres), accountsRepository)
 	logsService := logs.NewService(logs.NewPostgresRepository(deps.Postgres))
 	taskSocketHandler := registrationws.NewHandler(jobService)
 	batchSocketHandler := registrationws.NewBatchHandler(batchService)
@@ -71,6 +71,15 @@ func main() {
 	); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func newAPIUploaderService(repository uploader.AdminRepository, accountStore uploader.UploadAccountStore, opts ...uploader.ServiceOption) *uploader.Service {
+	serviceOpts := make([]uploader.ServiceOption, 0, len(opts)+1)
+	if accountStore != nil {
+		serviceOpts = append(serviceOpts, uploader.WithUploadAccountStore(accountStore))
+	}
+	serviceOpts = append(serviceOpts, opts...)
+	return uploader.NewService(repository, serviceOpts...)
 }
 
 func bootstrapAPI(parent context.Context) (apiDependencies, error) {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dou-jiang/codex-console/backend-go/internal/uploader"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -187,6 +188,58 @@ func (r *PostgresRepository) GetAccountByID(ctx context.Context, accountID int) 
 	return account, nil
 }
 
+func (r *PostgresRepository) ListUploadAccounts(ctx context.Context, ids []int) ([]uploader.UploadAccount, error) {
+	if len(ids) == 0 {
+		return []uploader.UploadAccount{}, nil
+	}
+
+	rows, err := r.db.Query(ctx, fmt.Sprintf(`
+		SELECT %s
+		FROM accounts
+		WHERE id = ANY($1)
+		ORDER BY id ASC
+	`, accountSelectColumns), toInt32Slice(ids))
+	if err != nil {
+		return nil, fmt.Errorf("query upload accounts: %w", err)
+	}
+	defer rows.Close()
+
+	accounts := make([]uploader.UploadAccount, 0, len(ids))
+	for rows.Next() {
+		account, scanErr := scanAccount(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan upload account: %w", scanErr)
+		}
+		accounts = append(accounts, toUploadAccount(account))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate upload accounts: %w", err)
+	}
+	return accounts, nil
+}
+
+func (r *PostgresRepository) MarkSub2APIUploaded(ctx context.Context, ids []int, uploadedAt time.Time) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	var updatedCount int64
+	if err := r.db.QueryRow(ctx, `
+		WITH updated AS (
+			UPDATE accounts
+			SET sub2api_uploaded = TRUE,
+			    sub2api_uploaded_at = $1,
+			    updated_at = NOW()
+			WHERE id = ANY($2)
+			RETURNING id
+		)
+		SELECT COUNT(*) FROM updated
+	`, uploadedAt.UTC(), toInt32Slice(ids)).Scan(&updatedCount); err != nil {
+		return fmt.Errorf("mark sub2api uploaded: %w", err)
+	}
+	return nil
+}
+
 func (r *PostgresRepository) DeleteAccount(ctx context.Context, accountID int) error {
 	if _, scanErr := scanDeleteResult(r.db.QueryRow(ctx, `
 		DELETE FROM accounts
@@ -257,11 +310,11 @@ func (r *PostgresRepository) GetAccountsStatsSummary(ctx context.Context) (Accou
 
 func (r *PostgresRepository) GetAccountsOverviewStats(ctx context.Context) (AccountsOverviewStats, error) {
 	var (
-		total             int
-		activeCount       int
-		withAccessToken   int
-		withRefreshToken  int
-		cpaUploadedCount  int
+		total            int
+		activeCount      int
+		withAccessToken  int
+		withRefreshToken int
+		cpaUploadedCount int
 	)
 
 	if err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM accounts`).Scan(&total); err != nil {

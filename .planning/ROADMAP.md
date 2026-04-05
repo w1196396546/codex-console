@@ -90,9 +90,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 04-01: Migrate payment and bind-card orchestration
-- [ ] 04-02: Migrate team discovery, sync, invite, membership, and task flows
-- [ ] 04-03: Verify runtime, persistence, and operator-behavior parity for remaining domains
+- [ ] 04-01-PLAN.md — Build the Go payment slice for bind-card tasks, session/bootstrap, and subscription-sync compatibility
+- [ ] 04-02-PLAN.md — Build the Go team slice for discovery, sync, invite, membership, and accepted-task compatibility
+- [ ] 04-03-PLAN.md — Mount payment/team into the Go API and verify phase-wide runtime and operator parity
 
 ### Phase 5: Cutover and Decommission
 **Goal**: Cut production backend ownership over to Go, verify compatibility end to end, and retire Python backend responsibilities safely.

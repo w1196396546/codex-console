@@ -75,7 +75,7 @@ Plans:
 - [x] 03-05-PLAN.md — Migrate app log browsing, cleanup, and clear APIs
 - [x] 03-06-PLAN.md — Wire management domains into Go API and verify current UI contract parity
 - [x] 03-07-PLAN.md — Restore Python-compatible `/accounts-overview` refresh semantics and regression coverage
-- [ ] 03-08-PLAN.md — Wire `UploadAccountStore` into live Sub2API upload bootstrap and add bootstrap-level tests
+- [x] 03-08-PLAN.md — Wire `UploadAccountStore` into live Sub2API upload bootstrap and add bootstrap-level tests
 
 ### Phase 4: Payment and Team Domains
 **Goal**: Migrate the remaining Python-only payment/bind-card and team workflows to Go with compatible runtime and persistence behavior.
@@ -119,6 +119,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 |-------|----------------|--------|-----------|
 | 1. Compatibility Baseline | 3/3 | Complete    | 2026-04-05 |
 | 2. Native Registration Runtime | 4/4 | Complete    | 2026-04-05 |
-| 3. Management APIs | 7/8 | In Progress | - |
+| 3. Management APIs | 8/8 | Ready for verification | - |
 | 4. Payment and Team Domains | 0/3 | Not started | - |
 | 5. Cutover and Decommission | 0/2 | Not started | - |

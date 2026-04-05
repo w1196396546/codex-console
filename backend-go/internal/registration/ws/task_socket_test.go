@@ -59,16 +59,25 @@ func TestTaskSocketSendsCurrentStatusAndLogs(t *testing.T) {
 	assertMessageField(t, statusMessage, "task_uuid", job.JobID)
 	assertMessageField(t, statusMessage, "status", jobs.StatusPending)
 	assertMessageField(t, statusMessage, "email_service", "tempmail")
+	assertTimestampField(t, statusMessage)
+	assertNumberField(t, statusMessage, "log_offset", 0)
+	assertNumberField(t, statusMessage, "log_next_offset", 2)
 
 	firstLog := conn.readJSON(t)
 	assertMessageField(t, firstLog, "type", "log")
 	assertMessageField(t, firstLog, "task_uuid", job.JobID)
 	assertMessageField(t, firstLog, "message", "first log")
+	assertTimestampField(t, firstLog)
+	assertNumberField(t, firstLog, "log_offset", 0)
+	assertNumberField(t, firstLog, "log_next_offset", 1)
 
 	secondLog := conn.readJSON(t)
 	assertMessageField(t, secondLog, "type", "log")
 	assertMessageField(t, secondLog, "task_uuid", job.JobID)
 	assertMessageField(t, secondLog, "message", "second log")
+	assertTimestampField(t, secondLog)
+	assertNumberField(t, secondLog, "log_offset", 1)
+	assertNumberField(t, secondLog, "log_next_offset", 2)
 
 	conn.writeJSON(t, map[string]any{"type": "ping"})
 	pong := conn.readJSON(t)
@@ -79,12 +88,20 @@ func TestTaskSocketSendsCurrentStatusAndLogs(t *testing.T) {
 	assertMessageField(t, paused, "type", "status")
 	assertMessageField(t, paused, "status", jobs.StatusPaused)
 	assertMessageField(t, paused, "email_service", "tempmail")
+	assertMessageField(t, paused, "message", "任务已暂停，等待继续指令")
+	assertTimestampField(t, paused)
+	assertNumberField(t, paused, "log_offset", 2)
+	assertNumberField(t, paused, "log_next_offset", 2)
 
 	conn.writeJSON(t, map[string]any{"type": "resume"})
 	resumed := conn.readJSON(t)
 	assertMessageField(t, resumed, "type", "status")
 	assertMessageField(t, resumed, "status", jobs.StatusPending)
 	assertMessageField(t, resumed, "email_service", "tempmail")
+	assertMessageField(t, resumed, "message", "任务已恢复执行")
+	assertTimestampField(t, resumed)
+	assertNumberField(t, resumed, "log_offset", 2)
+	assertNumberField(t, resumed, "log_next_offset", 2)
 
 	if _, err := repo.UpdateJobStatus(ctx, job.JobID, jobs.StatusRunning); err != nil {
 		t.Fatalf("set running status: %v", err)
@@ -107,12 +124,29 @@ func TestTaskSocketSendsCurrentStatusAndLogs(t *testing.T) {
 	assertContainsMessage(t, updates, jobs.StatusRunning, "status", "status")
 	assertContainsMessage(t, updates, "tempmail", "email_service", "email_service")
 	assertContainsMessage(t, updates, "third log", "message", "message")
+	assertContainsNumericMessage(t, updates, "log_offset", 2)
+	assertContainsNumericMessage(t, updates, "log_next_offset", 3)
+	assertContainsTimestampMessage(t, updates)
 
 	conn.writeJSON(t, map[string]any{"type": "cancel"})
-	cancelled := conn.readJSON(t)
+	cancelling := conn.readJSON(t)
+	assertMessageField(t, cancelling, "type", "status")
+	assertMessageField(t, cancelling, "status", "cancelling")
+	assertMessageField(t, cancelling, "email_service", "tempmail")
+	assertMessageField(t, cancelling, "message", "取消请求已提交，正在踩刹车，别慌")
+	assertTimestampField(t, cancelling)
+	assertNumberField(t, cancelling, "log_offset", 3)
+	assertNumberField(t, cancelling, "log_next_offset", 3)
+
+	cancelled := conn.readMessagesUntil(t, 1, func(message map[string]any) bool {
+		return message["type"] == "status" && message["status"] == jobs.StatusCancelled
+	})[0]
 	assertMessageField(t, cancelled, "type", "status")
 	assertMessageField(t, cancelled, "status", jobs.StatusCancelled)
 	assertMessageField(t, cancelled, "email_service", "tempmail")
+	assertTimestampField(t, cancelled)
+	assertNumberField(t, cancelled, "log_offset", 3)
+	assertNumberField(t, cancelled, "log_next_offset", 3)
 }
 
 func TestTaskSocketCompletedStatusIncludesEmailFromJobResult(t *testing.T) {
@@ -151,6 +185,9 @@ func TestTaskSocketCompletedStatusIncludesEmailFromJobResult(t *testing.T) {
 	assertMessageField(t, statusMessage, "status", jobs.StatusCompleted)
 	assertMessageField(t, statusMessage, "email_service", "tempmail")
 	assertMessageField(t, statusMessage, "email", "done@example.com")
+	assertTimestampField(t, statusMessage)
+	assertNumberField(t, statusMessage, "log_offset", 0)
+	assertNumberField(t, statusMessage, "log_next_offset", 0)
 }
 
 func assertMessageField(t *testing.T, payload map[string]any, key string, want string) {
@@ -179,6 +216,52 @@ func assertContainsMessage(t *testing.T, messages []map[string]any, want string,
 	}
 
 	t.Fatalf("expected messages to contain %s=%q, got %#v", key, want, messages)
+}
+
+func assertContainsNumericMessage(t *testing.T, messages []map[string]any, key string, want float64) {
+	t.Helper()
+
+	for _, message := range messages {
+		got, ok := message[key].(float64)
+		if ok && got == want {
+			return
+		}
+	}
+
+	t.Fatalf("expected messages to contain %s=%v, got %#v", key, want, messages)
+}
+
+func assertContainsTimestampMessage(t *testing.T, messages []map[string]any) {
+	t.Helper()
+
+	for _, message := range messages {
+		if _, ok := message["timestamp"].(string); ok {
+			return
+		}
+	}
+
+	t.Fatalf("expected messages to contain timestamp, got %#v", messages)
+}
+
+func assertNumberField(t *testing.T, payload map[string]any, key string, want float64) {
+	t.Helper()
+
+	got, ok := payload[key].(float64)
+	if !ok {
+		t.Fatalf("expected %s to be number, got %#v", key, payload[key])
+	}
+	if got != want {
+		t.Fatalf("expected %s=%v, got %#v", key, want, payload[key])
+	}
+}
+
+func assertTimestampField(t *testing.T, payload map[string]any) {
+	t.Helper()
+
+	value, ok := payload["timestamp"].(string)
+	if !ok || value == "" {
+		t.Fatalf("expected timestamp string, got %#v", payload["timestamp"])
+	}
 }
 
 type testWebSocketConn struct {

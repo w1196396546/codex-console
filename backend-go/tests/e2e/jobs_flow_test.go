@@ -180,6 +180,9 @@ func TestRegistrationWebSocketCompatibility(t *testing.T) {
 	if initialStatus["email_service"] != "tempmail" {
 		t.Fatalf("expected websocket email_service=tempmail, got %#v", initialStatus["email_service"])
 	}
+	assertWebSocketTimestampField(t, initialStatus)
+	assertWebSocketNumberField(t, initialStatus, "log_offset", 0)
+	assertWebSocketNumberField(t, initialStatus, "log_next_offset", 0)
 
 	worker := jobs.NewWorker(jobService)
 	done := make(chan error, 1)
@@ -200,6 +203,7 @@ func TestRegistrationWebSocketCompatibility(t *testing.T) {
 		switch messageType {
 		case "status":
 			assertWebSocketMessageField(t, message, "task_uuid", taskUUID)
+			assertWebSocketTimestampField(t, message)
 			if message["status"] == jobs.StatusCompleted {
 				sawCompletedStatus = true
 			}
@@ -208,6 +212,8 @@ func TestRegistrationWebSocketCompatibility(t *testing.T) {
 			if _, ok := message["message"].(string); !ok {
 				t.Fatalf("expected websocket log message to include string message, got %#v", message["message"])
 			}
+			assertWebSocketTimestampField(t, message)
+			assertWebSocketMonotonicOffset(t, message)
 			sawLog = true
 		}
 	}
@@ -1295,6 +1301,43 @@ func assertWebSocketMessageField(t *testing.T, payload map[string]any, key strin
 	}
 	if got != want {
 		t.Fatalf("expected websocket %s=%q, got %#v", key, want, payload[key])
+	}
+}
+
+func assertWebSocketNumberField(t *testing.T, payload map[string]any, key string, want float64) {
+	t.Helper()
+
+	got, ok := payload[key].(float64)
+	if !ok {
+		t.Fatalf("expected websocket %s to be number, got %#v", key, payload[key])
+	}
+	if got != want {
+		t.Fatalf("expected websocket %s=%v, got %#v", key, want, payload[key])
+	}
+}
+
+func assertWebSocketTimestampField(t *testing.T, payload map[string]any) {
+	t.Helper()
+
+	value, ok := payload["timestamp"].(string)
+	if !ok || value == "" {
+		t.Fatalf("expected websocket timestamp string, got %#v", payload["timestamp"])
+	}
+}
+
+func assertWebSocketMonotonicOffset(t *testing.T, payload map[string]any) {
+	t.Helper()
+
+	offset, ok := payload["log_offset"].(float64)
+	if !ok {
+		t.Fatalf("expected websocket log_offset number, got %#v", payload["log_offset"])
+	}
+	nextOffset, ok := payload["log_next_offset"].(float64)
+	if !ok {
+		t.Fatalf("expected websocket log_next_offset number, got %#v", payload["log_next_offset"])
+	}
+	if nextOffset < offset {
+		t.Fatalf("expected websocket log_next_offset >= log_offset, got %#v", payload)
 	}
 }
 

@@ -17,7 +17,7 @@
 
 ### Runtime
 
-- [ ] **RUN-01**: Registration start, batch, and Outlook batch flows execute on Go-owned runtime logic without requiring the Python runner bridge on the critical path.
+- [x] **RUN-01**: Registration start, batch, and Outlook batch flows execute on Go-owned runtime logic without requiring the Python runner bridge on the critical path.
 - [ ] **RUN-02**: Existing clients can list, inspect, pause, resume, cancel, and clean up registration tasks and batches through Go with current behavior.
 - [ ] **RUN-03**: Registration side effects continue to persist accounts and trigger CPA, Sub2API, and TM uploads with current semantics.
 
@@ -66,7 +66,7 @@
 | COMP-02 | Phase 1 | Pending |
 | DATA-01 | Phase 1 | Pending |
 | OPS-01 | Phase 1 | Pending |
-| RUN-01 | Phase 2 | Pending |
+| RUN-01 | Phase 2 | Complete |
 | RUN-02 | Phase 2 | Pending |
 | RUN-03 | Phase 2 | Pending |
 | COMP-03 | Phase 2 | Pending |

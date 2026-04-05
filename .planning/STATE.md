@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: planning
-stopped_at: Phase 1 complete; Phase 2 is ready for planning
-last_updated: "2026-04-05T09:52:00Z"
+status: executing
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-04-05T10:37:11.358Z"
 last_activity: 2026-04-05
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
-  percent: 20
+  total_plans: 7
+  completed_plans: 4
+  percent: 57
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-05)
 
 **Core value:** The Go backend can take over the current Codex Console backend responsibilities without forcing existing clients, persisted data, or critical registration, payment, and team workflows to change behavior.
-**Current focus:** Native Registration Runtime
+**Current focus:** Phase 02 — Native Registration Runtime
 
 ## Current Position
 
-Phase: 2 of 5 (Native Registration Runtime)
-Plan: 0 of 3 in current phase
-Status: Ready to plan
-Last activity: 2026-04-05 - Phase 1 completed and Phase 2 is ready for planning
+Phase: 02 (Native Registration Runtime) — EXECUTING
+Plan: 2 of 4
+Status: Ready to execute
+Last activity: 2026-04-05
 
 Progress: [██░░░░░░░░] 20%
 
@@ -51,6 +51,8 @@ Progress: [██░░░░░░░░] 20%
 - Last 5 plans: -
 - Trend: Stable
 
+| Phase 02 P01 | 10m | 2 tasks | 14 files |
+
 ## Accumulated Context
 
 ### Decisions
@@ -61,6 +63,9 @@ Recent decisions affecting current work:
 - Phase 0: Plan only the remaining migration delta; existing Go foundations are baseline.
 - Phase 0: API, data, and workflow compatibility are the governing release constraint.
 - Phase 0: Frontend rewrite is out of scope for this migration milestone.
+- [Phase 02]: Worker preparation now injects explicit Postgres-backed proxy selection and Outlook reservation adapters instead of implicit no-op wiring.
+- [Phase 02]: Outlook reservation state stays in registration job payloads so concurrent child jobs do not require a second runtime store before 02-02.
+- [Phase 02]: Password login, workspace continuation, and add-phone recovery remain inside native auth helpers to keep Python off the normal registration path.
 
 ### Pending Todos
 
@@ -70,9 +75,10 @@ None yet.
 
 - Python and Go backend capabilities are still split across registration, management, payment, and team domains.
 - Current templates/static JS already encode route expectations, so parity drift will block cutover.
+- Task 1 official backend-go/internal/registration package verification is currently blocked by out-of-scope dirty 02-02 tests in batch_service_test.go and outlook_service_test.go expecting progress fields outside 02-01 scope.
 
 ## Session Continuity
 
-Last session: 2026-04-05 16:24 CST
-Stopped at: Phase 1 completed; ready to plan Phase 2
+Last session: 2026-04-05T10:37:11.355Z
+Stopped at: Completed 02-01-PLAN.md
 Resume file: None

@@ -23,7 +23,7 @@
 
 ### Management
 
-- [ ] **MGMT-01**: Operators can manage accounts through Go-owned APIs with current CRUD, import/export, refresh, validate, and upload workflows.
+- [x] **MGMT-01**: Operators can manage accounts through Go-owned APIs with current CRUD, import/export, refresh, validate, and upload workflows.
 - [x] **MGMT-02**: Operators can manage settings, email services, upload-service configs, proxies, and logs through Go-owned APIs with current behavior.
 
 ### Domain Flows
@@ -70,7 +70,7 @@
 | RUN-02 | Phase 2 | Complete |
 | RUN-03 | Phase 2 | Complete |
 | COMP-03 | Phase 2 | Complete |
-| MGMT-01 | Phase 3 | Pending |
+| MGMT-01 | Phase 3 | Complete |
 | MGMT-02 | Phase 3 | Complete |
 | CUT-01 | Phase 3 | Pending |
 | PAY-01 | Phase 4 | Pending |

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -292,6 +293,105 @@ WHERE task_uuid = $1`, taskUUID)
 	return record, nil
 }
 
+func (r *PostgresRepository) CreateTask(ctx context.Context, task TeamTaskRecord) (TeamTaskRecord, error) {
+	requestPayload, err := json.Marshal(cloneMap(task.RequestPayload))
+	if err != nil {
+		return TeamTaskRecord{}, fmt.Errorf("marshal request payload: %w", err)
+	}
+	resultPayload, err := marshalOptionalJSON(task.ResultPayload)
+	if err != nil {
+		return TeamTaskRecord{}, fmt.Errorf("marshal result payload: %w", err)
+	}
+
+	row := r.db.QueryRow(ctx, `
+INSERT INTO team_tasks (
+    team_id, owner_account_id, task_uuid, scope_type, scope_id, active_scope_key,
+    task_type, status, request_payload, result_payload, error_message, logs,
+    created_at, started_at, completed_at, updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), $13, $14, NOW())
+RETURNING id, team_id, owner_account_id, task_uuid, scope_type, scope_id, active_scope_key,
+          task_type, status, request_payload, result_payload, error_message, logs,
+          created_at, started_at, completed_at, updated_at`,
+		task.TeamID,
+		task.OwnerAccountID,
+		task.TaskUUID,
+		task.ScopeType,
+		task.ScopeID,
+		task.ActiveScopeKey,
+		task.TaskType,
+		defaultIfEmpty(task.Status, "pending"),
+		requestPayload,
+		resultPayload,
+		nullIfEmpty(task.ErrorMessage),
+		task.Logs,
+		task.StartedAt,
+		task.CompletedAt,
+	)
+	record, err := scanTaskRecord(row)
+	if err != nil {
+		if isActiveScopeConflict(err) {
+			return TeamTaskRecord{}, ErrActiveScopeConflict
+		}
+		return TeamTaskRecord{}, err
+	}
+	return record, nil
+}
+
+func (r *PostgresRepository) SaveTask(ctx context.Context, task TeamTaskRecord) (TeamTaskRecord, error) {
+	requestPayload, err := json.Marshal(cloneMap(task.RequestPayload))
+	if err != nil {
+		return TeamTaskRecord{}, fmt.Errorf("marshal request payload: %w", err)
+	}
+	resultPayload, err := marshalOptionalJSON(task.ResultPayload)
+	if err != nil {
+		return TeamTaskRecord{}, fmt.Errorf("marshal result payload: %w", err)
+	}
+
+	row := r.db.QueryRow(ctx, `
+UPDATE team_tasks
+SET team_id = $2,
+    owner_account_id = $3,
+    scope_type = $4,
+    scope_id = $5,
+    active_scope_key = $6,
+    task_type = $7,
+    status = $8,
+    request_payload = $9,
+    result_payload = $10,
+    error_message = $11,
+    logs = $12,
+    started_at = $13,
+    completed_at = $14,
+    updated_at = NOW()
+WHERE task_uuid = $1
+RETURNING id, team_id, owner_account_id, task_uuid, scope_type, scope_id, active_scope_key,
+          task_type, status, request_payload, result_payload, error_message, logs,
+          created_at, started_at, completed_at, updated_at`,
+		task.TaskUUID,
+		task.TeamID,
+		task.OwnerAccountID,
+		task.ScopeType,
+		task.ScopeID,
+		task.ActiveScopeKey,
+		task.TaskType,
+		defaultIfEmpty(task.Status, "pending"),
+		requestPayload,
+		resultPayload,
+		nullIfEmpty(task.ErrorMessage),
+		task.Logs,
+		task.StartedAt,
+		task.CompletedAt,
+	)
+	record, err := scanTaskRecord(row)
+	if err != nil {
+		if isActiveScopeConflict(err) {
+			return TeamTaskRecord{}, ErrActiveScopeConflict
+		}
+		return TeamTaskRecord{}, err
+	}
+	return record, nil
+}
+
 func (r *PostgresRepository) ListTaskItems(ctx context.Context, taskID int64) ([]TeamTaskItemRecord, error) {
 	rows, err := r.db.Query(ctx, `
 SELECT id, task_id, target_email, item_status, before, after, message, error_message,
@@ -316,6 +416,73 @@ ORDER BY id ASC`, taskID)
 		return nil, fmt.Errorf("iterate task items: %w", err)
 	}
 	return records, nil
+}
+
+func (r *PostgresRepository) SaveTaskItem(ctx context.Context, item TeamTaskItemRecord) (TeamTaskItemRecord, error) {
+	beforePayload, err := marshalOptionalJSON(item.Before)
+	if err != nil {
+		return TeamTaskItemRecord{}, fmt.Errorf("marshal before payload: %w", err)
+	}
+	afterPayload, err := marshalOptionalJSON(item.After)
+	if err != nil {
+		return TeamTaskItemRecord{}, fmt.Errorf("marshal after payload: %w", err)
+	}
+
+	row := r.db.QueryRow(ctx, `
+INSERT INTO team_task_items (
+    task_id, target_email, item_status, before, after, message, error_message,
+    created_at, started_at, completed_at, updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, NOW())
+ON CONFLICT (task_id, target_email) DO UPDATE
+SET item_status = EXCLUDED.item_status,
+    before = EXCLUDED.before,
+    after = EXCLUDED.after,
+    message = EXCLUDED.message,
+    error_message = EXCLUDED.error_message,
+    started_at = EXCLUDED.started_at,
+    completed_at = EXCLUDED.completed_at,
+    updated_at = NOW()
+RETURNING id, task_id, target_email, item_status, before, after, message, error_message,
+          created_at, started_at, completed_at, updated_at`,
+		item.TaskID,
+		item.TargetEmail,
+		defaultIfEmpty(item.ItemStatus, "pending"),
+		beforePayload,
+		afterPayload,
+		nullIfEmpty(item.Message),
+		nullIfEmpty(item.ErrorMessage),
+		item.StartedAt,
+		item.CompletedAt,
+	)
+	record, err := scanTaskItemRecord(row)
+	if err != nil {
+		return TeamTaskItemRecord{}, err
+	}
+	return record, nil
+}
+
+func (r *PostgresRepository) FindActiveTask(ctx context.Context, scopeType string, scopeID string, taskType string) (TeamTaskRecord, error) {
+	query := `
+SELECT id, team_id, owner_account_id, task_uuid, scope_type, scope_id, active_scope_key,
+       task_type, status, request_payload, result_payload, error_message, logs,
+       created_at, started_at, completed_at, updated_at
+FROM team_tasks
+WHERE scope_type = $1
+  AND scope_id = $2
+  AND status NOT IN ('completed', 'failed', 'cancelled')`
+	args := []any{scopeType, scopeID}
+	if strings.TrimSpace(taskType) != "" {
+		args = append(args, taskType)
+		query += fmt.Sprintf(" AND task_type = $%d", len(args))
+	}
+	query += " ORDER BY created_at DESC, id DESC LIMIT 1"
+
+	row := r.db.QueryRow(ctx, query, args...)
+	record, err := scanTaskRecord(row)
+	if err != nil {
+		return TeamTaskRecord{}, err
+	}
+	return record, nil
 }
 
 type teamRowScanner interface {
@@ -497,6 +664,13 @@ func decodeJSONMap(payload []byte) map[string]any {
 	return decoded
 }
 
+func marshalOptionalJSON(payload map[string]any) ([]byte, error) {
+	if payload == nil {
+		return nil, nil
+	}
+	return json.Marshal(payload)
+}
+
 func derefString(value *string) string {
 	if value == nil {
 		return ""
@@ -516,4 +690,12 @@ func defaultIfEmpty(value string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func isActiveScopeConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505" && strings.Contains(pgErr.ConstraintName, "active_scope_key")
+	}
+	return false
 }

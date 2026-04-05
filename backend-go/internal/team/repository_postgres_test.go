@@ -40,4 +40,5 @@ func TestRepositoryPostgresImplementsRepository(t *testing.T) {
 	t.Helper()
 
 	var _ Repository = (*PostgresRepository)(nil)
+	var _ TaskRepository = (*PostgresRepository)(nil)
 }

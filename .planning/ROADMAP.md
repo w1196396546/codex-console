@@ -69,10 +69,10 @@ Plans:
 
 Plans:
 - [ ] 03-01-PLAN.md — Migrate accounts workflows, compatibility DTOs, and account action endpoints
-- [ ] 03-02-PLAN.md — Migrate settings, proxies, and database-admin compatibility APIs
-- [ ] 03-03-PLAN.md — Migrate email-services management APIs and Outlook admin actions
-- [ ] 03-04-PLAN.md — Migrate CPA/Sub2API/TM upload-config management APIs
-- [ ] 03-05-PLAN.md — Migrate app log browsing, cleanup, and clear APIs
+- [x] 03-02-PLAN.md — Migrate settings, proxies, and database-admin compatibility APIs
+- [x] 03-03-PLAN.md — Migrate email-services management APIs and Outlook admin actions
+- [x] 03-04-PLAN.md — Migrate CPA/Sub2API/TM upload-config management APIs
+- [x] 03-05-PLAN.md — Migrate app log browsing, cleanup, and clear APIs
 - [ ] 03-06-PLAN.md — Wire management domains into Go API and verify current UI contract parity
 
 ### Phase 4: Payment and Team Domains
@@ -117,6 +117,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 |-------|----------------|--------|-----------|
 | 1. Compatibility Baseline | 3/3 | Complete    | 2026-04-05 |
 | 2. Native Registration Runtime | 4/4 | Complete    | 2026-04-05 |
-| 3. Management APIs | 0/6 | Not started | - |
+| 3. Management APIs | 4/6 | In Progress | - |
 | 4. Payment and Team Domains | 0/3 | Not started | - |
 | 5. Cutover and Decommission | 0/2 | Not started | - |

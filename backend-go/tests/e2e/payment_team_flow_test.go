@@ -418,10 +418,10 @@ func (c phaseFourSubscriptionChecker) CheckSubscription(_ context.Context, accou
 }
 
 type phaseFourPaymentRepository struct {
-	now          func() time.Time
-	nextID       int
+	now           func() time.Time
+	nextID        int
 	accountEmails map[int]string
-	tasks        map[int]paymentpkg.BindCardTask
+	tasks         map[int]paymentpkg.BindCardTask
 }
 
 func (r *phaseFourPaymentRepository) CreateBindCardTask(_ context.Context, params paymentpkg.CreateBindCardTaskParams) (paymentpkg.BindCardTask, error) {
@@ -507,7 +507,7 @@ type phaseFourPaymentAccountsRepository struct {
 func (r *phaseFourPaymentAccountsRepository) GetAccountByID(_ context.Context, accountID int) (accountspkg.Account, error) {
 	account, ok := r.accounts[accountID]
 	if !ok {
-		return accountspkg.Account{}, accountspkg.ErrNotFound
+		return accountspkg.Account{}, accountspkg.ErrAccountNotFound
 	}
 	return account, nil
 }

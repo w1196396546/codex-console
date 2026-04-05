@@ -12,11 +12,13 @@ import (
 	internalhttp "github.com/dou-jiang/codex-console/backend-go/internal/http"
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
 	"github.com/dou-jiang/codex-console/backend-go/internal/logs"
+	"github.com/dou-jiang/codex-console/backend-go/internal/payment"
 	postgresplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/postgres"
 	redisplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/redis"
 	"github.com/dou-jiang/codex-console/backend-go/internal/registration"
 	registrationws "github.com/dou-jiang/codex-console/backend-go/internal/registration/ws"
 	"github.com/dou-jiang/codex-console/backend-go/internal/settings"
+	"github.com/dou-jiang/codex-console/backend-go/internal/team"
 	"github.com/dou-jiang/codex-console/backend-go/internal/uploader"
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -62,12 +64,16 @@ func main() {
 	emailServicesService := emailservices.NewService(emailservices.NewPostgresRepository(deps.Postgres), nil)
 	uploaderService := newAPIUploaderService(uploader.NewPostgresConfigRepository(deps.Postgres), accountsRepository)
 	logsService := logs.NewService(logs.NewPostgresRepository(deps.Postgres))
+	paymentService := payment.NewService(payment.NewPostgresRepository(deps.Postgres), accountsRepository)
+	teamRepository := team.NewPostgresRepository(deps.Postgres)
+	teamService := team.NewService(teamRepository, nil)
+	teamTaskService := team.NewTaskService(teamRepository, teamService, jobService, nil)
 	taskSocketHandler := registrationws.NewHandler(jobService)
 	batchSocketHandler := registrationws.NewBatchHandler(batchService)
 
 	if err := http.ListenAndServe(
 		deps.Config.HTTPAddr,
-		newAPIHandler(jobService, registrationService, batchService, availableServices, statsService, outlookService, accountsService, settingsService, emailServicesService, uploaderService, logsService, taskSocketHandler, batchSocketHandler),
+		newAPIHandler(jobService, registrationService, batchService, availableServices, statsService, outlookService, accountsService, settingsService, emailServicesService, uploaderService, logsService, paymentService, teamService, teamTaskService, taskSocketHandler, batchSocketHandler),
 	); err != nil {
 		log.Fatal(err)
 	}

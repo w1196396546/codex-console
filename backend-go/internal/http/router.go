@@ -12,11 +12,15 @@ import (
 	jobshttp "github.com/dou-jiang/codex-console/backend-go/internal/jobs/http"
 	"github.com/dou-jiang/codex-console/backend-go/internal/logs"
 	logshttp "github.com/dou-jiang/codex-console/backend-go/internal/logs/http"
+	"github.com/dou-jiang/codex-console/backend-go/internal/payment"
+	paymenthttp "github.com/dou-jiang/codex-console/backend-go/internal/payment/http"
 	"github.com/dou-jiang/codex-console/backend-go/internal/registration"
 	registrationhttp "github.com/dou-jiang/codex-console/backend-go/internal/registration/http"
 	registrationws "github.com/dou-jiang/codex-console/backend-go/internal/registration/ws"
 	"github.com/dou-jiang/codex-console/backend-go/internal/settings"
 	settingshttp "github.com/dou-jiang/codex-console/backend-go/internal/settings/http"
+	"github.com/dou-jiang/codex-console/backend-go/internal/team"
+	teamhttp "github.com/dou-jiang/codex-console/backend-go/internal/team/http"
 	"github.com/dou-jiang/codex-console/backend-go/internal/uploader"
 	uploaderhttp "github.com/dou-jiang/codex-console/backend-go/internal/uploader/http"
 	"github.com/go-chi/chi/v5"
@@ -48,6 +52,25 @@ type accountsRouteService interface {
 	ListAccounts(ctx context.Context, req accounts.ListAccountsRequest) (accounts.AccountListResponse, error)
 }
 
+type paymentRouteService interface {
+	GetRandomBillingProfile(ctx context.Context, country string, proxy string) (payment.RandomBillingResponse, error)
+	GetAccountSessionDiagnostic(ctx context.Context, accountID int, probe bool, proxy string) (payment.SessionDiagnosticResponse, error)
+	BootstrapAccountSessionToken(ctx context.Context, accountID int, proxy string) (payment.SessionBootstrapResponse, error)
+	SaveAccountSessionToken(ctx context.Context, accountID int, req payment.SaveSessionTokenRequest) (payment.SaveSessionTokenResponse, error)
+	GeneratePaymentLink(ctx context.Context, req payment.GenerateLinkRequest) (payment.GenerateLinkResponse, error)
+	OpenBrowserIncognito(ctx context.Context, req payment.OpenIncognitoRequest) (payment.OpenIncognitoResponse, error)
+	CreateBindCardTask(ctx context.Context, req payment.CreateBindCardTaskRequest) (payment.CreateBindCardTaskResponse, error)
+	ListBindCardTasks(ctx context.Context, req payment.ListBindCardTasksRequest) (payment.ListBindCardTasksResponse, error)
+	OpenBindCardTask(ctx context.Context, taskID int) (payment.BindCardTaskActionResponse, error)
+	AutoBindBindCardTaskThirdParty(ctx context.Context, taskID int, req payment.ThirdPartyAutoBindRequest) (payment.AutoBindResult, error)
+	AutoBindBindCardTaskLocal(ctx context.Context, taskID int, req payment.LocalAutoBindRequest) (payment.AutoBindResult, error)
+	MarkBindCardTaskUserAction(ctx context.Context, taskID int, req payment.MarkUserActionRequest) (payment.SyncBindCardTaskResponse, error)
+	SyncBindCardTaskSubscription(ctx context.Context, taskID int, req payment.SyncBindCardTaskRequest) (payment.SyncBindCardTaskResponse, error)
+	DeleteBindCardTask(ctx context.Context, taskID int) (payment.DeleteBindCardTaskResponse, error)
+	MarkSubscription(ctx context.Context, accountID int, req payment.MarkSubscriptionRequest) (payment.MarkSubscriptionResponse, error)
+	BatchCheckSubscription(ctx context.Context, req payment.BatchCheckSubscriptionRequest) (payment.BatchCheckSubscriptionResponse, error)
+}
+
 func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 	var registrationService *registration.Service
 	var batchService *registration.BatchService
@@ -59,6 +82,9 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 	var emailServicesService *emailservices.Service
 	var uploaderService *uploader.Service
 	var logsService *logs.Service
+	var paymentService paymentRouteService
+	var teamService *team.Service
+	var teamTaskService *team.TaskService
 	var taskSocketHandler taskSocketRouteHandler
 	var batchSocketHandler batchSocketRouteHandler
 	for _, dependency := range dependencies {
@@ -103,6 +129,18 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 			if logsService == nil {
 				logsService = value
 			}
+		case paymentRouteService:
+			if paymentService == nil {
+				paymentService = value
+			}
+		case *team.Service:
+			if teamService == nil {
+				teamService = value
+			}
+		case *team.TaskService:
+			if teamTaskService == nil {
+				teamTaskService = value
+			}
 		case taskSocketRouteHandler:
 			if taskSocketHandler == nil {
 				taskSocketHandler = value
@@ -114,7 +152,7 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 		}
 	}
 
-	return newRouter(jobService, registrationService, batchService, availableServices, registrationStatsService, outlookService, accountsService, settingsService, emailServicesService, uploaderService, logsService, taskSocketHandler, batchSocketHandler)
+	return newRouter(jobService, registrationService, batchService, availableServices, registrationStatsService, outlookService, accountsService, settingsService, emailServicesService, uploaderService, logsService, paymentService, teamService, teamTaskService, taskSocketHandler, batchSocketHandler)
 }
 
 func NewRouterWithTaskSocket(
@@ -122,7 +160,7 @@ func NewRouterWithTaskSocket(
 	registrationService *registration.Service,
 	taskSocketHandler taskSocketRouteHandler,
 ) *chi.Mux {
-	return newRouter(jobService, registrationService, nil, nil, nil, nil, nil, nil, nil, nil, nil, taskSocketHandler, nil)
+	return newRouter(jobService, registrationService, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, taskSocketHandler, nil)
 }
 
 func newRouter(
@@ -137,6 +175,9 @@ func newRouter(
 	emailServicesService *emailservices.Service,
 	uploaderService *uploader.Service,
 	logsService *logs.Service,
+	paymentService paymentRouteService,
+	teamService *team.Service,
+	teamTaskService *team.TaskService,
 	taskSocketHandler taskSocketRouteHandler,
 	batchSocketHandler batchSocketRouteHandler,
 ) *chi.Mux {
@@ -159,6 +200,12 @@ func newRouter(
 	}
 	if logsService != nil {
 		logshttp.NewHandler(logsService).RegisterRoutes(r)
+	}
+	if paymentService != nil {
+		paymenthttp.NewHandler(paymentService).RegisterRoutes(r)
+	}
+	if teamService != nil && teamTaskService != nil {
+		teamhttp.NewHandler(teamService, teamTaskService).RegisterRoutes(r)
 	}
 	if jobService != nil {
 		jobshttp.NewHandler(jobService).RegisterRoutes(r)

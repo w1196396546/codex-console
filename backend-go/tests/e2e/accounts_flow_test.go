@@ -275,6 +275,7 @@ type e2eAccountsService struct {
 	statsSummaryResponse  accountspkg.AccountsStatsSummary
 	statsOverviewResponse accountspkg.AccountsOverviewStats
 	overviewCardsResponse accountspkg.AccountOverviewCardsResponse
+	refreshOverviewResponse accountspkg.OverviewRefreshResponse
 	detailResponse        accountspkg.Account
 	tokensResponse        accountspkg.AccountTokensResponse
 	createResponse        accountspkg.Account
@@ -300,6 +301,10 @@ func (s e2eAccountsService) GetAccountsOverviewStats(context.Context) (accountsp
 
 func (s e2eAccountsService) ListOverviewCards(context.Context, accountspkg.AccountOverviewCardsRequest) (accountspkg.AccountOverviewCardsResponse, error) {
 	return s.overviewCardsResponse, s.err
+}
+
+func (s e2eAccountsService) RefreshOverview(context.Context, accountspkg.OverviewRefreshRequest) (accountspkg.OverviewRefreshResponse, error) {
+	return s.refreshOverviewResponse, s.err
 }
 
 func (s e2eAccountsService) GetAccount(context.Context, int) (accountspkg.Account, error) {

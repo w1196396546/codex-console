@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"context"
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -54,11 +55,65 @@ func TestRecentAccountsCompatibilityEndpoint(t *testing.T) {
 	}
 }
 
+func TestRecentAccountsManagementCompatibilityEndpoints(t *testing.T) {
+	server := httptest.NewServer(internalhttp.NewRouter(nil, e2eAccountsService{
+		createResponse: accountspkg.Account{
+			ID:               202,
+			Email:            "new@example.com",
+			EmailService:     "manual",
+			SubscriptionType: "team",
+			Status:           "active",
+		},
+		exportResponse: accountspkg.AccountExportResponse{
+			ContentType: "application/json",
+			Filename:    "accounts_export.json",
+			Content:     []byte(`[{"email":"new@example.com"}]`),
+		},
+	}))
+	defer server.Close()
+
+	createResp, err := http.Post(server.URL+"/api/accounts", "application/json", bytes.NewBufferString(`{"email":"new@example.com","password":"secret","email_service":"manual","status":"active","subscription_type":"team"}`))
+	if err != nil {
+		t.Fatalf("post create account failed: %v", err)
+	}
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected create account 200, got %d", createResp.StatusCode)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/accounts/export/json", bytes.NewBufferString(`{"ids":[202],"select_all":false}`))
+	if err != nil {
+		t.Fatalf("build export request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	exportResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post export request failed: %v", err)
+	}
+	defer exportResp.Body.Close()
+	if exportResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected export 200, got %d", exportResp.StatusCode)
+	}
+	if exportResp.Header.Get("Content-Disposition") == "" {
+		t.Fatalf("expected export attachment header, got %#v", exportResp.Header)
+	}
+}
+
 type e2eAccountsService struct {
-	response accountspkg.AccountListResponse
-	err      error
+	response       accountspkg.AccountListResponse
+	createResponse accountspkg.Account
+	exportResponse accountspkg.AccountExportResponse
+	err            error
 }
 
 func (s e2eAccountsService) ListAccounts(context.Context, accountspkg.ListAccountsRequest) (accountspkg.AccountListResponse, error) {
 	return s.response, s.err
+}
+
+func (s e2eAccountsService) CreateManualAccount(context.Context, accountspkg.ManualAccountCreateRequest) (accountspkg.Account, error) {
+	return s.createResponse, s.err
+}
+
+func (s e2eAccountsService) ExportAccounts(context.Context, string, accountspkg.AccountSelectionRequest) (accountspkg.AccountExportResponse, error) {
+	return s.exportResponse, s.err
 }

@@ -8,7 +8,9 @@ import (
 	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
 	"github.com/dou-jiang/codex-console/backend-go/internal/emailservices"
 	"github.com/dou-jiang/codex-console/backend-go/internal/logs"
+	"github.com/dou-jiang/codex-console/backend-go/internal/payment"
 	"github.com/dou-jiang/codex-console/backend-go/internal/settings"
+	"github.com/dou-jiang/codex-console/backend-go/internal/team"
 	"github.com/dou-jiang/codex-console/backend-go/internal/uploader"
 )
 
@@ -70,7 +72,7 @@ func TestRouterMountsManagementSlices(t *testing.T) {
 	}
 }
 
-func TestRouterLeavesPhaseFourRoutesUnmounted(t *testing.T) {
+func TestRouterMountsPhaseFourRoutes(t *testing.T) {
 	router := NewRouter(
 		nil,
 		accounts.NewService(nil),
@@ -78,6 +80,9 @@ func TestRouterLeavesPhaseFourRoutesUnmounted(t *testing.T) {
 		emailservices.NewService(nil, nil),
 		uploader.NewService(nil),
 		logs.NewService(nil),
+		payment.NewService(nil, nil),
+		team.NewService(nil, nil),
+		team.NewTaskService(nil, nil, nil, nil),
 	)
 
 	tests := []struct {
@@ -85,8 +90,8 @@ func TestRouterLeavesPhaseFourRoutesUnmounted(t *testing.T) {
 		method string
 		path   string
 	}{
-		{name: "payment session bootstrap", method: http.MethodPost, path: "/api/payment/accounts/1/session-bootstrap"},
-		{name: "team list", method: http.MethodGet, path: "/api/team/teams"},
+		{name: "payment session bootstrap path", method: http.MethodGet, path: "/api/payment/accounts/1/session-bootstrap"},
+		{name: "team list path", method: http.MethodPost, path: "/api/team/teams"},
 	}
 
 	for _, tc := range tests {
@@ -96,8 +101,8 @@ func TestRouterLeavesPhaseFourRoutesUnmounted(t *testing.T) {
 
 			router.ServeHTTP(rec, req)
 
-			if rec.Code != http.StatusNotFound {
-				t.Fatalf("expected %s %s to stay unmounted with 404, got %d", tc.method, tc.path, rec.Code)
+			if rec.Code == http.StatusNotFound {
+				t.Fatalf("expected %s %s to be mounted after Phase 4 wiring, got 404", tc.method, tc.path)
 			}
 		})
 	}

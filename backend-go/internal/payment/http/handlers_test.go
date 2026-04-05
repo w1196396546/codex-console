@@ -213,9 +213,9 @@ func TestBindCardTaskHandlerCompatibilityRoutes(t *testing.T) {
 		openTaskResp: paymentpkg.BindCardTaskActionResponse{
 			Success: true,
 			Task: paymentpkg.BindCardTask{
-				ID:      11,
-				Status:  paymentpkg.StatusOpened,
-				BindMode:"semi_auto",
+				ID:       11,
+				Status:   paymentpkg.StatusOpened,
+				BindMode: "semi_auto",
 			},
 		},
 		thirdPartyResp: paymentpkg.AutoBindResult{
@@ -445,7 +445,7 @@ type fakePaymentService struct {
 	syncTaskResp paymentpkg.SyncBindCardTaskResponse
 	syncTaskErr  error
 
-	deletedTaskID int
+	deletedTaskID  int
 	deleteTaskResp paymentpkg.DeleteBindCardTaskResponse
 	deleteTaskErr  error
 

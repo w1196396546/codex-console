@@ -327,21 +327,21 @@ func (s *Service) OpenBrowserIncognito(ctx context.Context, req OpenIncognitoReq
 	return OpenIncognitoResponse{Success: false, Message: "未找到可用浏览器，请手动复制链接"}, nil
 }
 
-func (s *Service) CreateBindCardTask(ctx context.Context, req CreateBindCardTaskRequest) (GenerateLinkResponse, error) {
+func (s *Service) CreateBindCardTask(ctx context.Context, req CreateBindCardTaskRequest) (CreateBindCardTaskResponse, error) {
 	account, err := s.getAccount(ctx, req.AccountID)
 	if err != nil {
-		return GenerateLinkResponse{}, err
+		return CreateBindCardTaskResponse{}, err
 	}
 	bindMode := normalizeBindMode(req.BindMode)
 	if bindMode != "semi_auto" && bindMode != "third_party" && bindMode != "local_auto" {
-		return GenerateLinkResponse{}, newStatusError(http.StatusBadRequest, "bind_mode 必须为 semi_auto / third_party / local_auto")
+		return CreateBindCardTaskResponse{}, newStatusError(http.StatusBadRequest, "bind_mode 必须为 semi_auto / third_party / local_auto")
 	}
 	if s == nil || s.checkoutLinkGenerator == nil {
-		return GenerateLinkResponse{}, ErrCheckoutLinkGeneratorMissing
+		return CreateBindCardTaskResponse{}, ErrCheckoutLinkGeneratorMissing
 	}
 	link, err := s.checkoutLinkGenerator.GenerateCheckoutLink(ctx, account, GenerateLinkRequest{CheckoutRequestBase: req.CheckoutRequestBase}, strings.TrimSpace(req.Proxy))
 	if err != nil {
-		return GenerateLinkResponse{}, newStatusError(http.StatusInternalServerError, fmt.Sprintf("创建绑卡任务失败: %v", err))
+		return CreateBindCardTaskResponse{}, newStatusError(http.StatusInternalServerError, fmt.Sprintf("创建绑卡任务失败: %v", err))
 	}
 	task, err := s.repository.CreateBindCardTask(ctx, CreateBindCardTaskParams{
 		AccountID:         account.ID,
@@ -360,8 +360,9 @@ func (s *Service) CreateBindCardTask(ctx context.Context, req CreateBindCardTask
 		Status:            StatusLinkReady,
 	})
 	if err != nil {
-		return GenerateLinkResponse{}, fmt.Errorf("create bind_card_task: %w", err)
+		return CreateBindCardTaskResponse{}, fmt.Errorf("create bind_card_task: %w", err)
 	}
+	autoOpened := false
 	if req.AutoOpen && bindMode == "semi_auto" && s.browserOpener != nil {
 		opened, openErr := s.browserOpener.OpenIncognito(ctx, task.CheckoutURL, account.Cookies)
 		if openErr == nil && opened {
@@ -369,18 +370,17 @@ func (s *Service) CreateBindCardTask(ctx context.Context, req CreateBindCardTask
 			task.Status = StatusOpened
 			task.OpenedAt = &now
 			task, _ = s.repository.UpdateBindCardTask(ctx, task)
+			autoOpened = true
 		}
 	}
-	_ = task
-	return GenerateLinkResponse{
+	return CreateBindCardTaskResponse{
 		Success:            true,
+		Task:               task,
 		Link:               link.Link,
 		IsOfficialCheckout: isOfficialCheckoutLink(link.Link),
-		PlanType:           req.PlanType,
-		Country:            firstNonEmpty(strings.ToUpper(strings.TrimSpace(req.Country)), "US"),
-		Currency:           firstNonEmpty(strings.ToUpper(strings.TrimSpace(req.Currency)), "USD"),
 		Source:             link.Source,
 		FallbackReason:     link.FallbackReason,
+		AutoOpened:         autoOpened,
 		CheckoutSessionID:  link.CheckoutSessionID,
 		PublishableKey:     link.PublishableKey,
 		HasClientSecret:    strings.TrimSpace(link.ClientSecret) != "",
@@ -419,26 +419,26 @@ func (s *Service) ListBindCardTasks(ctx context.Context, req ListBindCardTasksRe
 	return resp, nil
 }
 
-func (s *Service) OpenBindCardTask(ctx context.Context, taskID int) (map[string]any, error) {
+func (s *Service) OpenBindCardTask(ctx context.Context, taskID int) (BindCardTaskActionResponse, error) {
 	task, err := s.repository.GetBindCardTask(ctx, taskID)
 	if err != nil {
-		return nil, toStatusError(err, http.StatusNotFound, "绑卡任务不存在")
+		return BindCardTaskActionResponse{}, toStatusError(err, http.StatusNotFound, "绑卡任务不存在")
 	}
 	if strings.TrimSpace(task.CheckoutURL) == "" {
-		return nil, newStatusError(http.StatusBadRequest, "任务缺少 checkout 链接")
+		return BindCardTaskActionResponse{}, newStatusError(http.StatusBadRequest, "任务缺少 checkout 链接")
 	}
 	if s.browserOpener == nil {
-		return nil, newStatusError(http.StatusInternalServerError, "未找到可用的浏览器，请手动复制链接")
+		return BindCardTaskActionResponse{}, newStatusError(http.StatusInternalServerError, "未找到可用的浏览器，请手动复制链接")
 	}
 	account, err := s.getAccount(ctx, task.AccountID)
 	if err != nil {
-		return nil, err
+		return BindCardTaskActionResponse{}, err
 	}
 	opened, openErr := s.browserOpener.OpenIncognito(ctx, task.CheckoutURL, account.Cookies)
 	if openErr != nil || !opened {
 		task.LastError = "未找到可用的浏览器"
 		_, _ = s.repository.UpdateBindCardTask(ctx, task)
-		return nil, newStatusError(http.StatusInternalServerError, "未找到可用的浏览器，请手动复制链接")
+		return BindCardTaskActionResponse{}, newStatusError(http.StatusInternalServerError, "未找到可用的浏览器，请手动复制链接")
 	}
 	now := s.now()
 	if task.Status != StatusPaidPendingSync && task.Status != StatusCompleted {
@@ -448,9 +448,9 @@ func (s *Service) OpenBindCardTask(ctx context.Context, taskID int) (map[string]
 	task.LastError = ""
 	task, err = s.repository.UpdateBindCardTask(ctx, task)
 	if err != nil {
-		return nil, err
+		return BindCardTaskActionResponse{}, err
 	}
-	return map[string]any{"success": true, "task": task}, nil
+	return BindCardTaskActionResponse{Success: true, Task: task}, nil
 }
 
 func (s *Service) AutoBindBindCardTaskThirdParty(ctx context.Context, taskID int, req ThirdPartyAutoBindRequest) (AutoBindResult, error) {
@@ -586,11 +586,11 @@ func (s *Service) MarkBindCardTaskUserAction(ctx context.Context, taskID int, re
 	}, nil
 }
 
-func (s *Service) DeleteBindCardTask(ctx context.Context, taskID int) (map[string]any, error) {
+func (s *Service) DeleteBindCardTask(ctx context.Context, taskID int) (DeleteBindCardTaskResponse, error) {
 	if err := s.repository.DeleteBindCardTask(ctx, taskID); err != nil {
-		return nil, toStatusError(err, http.StatusNotFound, "绑卡任务不存在")
+		return DeleteBindCardTaskResponse{}, toStatusError(err, http.StatusNotFound, "绑卡任务不存在")
 	}
-	return map[string]any{"success": true, "task_id": taskID}, nil
+	return DeleteBindCardTaskResponse{Success: true, TaskID: taskID}, nil
 }
 
 func (s *Service) BatchCheckSubscription(ctx context.Context, req BatchCheckSubscriptionRequest) (BatchCheckSubscriptionResponse, error) {

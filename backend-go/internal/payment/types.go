@@ -291,6 +291,19 @@ type GenerateLinkResponse struct {
 	HasClientSecret    bool   `json:"has_client_secret"`
 }
 
+type CreateBindCardTaskResponse struct {
+	Success            bool         `json:"success"`
+	Task               BindCardTask `json:"task"`
+	Link               string       `json:"link,omitempty"`
+	IsOfficialCheckout bool         `json:"is_official_checkout"`
+	Source             string       `json:"source,omitempty"`
+	FallbackReason     string       `json:"fallback_reason,omitempty"`
+	AutoOpened         bool         `json:"auto_opened"`
+	CheckoutSessionID  string       `json:"checkout_session_id,omitempty"`
+	PublishableKey     string       `json:"publishable_key,omitempty"`
+	HasClientSecret    bool         `json:"has_client_secret"`
+}
+
 type OpenIncognitoResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
@@ -382,6 +395,11 @@ type SyncBindCardTaskResponse struct {
 	AccountEmail     string         `json:"account_email"`
 }
 
+type BindCardTaskActionResponse struct {
+	Success bool         `json:"success"`
+	Task    BindCardTask `json:"task"`
+}
+
 type AutoBindResult struct {
 	Verified         bool           `json:"verified,omitempty"`
 	PaidConfirmed    bool           `json:"paid_confirmed,omitempty"`
@@ -394,6 +412,11 @@ type AutoBindResult struct {
 	Task             BindCardTask   `json:"task,omitempty"`
 	AccountID        int            `json:"account_id,omitempty"`
 	AccountEmail     string         `json:"account_email,omitempty"`
+}
+
+type DeleteBindCardTaskResponse struct {
+	Success bool `json:"success"`
+	TaskID  int  `json:"task_id"`
 }
 
 type BatchCheckSubscriptionDetail struct {

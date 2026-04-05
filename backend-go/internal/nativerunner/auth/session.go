@@ -11,9 +11,19 @@ import (
 	"strings"
 )
 
+type sessionValueSource uint8
+
+const (
+	sessionValueSourceUnknown sessionValueSource = iota
+	sessionValueSourcePayload
+	sessionValueSourceClaims
+	sessionValueSourceFallback
+)
+
 type SessionResult struct {
 	StatusCode   int
 	AccessToken  string
+	RefreshToken string
 	SessionToken string
 	AccountID    string
 	UserID       string
@@ -21,6 +31,9 @@ type SessionResult struct {
 	Expires      string
 	AuthProvider string
 	RawSession   map[string]any
+
+	accountSource   sessionValueSource
+	workspaceSource sessionValueSource
 }
 
 func (c *Client) ReadSession(ctx context.Context) (SessionResult, error) {
@@ -48,10 +61,16 @@ func (c *Client) ReadSession(ctx context.Context) (SessionResult, error) {
 	claims := decodeJWTAuthClaims(accessToken)
 	account := extractObject(payload["account"])
 	user := extractObject(payload["user"])
+	workspace := extractObject(payload["workspace"])
 
 	accountID := extractString(account["id"])
+	accountSource := sessionValueSourcePayload
 	if accountID == "" {
 		accountID = extractString(claims["chatgpt_account_id"])
+		accountSource = sessionValueSourceClaims
+	}
+	if accountID == "" {
+		accountSource = sessionValueSourceUnknown
 	}
 
 	userID := extractString(user["id"])
@@ -63,31 +82,51 @@ func (c *Client) ReadSession(ctx context.Context) (SessionResult, error) {
 	}
 
 	workspaceID := extractString(payload["workspace_id"])
+	workspaceSource := sessionValueSourcePayload
 	if workspaceID == "" {
 		workspaceID = extractString(payload["default_workspace_id"])
+	}
+	if workspaceID == "" {
+		workspaceID = extractString(workspace["id"])
+	}
+	if workspaceID == "" {
+		workspaceID = extractString(firstObjectID(payload["workspaces"]))
 	}
 	if workspaceID == "" {
 		workspaceID = extractString(account["workspace_id"])
 	}
 	if workspaceID == "" {
 		workspaceID = accountID
+		workspaceSource = sessionValueSourceFallback
+	}
+	if workspaceID == "" {
+		workspaceSource = sessionValueSourceUnknown
 	}
 
 	sessionToken := extractString(payload["sessionToken"])
+	if sessionToken == "" {
+		sessionToken = extractString(payload["session_token"])
+	}
 	if sessionToken == "" {
 		sessionToken = c.sessionTokenCookieValue()
 	}
 
 	return SessionResult{
-		StatusCode:   response.StatusCode,
-		AccessToken:  accessToken,
-		SessionToken: sessionToken,
-		AccountID:    accountID,
-		UserID:       userID,
-		WorkspaceID:  workspaceID,
-		Expires:      extractString(payload["expires"]),
-		AuthProvider: extractString(payload["authProvider"]),
-		RawSession:   payload,
+		StatusCode:  response.StatusCode,
+		AccessToken: accessToken,
+		RefreshToken: firstNonEmpty(
+			extractString(payload["refreshToken"]),
+			extractString(payload["refresh_token"]),
+		),
+		SessionToken:    sessionToken,
+		AccountID:       accountID,
+		UserID:          userID,
+		WorkspaceID:     workspaceID,
+		Expires:         extractString(payload["expires"]),
+		AuthProvider:    extractString(payload["authProvider"]),
+		RawSession:      payload,
+		accountSource:   accountSource,
+		workspaceSource: workspaceSource,
 	}, nil
 }
 
@@ -113,6 +152,14 @@ func (c *Client) sessionTokenCookieValue() string {
 		}
 	}
 	return ""
+}
+
+func firstObjectID(value any) string {
+	items, _ := value.([]any)
+	if len(items) == 0 {
+		return ""
+	}
+	return extractString(extractObject(items[0])["id"])
 }
 
 func (c *Client) cookieChunkValue(prefix string) string {

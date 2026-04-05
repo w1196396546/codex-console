@@ -4,28 +4,40 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"html"
 	"io"
+	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	stdmail "net/mail"
+	"net/textproto"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const defaultIMAPPollInterval = 3 * time.Second
 const defaultIMAPDialTimeout = 30 * time.Second
+const defaultIMAPOTPTimeSkew = 5 * time.Second
+const defaultIMAPOTPStageResetThreshold = 3 * time.Second
 
 var defaultIMAPSemanticCodePattern = regexp.MustCompile(`(?i)(?:verification(?:\s+code)?|security\s+code|one[\s-]*time\s+code|otp|login|log\s+in|code|验证码)[^0-9]{0,32}(\d{6})`)
 var imapLiteralPattern = regexp.MustCompile(`\{(\d+)\}$`)
 var imapFetchUIDPattern = regexp.MustCompile(`(?i)\bUID\s+(\d+)\b`)
+var imapHTMLTagPattern = regexp.MustCompile(`(?s)<[^>]+>`)
+var imapWhitespacePattern = regexp.MustCompile(`\s+`)
+var imapPunctuationSpacingPattern = regexp.MustCompile(`\s+([.,!?;:])`)
 
 type IMAPFetcher func(ctx context.Context, inbox Inbox) ([]IMAPMessage, error)
 
-type IMAPExtractor func(messages []IMAPMessage, pattern *regexp.Regexp) (string, bool)
+type IMAPExtractor func(messages []IMAPMessage, inbox Inbox, pattern *regexp.Regexp) (string, bool)
 
 type IMAPConfig struct {
 	Host         string
@@ -59,6 +71,14 @@ type IMAPMail struct {
 	pollInterval time.Duration
 	fetcher      IMAPFetcher
 	extractor    IMAPExtractor
+	stateMu      sync.Mutex
+	codeStates   map[string]*imapCodeState
+}
+
+type imapCodeState struct {
+	fingerprints  map[string]struct{}
+	fallbackCodes map[string]struct{}
+	stageMarker   int64
 }
 
 func NewIMAPMail(config IMAPConfig) *IMAPMail {
@@ -77,12 +97,13 @@ func NewIMAPMail(config IMAPConfig) *IMAPMail {
 		dialTimeout:  config.DialTimeout,
 		pollInterval: pollInterval,
 		extractor:    config.Extractor,
+		codeStates:   make(map[string]*imapCodeState),
 	}
 	if provider.username == "" {
 		provider.username = provider.email
 	}
 	if provider.extractor == nil {
-		provider.extractor = defaultIMAPCodeExtractor()
+		provider.extractor = provider.defaultCodeExtractor()
 	}
 	if config.Fetcher != nil {
 		provider.fetcher = config.Fetcher
@@ -128,7 +149,8 @@ func (i *IMAPMail) WaitCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 		if err != nil {
 			return "", err
 		}
-		if code, found := i.extractor(messages, pattern); found {
+		i.prepareCodeState(i.emailStateKey(inbox), inbox.OTPSentAt)
+		if code, found := i.extractor(messages, inbox, pattern); found {
 			return code, nil
 		}
 
@@ -141,7 +163,7 @@ func (i *IMAPMail) WaitCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 }
 
 func defaultIMAPCodeExtractor() IMAPExtractor {
-	return func(messages []IMAPMessage, pattern *regexp.Regexp) (string, bool) {
+	return func(messages []IMAPMessage, _ Inbox, pattern *regexp.Regexp) (string, bool) {
 		if pattern == nil {
 			pattern = DefaultCodePattern
 		}
@@ -160,6 +182,48 @@ func defaultIMAPCodeExtractor() IMAPExtractor {
 			if code, ok := extractPatternCode(message.Body, pattern); ok {
 				return code, true
 			}
+		}
+
+		return "", false
+	}
+}
+
+func (i *IMAPMail) defaultCodeExtractor() IMAPExtractor {
+	return func(messages []IMAPMessage, inbox Inbox, pattern *regexp.Regexp) (string, bool) {
+		if pattern == nil {
+			pattern = DefaultCodePattern
+		}
+
+		minReceivedAt := time.Time{}
+		if !inbox.OTPSentAt.IsZero() {
+			minReceivedAt = inbox.OTPSentAt.Add(-defaultIMAPOTPTimeSkew)
+		}
+
+		emailKey := i.emailStateKey(inbox)
+		for _, message := range messages {
+			if !message.ReceivedAt.IsZero() && !minReceivedAt.IsZero() && message.ReceivedAt.Before(minReceivedAt) {
+				continue
+			}
+			if !isOpenAIVerificationMessage(message) {
+				continue
+			}
+
+			var code string
+			var ok bool
+			if code, ok = extractPatternCode(message.Subject, pattern); !ok {
+				if code, ok = extractSemanticCode(message.Body); !ok {
+					code, ok = extractPatternCode(message.Body, pattern)
+				}
+			}
+			if !ok {
+				continue
+			}
+
+			if i.hasSeenCode(emailKey, message, code) {
+				continue
+			}
+			i.markCodeSeen(emailKey, message, code)
+			return code, true
 		}
 
 		return "", false
@@ -501,17 +565,22 @@ func parseFetchedMessage(uid string, raw string) (IMAPMessage, error) {
 		return result, nil
 	}
 
-	result.From = strings.TrimSpace(message.Header.Get("From"))
-	result.Subject = strings.TrimSpace(message.Header.Get("Subject"))
+	result.From = decodeMIMEHeader(message.Header.Get("From"))
+	result.Subject = decodeMIMEHeader(message.Header.Get("Subject"))
+	if messageID := strings.TrimSpace(message.Header.Get("Message-ID")); messageID != "" {
+		result.ID = messageID
+	}
 	if receivedAt, err := message.Header.Date(); err == nil {
 		result.ReceivedAt = receivedAt
 	}
 
-	bodyBytes, err := io.ReadAll(message.Body)
+	body, err := extractMessageBody(message.Header, message.Body)
 	if err != nil {
 		return IMAPMessage{}, fmt.Errorf("read fetched imap message %s body: %w", uid, err)
 	}
-	result.Body = strings.TrimSpace(string(bodyBytes))
+	if body != "" {
+		result.Body = body
+	}
 	return result, nil
 }
 
@@ -573,4 +642,217 @@ func extractPatternCode(content string, pattern *regexp.Regexp) (string, bool) {
 		return match[0], true
 	}
 	return "", false
+}
+
+func (i *IMAPMail) emailStateKey(inbox Inbox) string {
+	email := strings.TrimSpace(inbox.Email)
+	if email == "" {
+		email = i.email
+	}
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
+func (i *IMAPMail) prepareCodeState(emailKey string, sentAt time.Time) {
+	if emailKey == "" {
+		return
+	}
+
+	i.stateMu.Lock()
+	defer i.stateMu.Unlock()
+
+	state := i.ensureCodeStateLocked(emailKey)
+	if sentAt.IsZero() {
+		return
+	}
+
+	stageMarker := sentAt.Unix()
+	if state.stageMarker == 0 || absInt64(stageMarker-state.stageMarker) > int64(defaultIMAPOTPStageResetThreshold/time.Second) {
+		clear(state.fingerprints)
+		clear(state.fallbackCodes)
+		state.stageMarker = stageMarker
+	}
+}
+
+func (i *IMAPMail) hasSeenCode(emailKey string, message IMAPMessage, code string) bool {
+	if emailKey == "" {
+		return false
+	}
+
+	i.stateMu.Lock()
+	defer i.stateMu.Unlock()
+
+	state := i.ensureCodeStateLocked(emailKey)
+	fingerprint, useFallback := codeFingerprint(message, code)
+	if _, ok := state.fingerprints[fingerprint]; ok {
+		return true
+	}
+	if useFallback {
+		_, ok := state.fallbackCodes[code]
+		return ok
+	}
+	return false
+}
+
+func (i *IMAPMail) markCodeSeen(emailKey string, message IMAPMessage, code string) {
+	if emailKey == "" {
+		return
+	}
+
+	i.stateMu.Lock()
+	defer i.stateMu.Unlock()
+
+	state := i.ensureCodeStateLocked(emailKey)
+	fingerprint, useFallback := codeFingerprint(message, code)
+	state.fingerprints[fingerprint] = struct{}{}
+	if useFallback {
+		state.fallbackCodes[code] = struct{}{}
+	}
+}
+
+func (i *IMAPMail) ensureCodeStateLocked(emailKey string) *imapCodeState {
+	state := i.codeStates[emailKey]
+	if state == nil {
+		state = &imapCodeState{
+			fingerprints:  make(map[string]struct{}),
+			fallbackCodes: make(map[string]struct{}),
+		}
+		i.codeStates[emailKey] = state
+	}
+	return state
+}
+
+func codeFingerprint(message IMAPMessage, code string) (string, bool) {
+	mailID := strings.TrimSpace(message.ID)
+	if mailID == "" {
+		mailID = "-"
+	}
+	mailTS := int64(0)
+	if !message.ReceivedAt.IsZero() {
+		mailTS = message.ReceivedAt.Unix()
+	}
+	return fmt.Sprintf("%d|%s|%s", mailTS, mailID, code), mailID == "-" && mailTS <= 0
+}
+
+func absInt64(value int64) int64 {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+func decodeMIMEHeader(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+
+	decoded, err := (&mime.WordDecoder{}).DecodeHeader(value)
+	if err != nil {
+		return value
+	}
+	return strings.TrimSpace(decoded)
+}
+
+func extractMessageBody(header stdmail.Header, body io.Reader) (string, error) {
+	contentType := strings.TrimSpace(header.Get("Content-Type"))
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || mediaType == "" {
+		payload, readErr := io.ReadAll(body)
+		if readErr != nil {
+			return "", readErr
+		}
+		return normalizeExtractedBody(string(payload), contentType), nil
+	}
+
+	if strings.HasPrefix(strings.ToLower(mediaType), "multipart/") {
+		return extractMultipartBody(body, params["boundary"])
+	}
+
+	payload, err := decodeTransferBody(header, body)
+	if err != nil {
+		return "", err
+	}
+	return normalizeExtractedBody(string(payload), mediaType), nil
+}
+
+func extractMultipartBody(body io.Reader, boundary string) (string, error) {
+	if strings.TrimSpace(boundary) == "" {
+		payload, err := io.ReadAll(body)
+		if err != nil {
+			return "", err
+		}
+		return normalizeExtractedBody(string(payload), ""), nil
+	}
+
+	reader := multipart.NewReader(body, boundary)
+	var texts []string
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+
+		text, err := extractPartBody(part.Header, part)
+		part.Close()
+		if err != nil {
+			return "", err
+		}
+		if text != "" {
+			texts = append(texts, text)
+		}
+	}
+
+	return strings.TrimSpace(strings.Join(texts, " ")), nil
+}
+
+func extractPartBody(header textproto.MIMEHeader, body io.Reader) (string, error) {
+	mediaType, _, err := mime.ParseMediaType(header.Get("Content-Type"))
+	if err != nil {
+		mediaType = strings.TrimSpace(header.Get("Content-Type"))
+	}
+
+	switch strings.ToLower(mediaType) {
+	case "text/plain", "text/html":
+	default:
+		return "", nil
+	}
+
+	payload, err := decodeTransferBody(stdmail.Header(header), body)
+	if err != nil {
+		return "", err
+	}
+	return normalizeExtractedBody(string(payload), mediaType), nil
+}
+
+func decodeTransferBody(header stdmail.Header, body io.Reader) ([]byte, error) {
+	switch strings.ToLower(strings.TrimSpace(header.Get("Content-Transfer-Encoding"))) {
+	case "base64":
+		decoded, err := io.ReadAll(base64.NewDecoder(base64.StdEncoding, body))
+		if err != nil {
+			return nil, err
+		}
+		return decoded, nil
+	case "quoted-printable":
+		decoded, err := io.ReadAll(quotedprintable.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		return decoded, nil
+	default:
+		return io.ReadAll(body)
+	}
+}
+
+func normalizeExtractedBody(content string, contentType string) string {
+	content = html.UnescapeString(content)
+	content = strings.ReplaceAll(content, "\u00a0", " ")
+	if strings.Contains(strings.ToLower(contentType), "html") || strings.Contains(strings.ToLower(content), "<html") {
+		content = imapHTMLTagPattern.ReplaceAllString(content, " ")
+	}
+	content = imapWhitespacePattern.ReplaceAllString(content, " ")
+	content = imapPunctuationSpacingPattern.ReplaceAllString(content, "$1")
+	return strings.TrimSpace(content)
 }

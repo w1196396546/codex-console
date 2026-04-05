@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPythonRunnerRunIncludesInternalAccountPersistencePayload(t *testing.T) {
@@ -148,6 +149,54 @@ func TestPythonRunnerRunKeepsPythonPersistenceAndUploadsWhenGoPersistenceDisable
 	}
 }
 
+func TestPythonRunnerRunIncludesOptionalAccountPersistenceFields(t *testing.T) {
+	pythonExecutable, err := resolvePythonExecutable()
+	if err != nil {
+		t.Skipf("python executable not available: %v", err)
+	}
+
+	repoRoot := createPythonBridgeRepoRoot(t)
+	runner := &PythonRunner{
+		pythonExecutable: pythonExecutable,
+		repoRoot:         repoRoot,
+	}
+
+	result, err := runner.Run(context.Background(), RunnerRequest{
+		TaskUUID:             "task-optional-persist",
+		GoPersistenceEnabled: true,
+		StartRequest: StartRequest{
+			EmailServiceType: "tempmail",
+		},
+		Plan: ExecutionPlan{
+			EmailService: PreparedEmailService{
+				Prepared: true,
+				Type:     "tempmail",
+				Config:   map[string]any{"mode": "prepared"},
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	payload, ok := result[runnerAccountPersistenceResultKey].(map[string]any)
+	if !ok {
+		t.Fatalf("expected internal account persistence payload, got %#v", result[runnerAccountPersistenceResultKey])
+	}
+	if payload["last_refresh"] != "2026-04-04T08:00:00Z" {
+		t.Fatalf("expected last_refresh in persistence payload, got %#v", payload)
+	}
+	if payload["expires_at"] != "2026-04-04T09:30:00Z" {
+		t.Fatalf("expected expires_at in persistence payload, got %#v", payload)
+	}
+	if payload["subscription_type"] != "team" {
+		t.Fatalf("expected subscription_type in persistence payload, got %#v", payload)
+	}
+	if payload["subscription_at"] != "2026-04-04T10:00:00Z" {
+		t.Fatalf("expected subscription_at in persistence payload, got %#v", payload)
+	}
+}
+
 func createPythonBridgeRepoRoot(t *testing.T) string {
 	t.Helper()
 
@@ -173,6 +222,7 @@ def get_settings():
 	mustMkdirAll(t, filepath.Join(repoRoot, "src", "core"))
 	mustWriteFile(t, filepath.Join(repoRoot, "src", "core", "__init__.py"), "")
 	mustWriteFile(t, filepath.Join(repoRoot, "src", "core", "register.py"), `import os
+from datetime import datetime, timezone
 
 
 class Result:
@@ -188,6 +238,10 @@ class Result:
         self.session_token = "session-token-1"
         self.device_id = "device-1"
         self.source = "register"
+        self.last_refresh = datetime(2026, 4, 4, 8, 0, 0, tzinfo=timezone.utc)
+        self.expires_at = datetime(2026, 4, 4, 9, 30, 0, tzinfo=timezone.utc)
+        self.subscription_type = "team"
+        self.subscription_at = datetime(2026, 4, 4, 10, 0, 0, tzinfo=timezone.utc)
         self.metadata = {"python_runner": "active"}
         self.error_message = ""
 
@@ -333,6 +387,42 @@ def get_tm_service_by_id(db, service_id):
 `)
 
 	return repoRoot
+}
+
+func TestExtractAccountPersistenceRequestPreservesOptionalAccountFields(t *testing.T) {
+	result := map[string]any{
+		runnerAccountPersistenceResultKey: map[string]any{
+			"email":             "alice@example.com",
+			"email_service":     "outlook",
+			"last_refresh":      "2026-04-04T08:00:00Z",
+			"expires_at":        "2026-04-04T09:30:00Z",
+			"subscription_type": "team",
+			"subscription_at":   "2026-04-04T10:00:00Z",
+		},
+	}
+
+	req, ok, err := extractAccountPersistenceRequest(result)
+	if err != nil {
+		t.Fatalf("unexpected extract error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected persistence payload to be extracted")
+	}
+	lastRefresh := time.Date(2026, 4, 4, 8, 0, 0, 0, time.UTC)
+	expiresAt := time.Date(2026, 4, 4, 9, 30, 0, 0, time.UTC)
+	subscriptionAt := time.Date(2026, 4, 4, 10, 0, 0, 0, time.UTC)
+	if req.LastRefresh == nil || !req.LastRefresh.Equal(lastRefresh) {
+		t.Fatalf("expected last_refresh %v, got %#v", lastRefresh, req.LastRefresh)
+	}
+	if req.ExpiresAt == nil || !req.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("expected expires_at %v, got %#v", expiresAt, req.ExpiresAt)
+	}
+	if req.SubscriptionType != "team" {
+		t.Fatalf("expected subscription_type team, got %+v", req)
+	}
+	if req.SubscriptionAt == nil || !req.SubscriptionAt.Equal(subscriptionAt) {
+		t.Fatalf("expected subscription_at %v, got %#v", subscriptionAt, req.SubscriptionAt)
+	}
 }
 
 func assertFileContains(t *testing.T, path string, want string) {

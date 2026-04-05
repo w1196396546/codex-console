@@ -16,6 +16,9 @@ func TestPostgresRepositoryUpsertAccountUsesOnConflictAndSerializesExtraData(t *
 	updatedAt := registeredAt.Add(time.Minute)
 	cpaUploadedAt := registeredAt.Add(2 * time.Minute)
 	sub2apiUploadedAt := registeredAt.Add(3 * time.Minute)
+	lastRefresh := registeredAt.Add(4 * time.Minute)
+	expiresAt := registeredAt.Add(64 * time.Minute)
+	subscriptionAt := registeredAt.Add(5 * time.Minute)
 	db := &fakeAccountsDB{
 		row: fakeAccountsRow{
 			values: []any{
@@ -37,9 +40,13 @@ func TestPostgresRepositoryUpsertAccountUsesOnConflictAndSerializesExtraData(t *
 				&cpaUploadedAt,
 				true,
 				&sub2apiUploadedAt,
+				&lastRefresh,
+				&expiresAt,
 				`{"device_id":"dev-1"}`,
 				"active",
 				"register",
+				"team",
+				&subscriptionAt,
 				&registeredAt,
 				&createdAt,
 				&updatedAt,
@@ -67,8 +74,12 @@ func TestPostgresRepositoryUpsertAccountUsesOnConflictAndSerializesExtraData(t *
 		CPAUploadedAt:     &cpaUploadedAt,
 		Sub2APIUploaded:   true,
 		Sub2APIUploadedAt: &sub2apiUploadedAt,
+		LastRefresh:       &lastRefresh,
+		ExpiresAt:         &expiresAt,
 		Status:            "active",
 		Source:            "register",
+		SubscriptionType:  "team",
+		SubscriptionAt:    &subscriptionAt,
 		RegisteredAt:      &registeredAt,
 	})
 	if err != nil {
@@ -78,8 +89,8 @@ func TestPostgresRepositoryUpsertAccountUsesOnConflictAndSerializesExtraData(t *
 	if !strings.Contains(db.queryRowQuery, "INSERT INTO accounts") || !strings.Contains(db.queryRowQuery, "ON CONFLICT (email)") {
 		t.Fatalf("expected ON CONFLICT upsert query, got %q", db.queryRowQuery)
 	}
-	if len(db.queryRowArgs) != 21 {
-		t.Fatalf("expected 21 args, got %d", len(db.queryRowArgs))
+	if len(db.queryRowArgs) != 25 {
+		t.Fatalf("expected 25 args, got %d", len(db.queryRowArgs))
 	}
 	if uploaded, ok := db.queryRowArgs[13].(bool); !ok || !uploaded {
 		t.Fatalf("expected cpa_uploaded arg true, got %#v", db.queryRowArgs[13])
@@ -87,9 +98,9 @@ func TestPostgresRepositoryUpsertAccountUsesOnConflictAndSerializesExtraData(t *
 	if uploaded, ok := db.queryRowArgs[15].(bool); !ok || !uploaded {
 		t.Fatalf("expected sub2api_uploaded arg true, got %#v", db.queryRowArgs[15])
 	}
-	extraDataJSON, ok := db.queryRowArgs[17].(string)
+	extraDataJSON, ok := db.queryRowArgs[19].(string)
 	if !ok {
-		t.Fatalf("expected extra_data arg as JSON string, got %#v", db.queryRowArgs[17])
+		t.Fatalf("expected extra_data arg as JSON string, got %#v", db.queryRowArgs[19])
 	}
 	var decoded map[string]any
 	if err := json.Unmarshal([]byte(extraDataJSON), &decoded); err != nil {
@@ -109,6 +120,18 @@ func TestPostgresRepositoryUpsertAccountUsesOnConflictAndSerializesExtraData(t *
 	}
 	if !account.Sub2APIUploaded || account.Sub2APIUploadedAt == nil || !account.Sub2APIUploadedAt.Equal(sub2apiUploadedAt) {
 		t.Fatalf("expected sub2api upload state to round-trip, got %+v", account)
+	}
+	if account.LastRefresh == nil || !account.LastRefresh.Equal(lastRefresh) {
+		t.Fatalf("expected last_refresh to round-trip, got %#v", account.LastRefresh)
+	}
+	if account.ExpiresAt == nil || !account.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("expected expires_at to round-trip, got %#v", account.ExpiresAt)
+	}
+	if account.SubscriptionType != "team" {
+		t.Fatalf("expected subscription_type to round-trip, got %+v", account)
+	}
+	if account.SubscriptionAt == nil || !account.SubscriptionAt.Equal(subscriptionAt) {
+		t.Fatalf("expected subscription_at to round-trip, got %#v", account.SubscriptionAt)
 	}
 	if account.RegisteredAt == nil || !account.RegisteredAt.Equal(registeredAt) {
 		t.Fatalf("expected registered_at to round-trip, got %#v", account.RegisteredAt)

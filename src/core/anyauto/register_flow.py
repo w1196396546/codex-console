@@ -407,8 +407,12 @@ class AnyAutoRegistrationEngine:
         email: str,
         skymail_adapter: EmailServiceAdapter,
         oauth_config: Dict[str, Any],
+        *,
+        first_name: str = "",
+        last_name: str = "",
+        birthdate: str = "",
     ) -> Dict[str, Any]:
-        self._log("检测到 add_phone，尝试 passwordless OTP 登录补全 workspace...")
+        self._log("尝试 passwordless OTP 登录补全 OAuth 流程...")
         oauth_client = OAuthClient(
             config=oauth_config,
             proxy=self.proxy_url,
@@ -426,6 +430,9 @@ class AnyAutoRegistrationEngine:
             chatgpt_client.sec_ch_ua,
             chatgpt_client.impersonate,
             skymail_adapter,
+            first_name=first_name,
+            last_name=last_name,
+            birthdate=birthdate,
         )
         if tokens and tokens.get("access_token"):
             return {
@@ -468,6 +475,9 @@ class AnyAutoRegistrationEngine:
         *,
         reason: str,
         allow_passwordless: bool = True,
+        first_name: str = "",
+        last_name: str = "",
+        birthdate: str = "",
     ) -> Dict[str, Any]:
         last_error = ""
         last_session = chatgpt_client.session
@@ -517,6 +527,9 @@ class AnyAutoRegistrationEngine:
                             email,
                             skymail_adapter,
                             oauth_config,
+                            first_name=first_name,
+                            last_name=last_name,
+                            birthdate=birthdate,
                         )
                         last_session = (pwdless or {}).get("session") or last_session
                         if pwdless and pwdless.get("access_token"):
@@ -601,6 +614,9 @@ class AnyAutoRegistrationEngine:
                                 email,
                                 skymail_adapter,
                                 oauth_config,
+                                first_name=first_name,
+                                last_name=last_name,
+                                birthdate=birthdate,
                             )
                             if pwdless and pwdless.get("access_token"):
                                 return {
@@ -927,6 +943,9 @@ class AnyAutoRegistrationEngine:
                             oauth_config,
                             reason="已注册账号回退 OAuth 登录",
                             allow_passwordless=True,
+                            first_name=first_name,
+                            last_name=last_name,
+                            birthdate=birthdate,
                         )
                         tokens = oauth_completion.get("tokens") or {}
                         if tokens.get("access_token"):
@@ -1027,6 +1046,9 @@ class AnyAutoRegistrationEngine:
                             oauth_config,
                             reason="已有账号缺少历史密码，尝试 passwordless OAuth 补 rt",
                             allow_passwordless=True,
+                            first_name=first_name,
+                            last_name=last_name,
+                            birthdate=birthdate,
                         )
                         self.session = oauth_completion.get("session") or self.session
                         tokens = oauth_completion.get("tokens") or {}
@@ -1060,6 +1082,9 @@ class AnyAutoRegistrationEngine:
                         oauth_config,
                         reason="session 成功后的 OAuth 补 rt",
                         allow_passwordless=True,
+                        first_name=first_name,
+                        last_name=last_name,
+                        birthdate=birthdate,
                     )
                     self.session = oauth_completion.get("session") or self.session
                     tokens = oauth_completion.get("tokens") or {}
@@ -1104,6 +1129,9 @@ class AnyAutoRegistrationEngine:
                     oauth_config,
                     reason="复用会话失败后的 OAuth 回退",
                     allow_passwordless=True,
+                    first_name=first_name,
+                    last_name=last_name,
+                    birthdate=birthdate,
                 )
                 tokens = oauth_completion.get("tokens") or {}
                 self.session = oauth_completion.get("session") or self.session

@@ -24,8 +24,9 @@ type Config struct {
 }
 
 type Inbox struct {
-	Email string
-	Token string
+	Email     string
+	Token     string
+	OTPSentAt time.Time
 }
 
 type Provider interface {

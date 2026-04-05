@@ -306,9 +306,10 @@ func (f *PrepareSignupFlow) Run(ctx context.Context, input FlowRequest) (registr
 		Status:         accounts.DefaultAccountStatus,
 		Source:         accounts.DefaultAccountSource,
 		ExtraData: map[string]any{
-			"auth_provider": strings.TrimSpace(continueCreateAccountResult.AuthProvider),
-			"task_uuid":     strings.TrimSpace(input.RunnerRequest.TaskUUID),
-			"flow":          "native_runner",
+			"auth_provider":        strings.TrimSpace(continueCreateAccountResult.AuthProvider),
+			"task_uuid":            strings.TrimSpace(input.RunnerRequest.TaskUUID),
+			"flow":                 "native_runner",
+			"refresh_token_source": "create_account",
 		},
 	}
 
@@ -324,8 +325,16 @@ func (f *PrepareSignupFlow) Run(ctx context.Context, input FlowRequest) (registr
 			"account_id":    accountID,
 			"workspace_id":  workspaceID,
 			"access_token":  continueCreateAccountResult.AccessToken,
+			"refresh_token": refreshToken,
 			"session_token": continueCreateAccountResult.SessionToken,
 			"password":      preparation.Password,
+			"metadata": map[string]any{
+				"auth_provider":             strings.TrimSpace(continueCreateAccountResult.AuthProvider),
+				"refresh_token_source":      "create_account",
+				"has_session_token":         strings.TrimSpace(continueCreateAccountResult.SessionToken) != "",
+				"create_account_callback_url": strings.TrimSpace(createAccountResult.CallbackURL),
+				"create_account_continue_url": strings.TrimSpace(createAccountResult.ContinueURL),
+			},
 			"inbox": map[string]any{
 				"email": email,
 				"token": input.Inbox.Token,
@@ -414,7 +423,7 @@ func resolveEmailServiceID(req registration.RunnerRequest) string {
 }
 
 func shouldDispatchTokenCompletion(createAccountResult auth.CreateAccountResult) bool {
-	return strings.TrimSpace(createAccountResult.PageType) == "existing_account_detected" &&
+	return isExistingAccountPageType(createAccountResult.PageType) &&
 		strings.TrimSpace(createAccountResult.RefreshToken) == ""
 }
 
@@ -484,6 +493,10 @@ func (f *PrepareSignupFlow) completeExistingAccountToken(
 	}
 
 	emailServiceType, _ := resolveMailProvider(input.RunnerRequest)
+	refreshTokenSource := "oauth_passwordless"
+	if completionResult.Strategy == TokenCompletionStrategyPassword {
+		refreshTokenSource = "oauth_password"
+	}
 	accountPersistence := &accounts.UpsertAccountRequest{
 		Email:          email,
 		Password:       historicalPassword,
@@ -497,13 +510,15 @@ func (f *PrepareSignupFlow) completeExistingAccountToken(
 		RefreshToken:   refreshToken,
 		ProxyUsed:      strings.TrimSpace(input.RunnerRequest.Plan.Proxy.Selected),
 		Status:         accounts.DefaultAccountStatus,
-		Source:         accounts.DefaultAccountSource,
+		Source:         "login",
 		ExtraData: map[string]any{
-			"task_uuid":             strings.TrimSpace(input.RunnerRequest.TaskUUID),
-			"flow":                  "native_runner",
-			"token_completion":      true,
-			"signup_page_type":      strings.TrimSpace(createAccountResult.PageType),
-			"token_completion_mode": string(completionResult.Strategy),
+			"task_uuid":                 strings.TrimSpace(input.RunnerRequest.TaskUUID),
+			"flow":                      "native_runner",
+			"token_completion":          true,
+			"signup_page_type":          strings.TrimSpace(createAccountResult.PageType),
+			"token_completion_mode":     string(completionResult.Strategy),
+			"existing_account_detected": true,
+			"refresh_token_source":      refreshTokenSource,
 		},
 	}
 
@@ -514,13 +529,22 @@ func (f *PrepareSignupFlow) completeExistingAccountToken(
 	return registration.NativeRunnerResult{
 		Result: map[string]any{
 			"success":       true,
+			"source":        "login",
 			"stage":         stageCompleted,
 			"email":         email,
 			"account_id":    accountID,
 			"workspace_id":  workspaceID,
 			"access_token":  accessToken,
+			"refresh_token": refreshToken,
 			"session_token": sessionToken,
 			"password":      historicalPassword,
+			"metadata": map[string]any{
+				"existing_account_detected": true,
+				"refresh_token_source":      refreshTokenSource,
+				"has_session_token":         sessionToken != "",
+				"create_account_callback_url": strings.TrimSpace(createAccountResult.CallbackURL),
+				"create_account_continue_url": strings.TrimSpace(createAccountResult.ContinueURL),
+			},
 			"inbox": map[string]any{
 				"email": email,
 				"token": input.Inbox.Token,
@@ -609,4 +633,13 @@ func firstNonEmptyTrimmed(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func isExistingAccountPageType(pageType string) bool {
+	switch strings.TrimSpace(pageType) {
+	case "existing_account_detected", "user_exists":
+		return true
+	default:
+		return false
+	}
 }

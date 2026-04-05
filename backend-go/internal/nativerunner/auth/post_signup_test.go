@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -217,6 +218,67 @@ func TestClientCreateAccountCapturesExplicitCallbackURL(t *testing.T) {
 	}
 }
 
+func TestClientCreateAccountReturnsTypedUserExistsError(t *testing.T) {
+	t.Parallel()
+
+	var serverURL string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/accounts/create_account":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{
+				"error":{"code":"user_exists","message":"Email already exists"},
+				"continue_url":"` + serverURL + `/u/continue?state=existing",
+				"account":{"id":"account-existing"},
+				"workspace":{"id":"workspace-existing"}
+			}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	client, err := NewClient(Options{
+		BaseURL:   server.URL,
+		UserAgent: "codex-native-auth/0.1",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	result, err := client.CreateAccount(context.Background(), PrepareSignupResult{
+		FinalURL:  server.URL + "/about-you",
+		FinalPath: "/about-you",
+		PageType:  "about_you",
+	}, "Teammate", "Example", "1990-01-02")
+	if err == nil {
+		t.Fatal("expected create account user_exists error")
+	}
+
+	var userExistsErr *CreateAccountUserExistsError
+	if !errors.As(err, &userExistsErr) {
+		t.Fatalf("expected CreateAccountUserExistsError, got %T: %v", err, err)
+	}
+	if userExistsErr.StatusCode != http.StatusConflict {
+		t.Fatalf("expected typed error status 409, got %d", userExistsErr.StatusCode)
+	}
+	if userExistsErr.Code != "user_exists" {
+		t.Fatalf("expected typed error code user_exists, got %q", userExistsErr.Code)
+	}
+	if result.AccountID != "account-existing" {
+		t.Fatalf("expected partial account id, got %q", result.AccountID)
+	}
+	if result.WorkspaceID != "workspace-existing" {
+		t.Fatalf("expected partial workspace id, got %q", result.WorkspaceID)
+	}
+	if result.ContinueURL != serverURL+"/u/continue?state=existing" {
+		t.Fatalf("expected partial continue url, got %q", result.ContinueURL)
+	}
+}
+
 func TestClientReadSessionReturnsNormalizedTokens(t *testing.T) {
 	t.Parallel()
 
@@ -359,6 +421,7 @@ func TestClientContinueCreateAccountConsumesCallbackAndReadsSession(t *testing.T
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{
 				"accessToken":"` + accessToken + `",
+				"refreshToken":"refresh-from-session",
 				"user":{},
 				"account":{},
 				"authProvider":"openai"
@@ -409,14 +472,14 @@ func TestClientContinueCreateAccountConsumesCallbackAndReadsSession(t *testing.T
 	if result.SessionToken != "session-cookie" {
 		t.Fatalf("expected session token, got %q", result.SessionToken)
 	}
-	if result.AccountID != "account-from-jwt" {
-		t.Fatalf("expected account id from session, got %q", result.AccountID)
+	if result.AccountID != "account-created" {
+		t.Fatalf("expected created account id retained over claim fallback, got %q", result.AccountID)
 	}
-	if result.WorkspaceID != "account-from-jwt" {
-		t.Fatalf("expected workspace id fallback from session, got %q", result.WorkspaceID)
+	if result.WorkspaceID != "workspace-created" {
+		t.Fatalf("expected created workspace id retained over account fallback, got %q", result.WorkspaceID)
 	}
 	if result.RefreshToken != "refresh-created" {
-		t.Fatalf("expected refresh token fallback, got %q", result.RefreshToken)
+		t.Fatalf("expected create-account refresh token to win, got %q", result.RefreshToken)
 	}
 }
 
@@ -504,6 +567,72 @@ func TestClientContinueCreateAccountFallsBackWhenSessionIsIncomplete(t *testing.
 	}
 	if result.UserID != "user-from-jwt" {
 		t.Fatalf("expected user id from jwt, got %q", result.UserID)
+	}
+}
+
+func TestClientContinueCreateAccountUsesSessionRefreshFallback(t *testing.T) {
+	t.Parallel()
+
+	var serverURL string
+
+	accessToken := testJWT(t, map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_user_id": "user-from-jwt",
+		},
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/callback/openai":
+			http.SetCookie(w, &http.Cookie{
+				Name:  "__Secure-next-auth.session-token",
+				Value: "session-cookie",
+				Path:  "/",
+			})
+			http.Redirect(w, r, "/u/continue?state=refresh-fallback", http.StatusFound)
+		case "/u/continue":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body data-page="continue">Continue</body></html>`))
+		case "/api/auth/session":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"accessToken":"` + accessToken + `",
+				"refreshToken":"refresh-from-session",
+				"user":{},
+				"account":{}
+			}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	client, err := NewClient(Options{
+		BaseURL:   server.URL,
+		UserAgent: "codex-native-auth/0.1",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	result, err := client.ContinueCreateAccount(context.Background(), CreateAccountResult{
+		ContinueURL: serverURL + "/api/auth/callback/openai?code=session-refresh",
+		CallbackURL: serverURL + "/api/auth/callback/openai?code=session-refresh",
+		AccountID:   "account-created",
+		WorkspaceID: "workspace-created",
+	})
+	if err != nil {
+		t.Fatalf("continue create account: %v", err)
+	}
+	if result.RefreshToken != "refresh-from-session" {
+		t.Fatalf("expected refresh token from session fallback, got %q", result.RefreshToken)
+	}
+	if result.AccountID != "account-created" {
+		t.Fatalf("expected created account id retained, got %q", result.AccountID)
+	}
+	if result.WorkspaceID != "workspace-created" {
+		t.Fatalf("expected created workspace id retained, got %q", result.WorkspaceID)
 	}
 }
 
@@ -721,6 +850,66 @@ func TestClientReadSessionSupportsAlternateChunkedSessionCookies(t *testing.T) {
 	}
 	if result.SessionToken != "alt-session" {
 		t.Fatalf("expected alternate chunked session token, got %q", result.SessionToken)
+	}
+}
+
+func TestClientReadSessionExtractsRefreshTokenAndExplicitWorkspace(t *testing.T) {
+	t.Parallel()
+
+	accessToken := testJWT(t, map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": "account-from-jwt",
+		},
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/session":
+			if got := r.Header.Get("Cookie"); !strings.Contains(got, "__Secure-next-auth.session-token=session-cookie") {
+				t.Fatalf("expected direct next-auth cookie in request, got %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"accessToken":"` + accessToken + `",
+				"refreshToken":"refresh-from-session",
+				"workspace":{"id":"workspace-object"},
+				"workspaces":[{"id":"workspace-list"}],
+				"user":{},
+				"account":{}
+			}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(Options{
+		BaseURL:   server.URL,
+		UserAgent: "codex-native-auth/0.1",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	baseURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+	client.httpClient.Jar.SetCookies(baseURL, []*http.Cookie{{
+		Name:  "__Secure-next-auth.session-token",
+		Value: "session-cookie",
+		Path:  "/",
+	}})
+
+	result, err := client.ReadSession(context.Background())
+	if err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	if result.RefreshToken != "refresh-from-session" {
+		t.Fatalf("expected refresh token from session payload, got %q", result.RefreshToken)
+	}
+	if result.WorkspaceID != "workspace-object" {
+		t.Fatalf("expected explicit workspace object id, got %q", result.WorkspaceID)
 	}
 }
 

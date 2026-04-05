@@ -179,6 +179,8 @@ func toUploadAccount(account accounts.Account) uploader.UploadAccount {
 		AccountID:    account.AccountID,
 		WorkspaceID:  account.WorkspaceID,
 		IDToken:      account.IDToken,
+		ExpiresAt:    cloneAutoUploadTimePtr(account.ExpiresAt),
+		LastRefresh:  cloneAutoUploadTimePtr(account.LastRefresh),
 	}
 }
 
@@ -220,23 +222,27 @@ func markAutoUploadSuccess(update *accounts.UpsertAccountRequest, account accoun
 
 func buildAutoUploadAccountUpdate(account accounts.Account) accounts.UpsertAccountRequest {
 	return accounts.UpsertAccountRequest{
-		Email:          account.Email,
-		Password:       account.Password,
-		ClientID:       account.ClientID,
-		SessionToken:   account.SessionToken,
-		EmailService:   account.EmailService,
-		EmailServiceID: account.EmailServiceID,
-		AccountID:      account.AccountID,
-		WorkspaceID:    account.WorkspaceID,
-		AccessToken:    account.AccessToken,
-		RefreshToken:   account.RefreshToken,
-		IDToken:        account.IDToken,
-		Cookies:        account.Cookies,
-		ProxyUsed:      account.ProxyUsed,
-		ExtraData:      cloneAutoUploadExtraData(account.ExtraData),
-		Status:         account.Status,
-		Source:         account.Source,
-		RegisteredAt:   cloneAutoUploadTimePtr(account.RegisteredAt),
+		Email:            account.Email,
+		Password:         account.Password,
+		ClientID:         account.ClientID,
+		SessionToken:     account.SessionToken,
+		EmailService:     account.EmailService,
+		EmailServiceID:   account.EmailServiceID,
+		AccountID:        account.AccountID,
+		WorkspaceID:      account.WorkspaceID,
+		AccessToken:      account.AccessToken,
+		RefreshToken:     account.RefreshToken,
+		IDToken:          account.IDToken,
+		Cookies:          account.Cookies,
+		ProxyUsed:        account.ProxyUsed,
+		LastRefresh:      cloneAutoUploadTimePtr(account.LastRefresh),
+		ExpiresAt:        cloneAutoUploadTimePtr(account.ExpiresAt),
+		ExtraData:        cloneAutoUploadExtraData(account.ExtraData),
+		Status:           account.Status,
+		Source:           account.Source,
+		SubscriptionType: account.SubscriptionType,
+		SubscriptionAt:   cloneAutoUploadTimePtr(account.SubscriptionAt),
+		RegisteredAt:     cloneAutoUploadTimePtr(account.RegisteredAt),
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
+	"github.com/dou-jiang/codex-console/backend-go/internal/nativerunner"
 	"github.com/hibiken/asynq"
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
@@ -146,7 +148,7 @@ func TestNewRegistrationPreparationDependenciesUsesPostgresRepositories(t *testi
 }
 
 func TestNewWorkerRegistrationRunnerUsesNativeRunner(t *testing.T) {
-	runner, err := newWorkerRegistrationRunner()
+	runner, err := newWorkerRegistrationRunner(nil)
 	if err != nil {
 		t.Fatalf("unexpected create runner error: %v", err)
 	}
@@ -171,6 +173,46 @@ func TestNewWorkerRegistrationRunnerUsesNativeRunner(t *testing.T) {
 	}
 }
 
+func TestNewWorkerHistoricalPasswordProviderReadsRepositoryPassword(t *testing.T) {
+	t.Parallel()
+
+	provider := newWorkerHistoricalPasswordProvider(workerMainFakeAccountRepository{
+		account: accounts.Account{
+			Email:    "native@example.com",
+			Password: "known-pass",
+		},
+		found: true,
+	})
+	if provider == nil {
+		t.Fatal("expected historical password provider")
+	}
+
+	password, err := provider.ResolveHistoricalPassword(context.Background(), nativerunner.FlowRequest{}, "native@example.com")
+	if err != nil {
+		t.Fatalf("resolve historical password: %v", err)
+	}
+	if password != "known-pass" {
+		t.Fatalf("expected known-pass, got %q", password)
+	}
+}
+
+func TestNewWorkerHistoricalPasswordProviderReturnsEmptyWhenAccountMissing(t *testing.T) {
+	t.Parallel()
+
+	provider := newWorkerHistoricalPasswordProvider(workerMainFakeAccountRepository{})
+	if provider == nil {
+		t.Fatal("expected historical password provider")
+	}
+
+	password, err := provider.ResolveHistoricalPassword(context.Background(), nativerunner.FlowRequest{}, "missing@example.com")
+	if err != nil {
+		t.Fatalf("resolve historical password: %v", err)
+	}
+	if password != "" {
+		t.Fatalf("expected empty password for missing account, got %q", password)
+	}
+}
+
 type workerMainFakeRunner struct {
 	runFn func(ctx context.Context, req registration.RunnerRequest, logf func(level string, message string) error) (map[string]any, error)
 }
@@ -188,4 +230,25 @@ type workerMainFailingPreparationSettings struct {
 
 func (f workerMainFailingPreparationSettings) GetSettings(context.Context, []string) (map[string]string, error) {
 	return nil, f.err
+}
+
+type workerMainFakeAccountRepository struct {
+	account accounts.Account
+	found   bool
+	err     error
+}
+
+func (f workerMainFakeAccountRepository) ListAccounts(context.Context, accounts.ListAccountsRequest) ([]accounts.Account, int, error) {
+	return nil, 0, nil
+}
+
+func (f workerMainFakeAccountRepository) GetAccountByEmail(context.Context, string) (accounts.Account, bool, error) {
+	if f.err != nil {
+		return accounts.Account{}, false, f.err
+	}
+	return f.account, f.found, nil
+}
+
+func (f workerMainFakeAccountRepository) UpsertAccount(context.Context, accounts.Account) (accounts.Account, error) {
+	return accounts.Account{}, nil
 }

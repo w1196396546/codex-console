@@ -116,16 +116,7 @@ func (c *Client) ContinueCreateAccount(ctx context.Context, created CreateAccoun
 		return ContinueCreateAccountResult{}, err
 	}
 
-	result.AccessToken = strings.TrimSpace(session.AccessToken)
-	result.SessionToken = strings.TrimSpace(session.SessionToken)
-	result.AuthProvider = strings.TrimSpace(session.AuthProvider)
-	result.UserID = strings.TrimSpace(session.UserID)
-	if session.AccountID != "" {
-		result.AccountID = strings.TrimSpace(session.AccountID)
-	}
-	if session.WorkspaceID != "" {
-		result.WorkspaceID = strings.TrimSpace(session.WorkspaceID)
-	}
+	mergeContinueCreateAccountSession(&result, session)
 	if result.PageType == "" {
 		result.PageType = inferPageTypeFromURL(result.FinalURL)
 	}
@@ -428,4 +419,37 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func mergeContinueCreateAccountSession(result *ContinueCreateAccountResult, session SessionResult) {
+	if result == nil {
+		return
+	}
+
+	if accessToken := strings.TrimSpace(session.AccessToken); accessToken != "" {
+		result.AccessToken = accessToken
+	}
+	if sessionToken := strings.TrimSpace(session.SessionToken); sessionToken != "" {
+		result.SessionToken = sessionToken
+	}
+	if authProvider := strings.TrimSpace(session.AuthProvider); authProvider != "" {
+		result.AuthProvider = authProvider
+	}
+	if userID := strings.TrimSpace(session.UserID); userID != "" {
+		result.UserID = userID
+	}
+	if refreshToken := strings.TrimSpace(session.RefreshToken); refreshToken != "" && strings.TrimSpace(result.RefreshToken) == "" {
+		result.RefreshToken = refreshToken
+	}
+
+	if accountID := strings.TrimSpace(session.AccountID); accountID != "" {
+		if strings.TrimSpace(result.AccountID) == "" || session.accountSource == sessionValueSourcePayload {
+			result.AccountID = accountID
+		}
+	}
+	if workspaceID := strings.TrimSpace(session.WorkspaceID); workspaceID != "" {
+		if strings.TrimSpace(result.WorkspaceID) == "" || session.workspaceSource == sessionValueSourcePayload {
+			result.WorkspaceID = workspaceID
+		}
+	}
 }

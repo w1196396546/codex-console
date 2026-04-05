@@ -197,6 +197,49 @@ func TestAutoUploadDispatcherUsesFreshTimestampForSuccessfulWriteback(t *testing
 	}
 }
 
+func TestAutoUploadDispatcherPropagatesTokenTimingFieldsToUploadSender(t *testing.T) {
+	repo := &fakeAutoUploadConfigRepository{
+		cpaConfigs: []uploader.ServiceConfig{
+			{ID: 11, Kind: uploader.UploadKindCPA, Name: "CPA One", BaseURL: "https://cpa.example.com", Credential: "cpa-token"},
+		},
+	}
+	sender := &fakeUploadSender{
+		results: []uploader.UploadResult{{Kind: uploader.UploadKindCPA, ServiceID: 11, AccountEmail: "alice@example.com", Success: true, Message: "ok"}},
+	}
+	dispatcher := newAutoUploadDispatcher(repo, func(kind uploader.UploadKind) (uploader.Sender, error) {
+		return sender, nil
+	})
+	lastRefresh := time.Date(2026, 4, 4, 9, 0, 0, 0, time.UTC)
+	expiresAt := lastRefresh.Add(90 * time.Minute)
+
+	_, err := dispatcher.Dispatch(context.Background(), AutoUploadDispatchRequest{
+		JobID: "job-timing",
+		StartRequest: StartRequest{
+			AutoUploadCPA: true,
+			CPAServiceIDs: []int{11},
+		},
+		Account: accounts.Account{
+			Email:       "alice@example.com",
+			AccessToken: "access-1",
+			LastRefresh: &lastRefresh,
+			ExpiresAt:   &expiresAt,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected dispatch error: %v", err)
+	}
+	if len(sender.requests) != 1 || len(sender.requests[0].Accounts) != 1 {
+		t.Fatalf("expected one upload request, got %#v", sender.requests)
+	}
+	account := sender.requests[0].Accounts[0]
+	if account.LastRefresh == nil || !account.LastRefresh.Equal(lastRefresh) {
+		t.Fatalf("expected sender to receive last_refresh %v, got %#v", lastRefresh, account.LastRefresh)
+	}
+	if account.ExpiresAt == nil || !account.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("expected sender to receive expires_at %v, got %#v", expiresAt, account.ExpiresAt)
+	}
+}
+
 type fakeAutoUploadConfigRepository struct {
 	cpaIDs         []int
 	sub2apiIDs     []int

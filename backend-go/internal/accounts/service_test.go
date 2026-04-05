@@ -239,6 +239,54 @@ func TestServiceUpsertAccountMergesUploadWritebackFields(t *testing.T) {
 	}
 }
 
+func TestServiceUpsertAccountMergesTokenTimingAndSubscriptionFields(t *testing.T) {
+	existingLastRefresh := time.Date(2026, 4, 1, 8, 0, 0, 0, time.UTC)
+	existingExpiresAt := existingLastRefresh.Add(30 * time.Minute)
+	incomingLastRefresh := existingLastRefresh.Add(2 * time.Hour)
+	incomingExpiresAt := incomingLastRefresh.Add(90 * time.Minute)
+	existingSubscriptionAt := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+	incomingSubscriptionAt := time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC)
+	repo := &fakeRepository{
+		foundAccount: Account{
+			ID:               11,
+			Email:            "timing@example.com",
+			EmailService:     "outlook",
+			LastRefresh:      &existingLastRefresh,
+			ExpiresAt:        &existingExpiresAt,
+			SubscriptionType: "plus",
+			SubscriptionAt:   &existingSubscriptionAt,
+			Status:           "active",
+		},
+	}
+	service := NewService(repo)
+
+	_, err := service.UpsertAccount(context.Background(), UpsertAccountRequest{
+		Email:            "timing@example.com",
+		EmailService:     "outlook",
+		LastRefresh:      &incomingLastRefresh,
+		ExpiresAt:        &incomingExpiresAt,
+		SubscriptionType: "team",
+		SubscriptionAt:   &incomingSubscriptionAt,
+		Status:           "active",
+	})
+	if err != nil {
+		t.Fatalf("unexpected upsert error: %v", err)
+	}
+
+	if repo.savedAccount.LastRefresh == nil || !repo.savedAccount.LastRefresh.Equal(incomingLastRefresh) {
+		t.Fatalf("expected last_refresh to be updated, got %#v", repo.savedAccount.LastRefresh)
+	}
+	if repo.savedAccount.ExpiresAt == nil || !repo.savedAccount.ExpiresAt.Equal(incomingExpiresAt) {
+		t.Fatalf("expected expires_at to be updated, got %#v", repo.savedAccount.ExpiresAt)
+	}
+	if repo.savedAccount.SubscriptionType != "team" {
+		t.Fatalf("expected subscription_type to be updated, got %q", repo.savedAccount.SubscriptionType)
+	}
+	if repo.savedAccount.SubscriptionAt == nil || !repo.savedAccount.SubscriptionAt.Equal(incomingSubscriptionAt) {
+		t.Fatalf("expected subscription_at to be updated, got %#v", repo.savedAccount.SubscriptionAt)
+	}
+}
+
 type fakeRepository struct {
 	foundAccount    Account
 	found           bool

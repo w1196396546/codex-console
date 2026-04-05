@@ -5,7 +5,7 @@ import json
 import os
 import sys
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 def emit(payload):
@@ -50,6 +50,40 @@ def build_check_cancelled(control_path):
             time.sleep(0.1)
 
     return callback
+
+
+def format_optional_datetime(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(microsecond=0).isoformat() + "Z"
+        return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        try:
+            formatted = str(isoformat() or "").strip()
+        except Exception:
+            return None
+        return formatted or None
+    return None
+
+
+def resolve_optional_account_field(result, metadata, key, formatter=None):
+    value = getattr(result, key, None)
+    if value in (None, ""):
+        value = (metadata or {}).get(key)
+    if value in (None, ""):
+        return None
+
+    if formatter is None:
+        formatted = str(value or "").strip()
+        return formatted or None
+    return formatter(value)
 
 
 def normalize_email_service_config(service_type, config, proxy_url=None):
@@ -287,6 +321,21 @@ def build_account_persistence_payload(engine, result, service_type, resolved_ser
         "status": str(status or "").strip(),
         "source": str(getattr(result, "source", "") or "").strip() or "register",
     }
+    last_refresh = resolve_optional_account_field(result, metadata, "last_refresh", format_optional_datetime)
+    if last_refresh:
+        payload["last_refresh"] = last_refresh
+
+    expires_at = resolve_optional_account_field(result, metadata, "expires_at", format_optional_datetime)
+    if expires_at:
+        payload["expires_at"] = expires_at
+
+    subscription_type = resolve_optional_account_field(result, metadata, "subscription_type")
+    if subscription_type:
+        payload["subscription_type"] = subscription_type
+
+    subscription_at = resolve_optional_account_field(result, metadata, "subscription_at", format_optional_datetime)
+    if subscription_at:
+        payload["subscription_at"] = subscription_at
     return payload, metadata
 
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
@@ -35,11 +36,12 @@ func main() {
 	}
 	defer closeWorker(deps)
 
-	registrationRunner, err := newWorkerRegistrationRunner()
+	accountRepository := accounts.NewPostgresRepository(deps.Postgres)
+	registrationRunner, err := newWorkerRegistrationRunner(accountRepository)
 	if err != nil {
 		log.Fatal(err)
 	}
-	accountService := accounts.NewService(accounts.NewPostgresRepository(deps.Postgres))
+	accountService := accounts.NewService(accountRepository)
 	autoUploadDispatcher := registration.NewAutoUploadDispatcher(
 		uploader.NewPostgresConfigRepository(deps.Postgres),
 		nil,
@@ -130,8 +132,29 @@ func newRegistrationPreparationDependencies(pool *pgxpool.Pool) registration.Pre
 	}
 }
 
-func newWorkerRegistrationRunner() (registration.Runner, error) {
-	return registration.NewNativeRunner(nativerunner.NewDefault(nativerunner.DefaultOptions{})), nil
+func newWorkerRegistrationRunner(accountRepository accounts.Repository) (registration.Runner, error) {
+	return registration.NewNativeRunner(nativerunner.NewDefault(nativerunner.DefaultOptions{
+		HistoricalPasswordProvider: newWorkerHistoricalPasswordProvider(accountRepository),
+	})), nil
+}
+
+func newWorkerHistoricalPasswordProvider(accountRepository accounts.Repository) nativerunner.HistoricalPasswordProvider {
+	if accountRepository == nil {
+		return nativerunner.HistoricalPasswordProviderFunc(func(context.Context, nativerunner.FlowRequest, string) (string, error) {
+			return "", nil
+		})
+	}
+
+	return nativerunner.HistoricalPasswordProviderFunc(func(ctx context.Context, _ nativerunner.FlowRequest, email string) (string, error) {
+		account, found, err := accountRepository.GetAccountByEmail(ctx, strings.TrimSpace(email))
+		if err != nil {
+			return "", err
+		}
+		if !found {
+			return "", nil
+		}
+		return strings.TrimSpace(account.Password), nil
+	})
 }
 
 func newWorkerExecutor(registrationExecutor jobs.Executor) jobs.Executor {

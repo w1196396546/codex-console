@@ -2,8 +2,11 @@ package mail
 
 import (
 	"context"
+	"errors"
 	"regexp"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewOutlookUsesOffice365IMAPEndpointAndReturnsCredentialsInbox(t *testing.T) {
@@ -125,5 +128,58 @@ func TestOutlookWaitCodeDelegatesToIMAPProvider(t *testing.T) {
 	}
 	if captured.Password != "secret-password" {
 		t.Fatalf("expected delegated password, got %q", captured.Password)
+	}
+}
+
+func TestOutlookWaitCodeFallsBackToLiveIMAPHostWhenPrimaryFails(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOutlook(OutlookConfig{
+		Email:    "native@example.com",
+		Password: "secret-password",
+	})
+
+	var hosts []string
+	provider.newIMAP = func(config IMAPConfig) *IMAPMail {
+		hosts = append(hosts, config.Host)
+
+		fetcher := func(ctx context.Context, inbox Inbox) ([]IMAPMessage, error) {
+			if config.Host == "outlook.office365.com" {
+				return nil, errors.New("primary imap host unavailable")
+			}
+
+			return []IMAPMessage{
+				{
+					From:    "OpenAI <noreply@openai.com>",
+					Subject: "OpenAI sign-in",
+					Body:    "Your verification code is 864209.",
+				},
+			}, nil
+		}
+
+		return NewIMAPMail(IMAPConfig{
+			Email:        config.Email,
+			Password:     config.Password,
+			PollInterval: time.Millisecond,
+			Fetcher:      fetcher,
+		})
+	}
+
+	inbox, err := provider.Create(context.Background())
+	if err != nil {
+		t.Fatalf("create outlook inbox: %v", err)
+	}
+
+	code, err := provider.WaitCode(context.Background(), inbox, regexp.MustCompile(`\d{6}`))
+	if err != nil {
+		t.Fatalf("wait code with fallback host: %v", err)
+	}
+	if code != "864209" {
+		t.Fatalf("expected fallback code 864209, got %q", code)
+	}
+
+	gotHosts := strings.Join(hosts, ",")
+	if gotHosts != "outlook.office365.com,outlook.live.com" {
+		t.Fatalf("expected office365 then live host fallback, got %q", gotHosts)
 	}
 }

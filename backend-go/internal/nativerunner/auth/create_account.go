@@ -23,6 +23,28 @@ type CreateAccountResult struct {
 	RawData      map[string]any
 }
 
+type CreateAccountUserExistsError struct {
+	StatusCode int
+	Code       string
+	Message    string
+	Result     CreateAccountResult
+}
+
+func (e *CreateAccountUserExistsError) Error() string {
+	if e == nil {
+		return "create account user exists"
+	}
+
+	message := strings.TrimSpace(e.Message)
+	if message == "" {
+		message = "create account user exists"
+	}
+	if code := strings.TrimSpace(e.Code); code != "" {
+		return fmt.Sprintf("%s (%s)", message, code)
+	}
+	return message
+}
+
 func (c *Client) CreateAccount(ctx context.Context, prepared PrepareSignupResult, firstName string, lastName string, birthdate string) (CreateAccountResult, error) {
 	name := strings.TrimSpace(strings.Join([]string{
 		strings.TrimSpace(firstName),
@@ -71,9 +93,6 @@ func (c *Client) CreateAccount(ctx context.Context, prepared PrepareSignupResult
 	if err != nil {
 		return CreateAccountResult{}, fmt.Errorf("create account: %w", err)
 	}
-	if response.StatusCode >= http.StatusBadRequest {
-		return CreateAccountResult{}, fmt.Errorf("create account: unexpected status %d", response.StatusCode)
-	}
 
 	var payload map[string]any
 	if len(response.Body) != 0 {
@@ -81,7 +100,22 @@ func (c *Client) CreateAccount(ctx context.Context, prepared PrepareSignupResult
 			return CreateAccountResult{}, fmt.Errorf("decode create account response: %w", err)
 		}
 	}
+	result := createAccountResultFromPayload(c, response.StatusCode, payload)
+	if code, message, isUserExists := detectCreateAccountUserExists(payload); isUserExists {
+		return result, &CreateAccountUserExistsError{
+			StatusCode: response.StatusCode,
+			Code:       code,
+			Message:    message,
+			Result:     result,
+		}
+	}
+	if response.StatusCode >= http.StatusBadRequest {
+		return result, fmt.Errorf("create account: unexpected status %d", response.StatusCode)
+	}
+	return result, nil
+}
 
+func createAccountResultFromPayload(c *Client, statusCode int, payload map[string]any) CreateAccountResult {
 	continueURL := extractContinueURL(c, payload)
 	callbackURL := c.normalizeFlowURL(extractString(payload["callback_url"]))
 	if callbackURL == "" && strings.Contains(continueURL, "/api/auth/callback/openai") && strings.Contains(continueURL, "code=") {
@@ -110,9 +144,7 @@ func (c *Client) CreateAccount(ctx context.Context, prepared PrepareSignupResult
 		workspaceID = extractString(workspace["id"])
 	}
 	if workspaceID == "" {
-		if workspaces, ok := payload["workspaces"].([]any); ok && len(workspaces) != 0 {
-			workspaceID = extractString(extractObject(workspaces[0])["id"])
-		}
+		workspaceID = firstObjectID(payload["workspaces"])
 	}
 
 	finalURL := continueURL
@@ -122,7 +154,7 @@ func (c *Client) CreateAccount(ctx context.Context, prepared PrepareSignupResult
 	}
 
 	return CreateAccountResult{
-		StatusCode:   response.StatusCode,
+		StatusCode:   statusCode,
 		FinalURL:     finalURL,
 		FinalPath:    finalPath,
 		PageType:     extractPayloadPageType(payload, continueURL, finalURL),
@@ -132,7 +164,7 @@ func (c *Client) CreateAccount(ctx context.Context, prepared PrepareSignupResult
 		WorkspaceID:  workspaceID,
 		RefreshToken: extractString(payload["refresh_token"]),
 		RawData:      payload,
-	}, nil
+	}
 }
 
 func (c *Client) aboutYouReferer(prepared PrepareSignupResult) string {
@@ -148,4 +180,42 @@ func (c *Client) aboutYouReferer(prepared PrepareSignupResult) string {
 		return ""
 	}
 	return resolved.String()
+}
+
+func detectCreateAccountUserExists(payload map[string]any) (string, string, bool) {
+	if len(payload) == 0 {
+		return "", "", false
+	}
+
+	errorPayload := extractObject(payload["error"])
+	code := strings.TrimSpace(firstNonEmpty(
+		extractString(errorPayload["code"]),
+		extractString(payload["error_code"]),
+		extractString(payload["code"]),
+	))
+	message := strings.TrimSpace(firstNonEmpty(
+		extractString(errorPayload["message"]),
+		extractString(payload["message"]),
+		extractString(payload["detail"]),
+	))
+
+	normalizedCode := strings.ToLower(code)
+	normalizedMessage := strings.ToLower(message)
+	if normalizedCode == "user_exists" {
+		return code, message, true
+	}
+	if normalizedMessage == "" {
+		return code, message, false
+	}
+	for _, marker := range []string{
+		"already exists",
+		"already registered",
+		"email already exists",
+		"user exists",
+	} {
+		if strings.Contains(normalizedMessage, marker) {
+			return code, message, true
+		}
+	}
+	return code, message, false
 }

@@ -70,6 +70,7 @@ class FakeOAuthClient:
     passwordless_call_count = 0
     last_login_email = None
     last_login_password = None
+    last_passwordless_profile = None
 
     def __init__(self, config, proxy=None, verbose=True, browser_mode="protocol", check_cancelled=None):
         self.config = config
@@ -110,8 +111,21 @@ class FakeOAuthClient:
         sec_ch_ua=None,
         impersonate=None,
         skymail_client=None,
+        first_name=None,
+        last_name=None,
+        birthdate=None,
     ):
         FakeOAuthClient.passwordless_call_count += 1
+        FakeOAuthClient.last_passwordless_profile = {
+            "email": email,
+            "device_id": device_id,
+            "user_agent": user_agent,
+            "sec_ch_ua": sec_ch_ua,
+            "impersonate": impersonate,
+            "first_name": first_name,
+            "last_name": last_name,
+            "birthdate": birthdate,
+        }
         if not FakeOAuthClient.passwordless_plans:
             raise AssertionError("missing passwordless OAuth plan")
         plan = FakeOAuthClient.passwordless_plans.pop(0)
@@ -584,6 +598,50 @@ def test_oauth_completion_without_password_uses_passwordless_flow_under_global_w
     assert sleeps == [5.0]
     assert FakeOAuthClient.call_count == 0
     assert FakeOAuthClient.passwordless_call_count == 1
+
+
+def test_oauth_completion_without_password_forwards_signup_profile_to_passwordless_flow(monkeypatch):
+    FakeOAuthClient.plans = []
+    FakeOAuthClient.passwordless_plans = [
+        {
+            "tokens": {
+                "access_token": "oauth-access-passwordless-profile",
+                "refresh_token": "refresh-passwordless-profile",
+            },
+            "last_error": "",
+        }
+    ]
+    FakeOAuthClient.call_count = 0
+    FakeOAuthClient.passwordless_call_count = 0
+    FakeOAuthClient.last_passwordless_profile = None
+
+    engine = _build_engine(monkeypatch)
+    chatgpt_client = FakeChatGPTClient()
+
+    result = engine._run_oauth_token_completion(
+        chatgpt_client,
+        "profiled@example.com",
+        "",
+        DummyEmailService(),
+        {"oauth_client_id": "client-1"},
+        reason="无密码补齐并透传注册资料",
+        first_name="Alice",
+        last_name="Walker",
+        birthdate="1999-02-03",
+    )
+
+    assert result["tokens"]["refresh_token"] == "refresh-passwordless-profile"
+    assert result["source"] == "oauth_passwordless"
+    assert FakeOAuthClient.last_passwordless_profile == {
+        "email": "profiled@example.com",
+        "device_id": "device-1",
+        "user_agent": "ua",
+        "sec_ch_ua": "sec",
+        "impersonate": "chrome",
+        "first_name": "Alice",
+        "last_name": "Walker",
+        "birthdate": "1999-02-03",
+    }
 
 
 def test_oauth_completion_retries_after_global_backoff_until_success(monkeypatch):

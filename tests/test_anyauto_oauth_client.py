@@ -1,4 +1,5 @@
 from src.core.anyauto.oauth_client import OAuthClient
+from src.core.anyauto.utils import FlowState
 
 
 def test_oauth_client_normalizes_full_authorize_url_to_issuer():
@@ -113,3 +114,88 @@ def test_bootstrap_oauth_session_falls_back_to_direct_session_on_transport_error
 
     assert final_url == "https://auth.openai.com/log-in"
     assert type(client.session).__name__ == "DirectSession"
+
+
+def test_login_passwordless_completes_about_you_before_token_exchange(monkeypatch):
+    client = OAuthClient(
+        config={
+            "oauth_issuer": "https://auth.openai.com",
+            "oauth_client_id": "client-1",
+            "oauth_redirect_uri": "http://localhost:1455/auth/callback",
+        },
+        verbose=False,
+    )
+
+    captured = {}
+
+    monkeypatch.setattr(client, "_bootstrap_oauth_session", lambda *args, **kwargs: "https://auth.openai.com/log-in")
+    monkeypatch.setattr(
+        client,
+        "_submit_authorize_continue",
+        lambda *args, **kwargs: FlowState(
+            page_type="login_password",
+            current_url="https://auth.openai.com/log-in/password",
+        ),
+    )
+    monkeypatch.setattr(client, "_send_email_otp", lambda *args, **kwargs: (True, ""))
+    monkeypatch.setattr(
+        client,
+        "_handle_otp_verification",
+        lambda *args, **kwargs: FlowState(
+            page_type="about_you",
+            current_url="https://auth.openai.com/about-you",
+        ),
+    )
+
+    def fake_complete_about_you_profile(state, device_id, user_agent=None, sec_ch_ua=None, impersonate=None, first_name=None, last_name=None, birthdate=None):
+        captured.update(
+            {
+                "state": state.page_type,
+                "device_id": device_id,
+                "user_agent": user_agent,
+                "sec_ch_ua": sec_ch_ua,
+                "impersonate": impersonate,
+                "first_name": first_name,
+                "last_name": last_name,
+                "birthdate": birthdate,
+            }
+        )
+        return FlowState(
+            page_type="oauth_callback",
+            current_url="http://localhost:1455/auth/callback?code=passwordless-code",
+        )
+
+    monkeypatch.setattr(client, "_complete_about_you_profile", fake_complete_about_you_profile)
+    monkeypatch.setattr(
+        client,
+        "_exchange_code_for_tokens",
+        lambda code, code_verifier, user_agent=None, impersonate=None: {
+            "access_token": "access-from-about-you",
+            "refresh_token": "refresh-from-about-you",
+            "code": code,
+        },
+    )
+
+    tokens = client.login_passwordless_and_get_tokens(
+        "tester@example.com",
+        "device-about-you",
+        user_agent="ua-about-you",
+        sec_ch_ua="sec-about-you",
+        impersonate="chrome-about-you",
+        skymail_client=object(),
+        first_name="Alice",
+        last_name="Walker",
+        birthdate="1999-02-03",
+    )
+
+    assert tokens["refresh_token"] == "refresh-from-about-you"
+    assert captured == {
+        "state": "about_you",
+        "device_id": "device-about-you",
+        "user_agent": "ua-about-you",
+        "sec_ch_ua": "sec-about-you",
+        "impersonate": "chrome-about-you",
+        "first_name": "Alice",
+        "last_name": "Walker",
+        "birthdate": "1999-02-03",
+    }

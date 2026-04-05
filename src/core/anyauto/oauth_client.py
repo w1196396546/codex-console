@@ -374,6 +374,10 @@ class OAuthClient:
         target = f"{state.continue_url} {state.current_url}".lower()
         return state.page_type == "add_phone" or "add-phone" in target
 
+    def _state_is_about_you(self, state: FlowState):
+        target = f"{state.continue_url} {state.current_url}".lower()
+        return state.page_type == "about_you" or "about-you" in target
+
     def _state_requires_navigation(self, state: FlowState):
         method = (state.method or "GET").upper()
         if method != "GET":
@@ -469,6 +473,102 @@ class OAuthClient:
             return None, next_state
 
         return None, self._state_from_url(last_url or current_url)
+
+    def _complete_about_you_profile(
+        self,
+        state: FlowState,
+        device_id,
+        user_agent=None,
+        sec_ch_ua=None,
+        impersonate=None,
+        first_name=None,
+        last_name=None,
+        birthdate=None,
+    ):
+        first = str(first_name or "").strip()
+        last = str(last_name or "").strip()
+        birthday = str(birthdate or "").strip()
+        if not first or not last or not birthday:
+            self._set_error("Passwordless OAuth 进入 about_you，但缺少注册资料")
+            return None
+
+        name = f"{first} {last}".strip()
+        url = f"{self.oauth_issuer}/api/accounts/create_account"
+        referer = state.current_url or f"{self.oauth_issuer}/about-you"
+        self._log(f"提交 about_you 注册资料: {name}, {birthday}")
+
+        sentinel_token = build_sentinel_token(
+            self.session,
+            device_id,
+            flow="authorize_continue",
+            user_agent=user_agent,
+            sec_ch_ua=sec_ch_ua,
+            impersonate=impersonate,
+        )
+        if sentinel_token:
+            self._log("about_you: 已生成 sentinel token")
+        else:
+            self._log("about_you: 未生成 sentinel token，降级继续请求")
+
+        headers = self._headers(
+            url,
+            user_agent=user_agent,
+            sec_ch_ua=sec_ch_ua,
+            accept="application/json",
+            referer=referer,
+            origin=self.oauth_issuer,
+            content_type="application/json",
+            fetch_site="same-origin",
+            extra_headers={
+                "oai-device-id": device_id,
+            },
+        )
+        if sentinel_token:
+            headers["openai-sentinel-token"] = sentinel_token
+        headers.update(generate_datadog_trace())
+
+        kwargs = {
+            "json": {
+                "name": name,
+                "birthdate": birthday,
+            },
+            "headers": headers,
+            "timeout": 30,
+        }
+        if impersonate:
+            kwargs["impersonate"] = impersonate
+
+        try:
+            self._browser_pause()
+            r = self._request_with_transport_fallback(
+                "post",
+                url,
+                request_label="提交 about_you 注册资料",
+                **kwargs,
+            )
+        except Exception as exc:
+            self._set_error(f"提交注册资料异常: {exc}")
+            return None
+
+        if r.status_code == 200:
+            try:
+                data = r.json()
+            except Exception:
+                data = {}
+            next_state = self._state_from_payload(
+                data,
+                current_url=str(getattr(r, "url", "") or referer),
+            )
+            self._log(f"about_you -> {describe_flow_state(next_state)}")
+            return next_state
+
+        error_text = ""
+        try:
+            error_text = str(getattr(r, "text", "") or "")[:200]
+        except Exception:
+            error_text = ""
+        self._set_error(f"提交注册资料失败: {r.status_code} - {error_text}")
+        return None
 
     def _bootstrap_oauth_session(self, authorize_url, authorize_params, device_id=None, user_agent=None, sec_ch_ua=None, impersonate=None):
         """启动 OAuth 会话，确保 auth 域上的 login_session 已建立。"""
@@ -909,7 +1009,18 @@ class OAuthClient:
         self._set_error("OAuth 状态机超出最大步数")
         return None
 
-    def login_passwordless_and_get_tokens(self, email, device_id, user_agent=None, sec_ch_ua=None, impersonate=None, skymail_client=None):
+    def login_passwordless_and_get_tokens(
+        self,
+        email,
+        device_id,
+        user_agent=None,
+        sec_ch_ua=None,
+        impersonate=None,
+        skymail_client=None,
+        first_name=None,
+        last_name=None,
+        birthdate=None,
+    ):
         """
         使用 passwordless 邮箱 OTP 完成 OAuth 登录流程，获取 tokens。
         """
@@ -1019,6 +1130,26 @@ class OAuthClient:
             if self._state_is_add_phone(state):
                 self._set_error("add_phone_required")
                 return None
+
+            if self._state_is_about_you(state):
+                next_state = self._complete_about_you_profile(
+                    state,
+                    device_id,
+                    user_agent=user_agent,
+                    sec_ch_ua=sec_ch_ua,
+                    impersonate=impersonate,
+                    first_name=first_name,
+                    last_name=last_name,
+                    birthdate=birthdate,
+                )
+                if not next_state:
+                    if not self.last_error:
+                        self._set_error("Passwordless OAuth about_you 提交失败")
+                    return None
+                referer = state.current_url or f"{self.oauth_issuer}/about-you"
+                state = next_state
+                self._log(f"about_you state -> {describe_flow_state(state)}")
+                continue
 
             if self._state_requires_navigation(state):
                 code, next_state = self._follow_flow_state(

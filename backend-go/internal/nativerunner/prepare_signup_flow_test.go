@@ -130,8 +130,24 @@ func TestPrepareSignupFlowCompletesRegistrationAndBuildsPersistence(t *testing.T
 	if got := result.Result["access_token"]; got != "access-123" {
 		t.Fatalf("expected access token in result, got %#v", got)
 	}
+	if got := result.Result["refresh_token"]; got != "refresh-123" {
+		t.Fatalf("expected refresh token in result, got %#v", got)
+	}
 	if got := result.Result["session_token"]; got != "session-123" {
 		t.Fatalf("expected session token in result, got %#v", got)
+	}
+	metadata, ok := result.Result["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected metadata map, got %#v", result.Result["metadata"])
+	}
+	if metadata["auth_provider"] != "openai" {
+		t.Fatalf("expected auth_provider metadata, got %#v", metadata)
+	}
+	if metadata["refresh_token_source"] != "create_account" {
+		t.Fatalf("expected create_account refresh token source, got %#v", metadata)
+	}
+	if metadata["has_session_token"] != true {
+		t.Fatalf("expected has_session_token=true, got %#v", metadata)
 	}
 
 	inboxResult, ok := result.Result["inbox"].(map[string]any)
@@ -192,6 +208,9 @@ func TestPrepareSignupFlowCompletesRegistrationAndBuildsPersistence(t *testing.T
 		got.Status != accounts.DefaultAccountStatus ||
 		got.Source != accounts.DefaultAccountSource {
 		t.Fatalf("unexpected account persistence payload: %+v", got)
+	}
+	if result.AccountPersistence.ExtraData["refresh_token_source"] != "create_account" {
+		t.Fatalf("expected create_account refresh token source in persistence extra data, got %#v", result.AccountPersistence.ExtraData)
 	}
 
 	if len(logs) != 2 {
@@ -507,6 +526,133 @@ func TestPrepareSignupFlowDispatchesTokenCompletionForExistingAccountWithoutRefr
 		got.AccountID != "account-123" ||
 		got.WorkspaceID != "workspace-123" {
 		t.Fatalf("unexpected account persistence payload: %+v", got)
+	}
+}
+
+func TestPrepareSignupFlowDispatchesPasswordTokenCompletionForUserExistsWithHistoricalPassword(t *testing.T) {
+	t.Parallel()
+
+	postSignupClient := &stubAuthPostSignupClient{
+		verifyResult: auth.PrepareSignupResult{
+			CSRFToken:    "csrf-123",
+			AuthorizeURL: "https://auth.example.com/authorize",
+			FinalURL:     "https://auth.example.com/about-you",
+			FinalPath:    "/about-you",
+			ContinueURL:  "https://auth.example.com/about-you",
+			PageType:     "about_you",
+		},
+		createResult: auth.CreateAccountResult{
+			StatusCode:   200,
+			FinalURL:     "https://auth.example.com/user-exists",
+			FinalPath:    "/user-exists",
+			PageType:     "user_exists",
+			ContinueURL:  "https://auth.example.com/api/auth/callback/openai?code=user-exists",
+			CallbackURL:  "https://auth.example.com/api/auth/callback/openai?code=user-exists",
+			AccountID:    "account-created",
+			WorkspaceID:  "workspace-created",
+			RefreshToken: "",
+		},
+		continueErr: errors.New("unexpected continue create account call"),
+		sessionErr:  errors.New("unexpected read session call"),
+	}
+	tokenCompletion := &stubPrepareSignupFlowTokenCompletionCoordinator{
+		result: TokenCompletionResult{
+			State:    TokenCompletionStateCompleted,
+			Email:    "signup@example.com",
+			Strategy: TokenCompletionStrategyPassword,
+			Provider: TokenCompletionProviderResult{
+				AccessToken:  "access-from-login",
+				RefreshToken: "refresh-from-login",
+				SessionToken: "session-from-login",
+				AccountID:    "account-from-login",
+				WorkspaceID:  "workspace-from-login",
+			},
+		},
+	}
+
+	flow := NewPrepareSignupFlow(PrepareSignupFlowOptions{
+		PreparerFactory: SignupPreparerFactoryFunc(func(context.Context, FlowRequest) (SignupPreparer, error) {
+			return SignupPreparerFunc(func(context.Context, string) (SignupPreparation, error) {
+				return SignupPreparation{
+					CSRFToken:    "csrf-123",
+					AuthorizeURL: "https://auth.example.com/authorize",
+					FinalURL:     "https://auth.example.com/email-verification",
+					FinalPath:    "/email-verification",
+					PageType:     "email_otp_verification",
+					Password:     "Password123!",
+				}, nil
+			}), nil
+		}),
+		PostSignupClientFactory: AuthPostSignupClientFactoryFunc(func(context.Context, FlowRequest) (AuthPostSignupClient, error) {
+			return postSignupClient, nil
+		}),
+		AccountProfileProvider: AccountProfileProviderFunc(func(context.Context, FlowRequest) (AccountProfile, error) {
+			return AccountProfile{FirstName: "Teammate", LastName: "Example", Birthdate: "1990-01-02"}, nil
+		}),
+		ClientIDResolver: ClientIDResolverFunc(func(context.Context, FlowRequest) (string, error) {
+			return "client-123", nil
+		}),
+		HistoricalPasswordProvider: HistoricalPasswordProviderFunc(func(context.Context, FlowRequest, string) (string, error) {
+			return "known-pass", nil
+		}),
+		TokenCompletionCoordinator: tokenCompletion,
+	})
+
+	result, err := flow.Run(context.Background(), FlowRequest{
+		RunnerRequest: registration.RunnerRequest{
+			TaskUUID: "task-user-exists-token-completion",
+			StartRequest: registration.StartRequest{
+				EmailServiceType: "tempmail",
+			},
+		},
+		MailProvider: &stubPrepareSignupFlowMailProvider{code: "123456"},
+		Inbox:        mail.Inbox{Email: "signup@example.com", Token: "mail-token-1"},
+	})
+	if err != nil {
+		t.Fatalf("run flow: %v", err)
+	}
+
+	if tokenCompletion.calls != 1 {
+		t.Fatalf("expected token completion coordinator called once, got %d", tokenCompletion.calls)
+	}
+	if tokenCompletion.lastCommand.Account.Password != "known-pass" {
+		t.Fatalf("expected historical password forwarded to token completion, got %+v", tokenCompletion.lastCommand)
+	}
+	if tokenCompletion.lastCommand.PageType != "user_exists" {
+		t.Fatalf("expected user_exists page type forwarded, got %+v", tokenCompletion.lastCommand)
+	}
+
+	if got := result.Result["source"]; got != "login" {
+		t.Fatalf("expected login source in result, got %#v", got)
+	}
+	if got := result.Result["refresh_token"]; got != "refresh-from-login" {
+		t.Fatalf("expected refresh token in result, got %#v", got)
+	}
+	metadata, ok := result.Result["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected metadata map in result, got %#v", result.Result["metadata"])
+	}
+	if metadata["existing_account_detected"] != true {
+		t.Fatalf("expected existing_account_detected metadata, got %#v", metadata)
+	}
+	if metadata["refresh_token_source"] != "oauth_password" {
+		t.Fatalf("expected oauth_password refresh token source, got %#v", metadata)
+	}
+
+	if result.AccountPersistence == nil {
+		t.Fatal("expected account persistence payload")
+	}
+	if result.AccountPersistence.Password != "known-pass" {
+		t.Fatalf("expected persistence password from historical password, got %+v", result.AccountPersistence)
+	}
+	if result.AccountPersistence.Source != "login" {
+		t.Fatalf("expected login source for existing-account persistence, got %+v", result.AccountPersistence)
+	}
+	if result.AccountPersistence.ExtraData["existing_account_detected"] != true {
+		t.Fatalf("expected persistence existing_account_detected extra data, got %#v", result.AccountPersistence.ExtraData)
+	}
+	if result.AccountPersistence.ExtraData["token_completion_mode"] != "password" {
+		t.Fatalf("expected password token completion mode in persistence extra data, got %#v", result.AccountPersistence.ExtraData)
 	}
 }
 

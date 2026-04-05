@@ -45,6 +45,8 @@ func (r *PostgresRepository) ListAccounts(ctx context.Context, req ListAccountsR
 			cpa_uploaded_at,
 			COALESCE(sub2api_uploaded, FALSE),
 			sub2api_uploaded_at,
+			last_refresh,
+			expires_at,
 			COALESCE(status, ''),
 			registered_at,
 			created_at,
@@ -66,6 +68,8 @@ func (r *PostgresRepository) ListAccounts(ctx context.Context, req ListAccountsR
 			cpaUploadedAt     *time.Time
 			sub2apiUploaded   bool
 			sub2apiUploadedAt *time.Time
+			lastRefresh       *time.Time
+			expiresAt         *time.Time
 			registeredAt      *time.Time
 			createdAt         *time.Time
 			updatedAt         *time.Time
@@ -78,6 +82,8 @@ func (r *PostgresRepository) ListAccounts(ctx context.Context, req ListAccountsR
 			&cpaUploadedAt,
 			&sub2apiUploaded,
 			&sub2apiUploadedAt,
+			&lastRefresh,
+			&expiresAt,
 			&account.Status,
 			&registeredAt,
 			&createdAt,
@@ -90,6 +96,8 @@ func (r *PostgresRepository) ListAccounts(ctx context.Context, req ListAccountsR
 		account.CPAUploadedAt = cpaUploadedAt
 		account.Sub2APIUploaded = sub2apiUploaded
 		account.Sub2APIUploadedAt = sub2apiUploadedAt
+		account.LastRefresh = lastRefresh
+		account.ExpiresAt = expiresAt
 		account.RegisteredAt = registeredAt
 		account.CreatedAt = createdAt
 		account.UpdatedAt = updatedAt
@@ -123,9 +131,13 @@ func (r *PostgresRepository) GetAccountByEmail(ctx context.Context, email string
 			cpa_uploaded_at,
 			COALESCE(sub2api_uploaded, FALSE),
 			sub2api_uploaded_at,
+			last_refresh,
+			expires_at,
 			COALESCE(extra_data::text, '{}'),
 			COALESCE(status, ''),
 			COALESCE(source, ''),
+			COALESCE(subscription_type, ''),
+			subscription_at,
 			registered_at,
 			created_at,
 			updated_at
@@ -167,12 +179,16 @@ func (r *PostgresRepository) UpsertAccount(ctx context.Context, account Account)
 			cpa_uploaded_at,
 			sub2api_uploaded,
 			sub2api_uploaded_at,
+			last_refresh,
+			expires_at,
 			extra_data,
 			status,
 			source,
+			subscription_type,
+			subscription_at,
 			registered_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25
 		)
 		ON CONFLICT (email) DO UPDATE SET
 			password = EXCLUDED.password,
@@ -191,9 +207,13 @@ func (r *PostgresRepository) UpsertAccount(ctx context.Context, account Account)
 			cpa_uploaded_at = EXCLUDED.cpa_uploaded_at,
 			sub2api_uploaded = EXCLUDED.sub2api_uploaded,
 			sub2api_uploaded_at = EXCLUDED.sub2api_uploaded_at,
+			last_refresh = EXCLUDED.last_refresh,
+			expires_at = EXCLUDED.expires_at,
 			extra_data = EXCLUDED.extra_data,
 			status = EXCLUDED.status,
 			source = EXCLUDED.source,
+			subscription_type = EXCLUDED.subscription_type,
+			subscription_at = EXCLUDED.subscription_at,
 			registered_at = EXCLUDED.registered_at,
 			updated_at = NOW()
 		RETURNING
@@ -215,13 +235,17 @@ func (r *PostgresRepository) UpsertAccount(ctx context.Context, account Account)
 			cpa_uploaded_at,
 			COALESCE(sub2api_uploaded, FALSE),
 			sub2api_uploaded_at,
+			last_refresh,
+			expires_at,
 			COALESCE(extra_data::text, '{}'),
 			COALESCE(status, ''),
 			COALESCE(source, ''),
+			COALESCE(subscription_type, ''),
+			subscription_at,
 			registered_at,
 			created_at,
 			updated_at
-	`, account.Email, account.Password, account.ClientID, account.SessionToken, account.EmailService, account.EmailServiceID, account.AccountID, account.WorkspaceID, account.AccessToken, account.RefreshToken, account.IDToken, account.Cookies, account.ProxyUsed, account.CPAUploaded, account.CPAUploadedAt, account.Sub2APIUploaded, account.Sub2APIUploadedAt, extraDataJSON, account.Status, account.Source, account.RegisteredAt))
+	`, account.Email, account.Password, account.ClientID, account.SessionToken, account.EmailService, account.EmailServiceID, account.AccountID, account.WorkspaceID, account.AccessToken, account.RefreshToken, account.IDToken, account.Cookies, account.ProxyUsed, account.CPAUploaded, account.CPAUploadedAt, account.Sub2APIUploaded, account.Sub2APIUploadedAt, account.LastRefresh, account.ExpiresAt, extraDataJSON, account.Status, account.Source, account.SubscriptionType, account.SubscriptionAt, account.RegisteredAt))
 	if err != nil {
 		return Account{}, fmt.Errorf("upsert account: %w", err)
 	}
@@ -250,7 +274,10 @@ func scanAccount(scanner accountScanner) (Account, error) {
 		cpaUploadedAt     *time.Time
 		sub2apiUploaded   bool
 		sub2apiUploadedAt *time.Time
+		lastRefresh       *time.Time
+		expiresAt         *time.Time
 		registeredAt      *time.Time
+		subscriptionAt    *time.Time
 		createdAt         *time.Time
 		updatedAt         *time.Time
 	)
@@ -274,9 +301,13 @@ func scanAccount(scanner accountScanner) (Account, error) {
 		&cpaUploadedAt,
 		&sub2apiUploaded,
 		&sub2apiUploadedAt,
+		&lastRefresh,
+		&expiresAt,
 		&extraDataRaw,
 		&account.Status,
 		&account.Source,
+		&account.SubscriptionType,
+		&subscriptionAt,
 		&registeredAt,
 		&createdAt,
 		&updatedAt,
@@ -293,7 +324,10 @@ func scanAccount(scanner accountScanner) (Account, error) {
 	account.CPAUploadedAt = cpaUploadedAt
 	account.Sub2APIUploaded = sub2apiUploaded
 	account.Sub2APIUploadedAt = sub2apiUploadedAt
+	account.LastRefresh = lastRefresh
+	account.ExpiresAt = expiresAt
 	account.RegisteredAt = registeredAt
+	account.SubscriptionAt = subscriptionAt
 	account.CreatedAt = createdAt
 	account.UpdatedAt = updatedAt
 

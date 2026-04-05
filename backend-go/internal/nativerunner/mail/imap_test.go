@@ -131,7 +131,7 @@ func TestDefaultIMAPExtractorRequiresOpenAIVerificationMail(t *testing.T) {
 			Subject: "Verification code 123456",
 			Body:    "Use 123456 to continue.",
 		},
-	}, regexp.MustCompile(`\b(\d{6})\b`))
+	}, Inbox{}, regexp.MustCompile(`\b(\d{6})\b`))
 
 	if found {
 		t.Fatalf("expected no code, got %q", code)
@@ -148,13 +148,180 @@ func TestDefaultIMAPExtractorPrefersSubjectThenBody(t *testing.T) {
 			Subject: "Your verification code is 654321",
 			Body:    "Your verification code is 123456.",
 		},
-	}, regexp.MustCompile(`\b(\d{6})\b`))
+	}, Inbox{}, regexp.MustCompile(`\b(\d{6})\b`))
 
 	if !found {
 		t.Fatal("expected verification code to be found")
 	}
 	if code != "654321" {
 		t.Fatalf("expected subject code 654321, got %q", code)
+	}
+}
+
+func TestIMAPMailWaitCodeSkipsMessagesBeforeOTPSentAt(t *testing.T) {
+	t.Parallel()
+
+	sentAt := time.Date(2025, 3, 3, 10, 0, 0, 0, time.UTC)
+	provider := NewIMAPMail(IMAPConfig{
+		Email: "native@example.com",
+		Fetcher: func(ctx context.Context, inbox Inbox) ([]IMAPMessage, error) {
+			return []IMAPMessage{
+				{
+					ID:         "older-message",
+					From:       "OpenAI <noreply@openai.com>",
+					Subject:    "Your verification code is 111111",
+					Body:       "Your verification code is 111111.",
+					ReceivedAt: sentAt.Add(-15 * time.Second),
+				},
+				{
+					ID:         "fresh-message",
+					From:       "OpenAI <noreply@openai.com>",
+					Subject:    "Your verification code is 222222",
+					Body:       "Your verification code is 222222.",
+					ReceivedAt: sentAt.Add(2 * time.Second),
+				},
+			}, nil
+		},
+	})
+
+	code, err := provider.WaitCode(context.Background(), Inbox{
+		Email:     "native@example.com",
+		OTPSentAt: sentAt,
+	}, DefaultCodePattern)
+	if err != nil {
+		t.Fatalf("wait code with otp sent at: %v", err)
+	}
+	if code != "222222" {
+		t.Fatalf("expected newer code 222222, got %q", code)
+	}
+}
+
+func TestIMAPMailWaitCodeDeduplicatesFingerprintsAcrossCalls(t *testing.T) {
+	t.Parallel()
+
+	provider := NewIMAPMail(IMAPConfig{
+		Email:        "native@example.com",
+		PollInterval: 5 * time.Millisecond,
+		Fetcher: func(ctx context.Context, inbox Inbox) ([]IMAPMessage, error) {
+			return []IMAPMessage{
+				{
+					ID:         "<same-message-id@example.com>",
+					From:       "OpenAI <noreply@openai.com>",
+					Subject:    "Your verification code is 123456",
+					Body:       "Your verification code is 123456.",
+					ReceivedAt: time.Date(2025, 3, 3, 10, 0, 0, 0, time.UTC),
+				},
+			}, nil
+		},
+	})
+
+	code, err := provider.WaitCode(context.Background(), Inbox{Email: "native@example.com"}, DefaultCodePattern)
+	if err != nil {
+		t.Fatalf("first wait code: %v", err)
+	}
+	if code != "123456" {
+		t.Fatalf("expected first code 123456, got %q", code)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, err = provider.WaitCode(ctx, Inbox{Email: "native@example.com"}, DefaultCodePattern)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected duplicate code to be ignored until context deadline, got %v", err)
+	}
+}
+
+func TestIMAPMailWaitCodeResetsFallbackCodeDedupeForNewOTPStage(t *testing.T) {
+	t.Parallel()
+
+	sentAt := time.Date(2025, 3, 3, 10, 0, 0, 0, time.UTC)
+	provider := NewIMAPMail(IMAPConfig{
+		Email:        "native@example.com",
+		PollInterval: 5 * time.Millisecond,
+		Fetcher: func(ctx context.Context, inbox Inbox) ([]IMAPMessage, error) {
+			return []IMAPMessage{
+				{
+					From:    "OpenAI <noreply@openai.com>",
+					Subject: "Your verification code is 654321",
+					Body:    "Your verification code is 654321.",
+				},
+			}, nil
+		},
+	})
+
+	code, err := provider.WaitCode(context.Background(), Inbox{
+		Email:     "native@example.com",
+		OTPSentAt: sentAt,
+	}, DefaultCodePattern)
+	if err != nil {
+		t.Fatalf("first wait code for stage one: %v", err)
+	}
+	if code != "654321" {
+		t.Fatalf("expected first stage code 654321, got %q", code)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, err = provider.WaitCode(ctx, Inbox{
+		Email:     "native@example.com",
+		OTPSentAt: sentAt,
+	}, DefaultCodePattern)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected repeated stage to skip fallback duplicate, got %v", err)
+	}
+
+	code, err = provider.WaitCode(context.Background(), Inbox{
+		Email:     "native@example.com",
+		OTPSentAt: sentAt.Add(10 * time.Second),
+	}, DefaultCodePattern)
+	if err != nil {
+		t.Fatalf("wait code for new otp stage: %v", err)
+	}
+	if code != "654321" {
+		t.Fatalf("expected same fallback code to be accepted for a new stage, got %q", code)
+	}
+}
+
+func TestParseFetchedMessageDecodesHeadersAndExtractsHTMLBody(t *testing.T) {
+	t.Parallel()
+
+	raw := strings.Join([]string{
+		"From: =?UTF-8?Q?OpenAI_=E5=AE=89=E5=85=A8?= <noreply@openai.com>",
+		"Subject: =?UTF-8?Q?Your_=E9=AA=8C=E8=AF=81_code?=",
+		"Date: Mon, 03 Mar 2025 10:00:00 +0000",
+		"Message-ID: <decoded-message-id@example.com>",
+		"MIME-Version: 1.0",
+		"Content-Type: multipart/alternative; boundary=\"mail-boundary\"",
+		"",
+		"--mail-boundary",
+		"Content-Type: text/html; charset=UTF-8",
+		"Content-Transfer-Encoding: quoted-printable",
+		"",
+		"<html><body>Your&nbsp;verification <b>code</b> is <strong>246810</strong>.</body></html>",
+		"--mail-boundary--",
+		"",
+	}, "\r\n")
+
+	message, err := parseFetchedMessage("101", raw)
+	if err != nil {
+		t.Fatalf("parse fetched message: %v", err)
+	}
+	if message.ID != "<decoded-message-id@example.com>" {
+		t.Fatalf("expected message-id to win over uid fallback, got %q", message.ID)
+	}
+	if message.Subject != "Your 验证 code" {
+		t.Fatalf("expected decoded subject, got %q", message.Subject)
+	}
+	if message.From != "OpenAI 安全 <noreply@openai.com>" {
+		t.Fatalf("expected decoded from header, got %q", message.From)
+	}
+	if strings.Contains(message.Body, "<html") || strings.Contains(message.Body, "<strong>") {
+		t.Fatalf("expected html tags stripped from body, got %q", message.Body)
+	}
+	if !strings.Contains(message.Body, "Your verification code is 246810.") {
+		t.Fatalf("expected extracted html body content, got %q", message.Body)
 	}
 }
 

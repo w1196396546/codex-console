@@ -36,6 +36,8 @@ type Account struct {
 	IDToken           string         `json:"id_token,omitempty"`
 	Cookies           string         `json:"cookies,omitempty"`
 	ProxyUsed         string         `json:"proxy_used,omitempty"`
+	LastRefresh       *time.Time     `json:"last_refresh,omitempty"`
+	ExpiresAt         *time.Time     `json:"expires_at,omitempty"`
 	ExtraData         map[string]any `json:"extra_data,omitempty"`
 	CPAUploaded       bool           `json:"cpa_uploaded,omitempty"`
 	CPAUploadedAt     *time.Time     `json:"cpa_uploaded_at,omitempty"`
@@ -43,6 +45,8 @@ type Account struct {
 	Sub2APIUploadedAt *time.Time     `json:"sub2api_uploaded_at,omitempty"`
 	Status            string         `json:"status"`
 	Source            string         `json:"source,omitempty"`
+	SubscriptionType  string         `json:"subscription_type,omitempty"`
+	SubscriptionAt    *time.Time     `json:"subscription_at,omitempty"`
 	RegisteredAt      *time.Time     `json:"registered_at,omitempty"`
 	CreatedAt         *time.Time     `json:"created_at,omitempty"`
 	UpdatedAt         *time.Time     `json:"updated_at,omitempty"`
@@ -67,6 +71,8 @@ type UpsertAccountRequest struct {
 	IDToken           string         `json:"id_token,omitempty"`
 	Cookies           string         `json:"cookies,omitempty"`
 	ProxyUsed         string         `json:"proxy_used,omitempty"`
+	LastRefresh       *time.Time     `json:"last_refresh,omitempty"`
+	ExpiresAt         *time.Time     `json:"expires_at,omitempty"`
 	ExtraData         map[string]any `json:"extra_data,omitempty"`
 	CPAUploaded       *bool          `json:"cpa_uploaded,omitempty"`
 	CPAUploadedAt     *time.Time     `json:"cpa_uploaded_at,omitempty"`
@@ -74,6 +80,8 @@ type UpsertAccountRequest struct {
 	Sub2APIUploadedAt *time.Time     `json:"sub2api_uploaded_at,omitempty"`
 	Status            string         `json:"status,omitempty"`
 	Source            string         `json:"source,omitempty"`
+	SubscriptionType  string         `json:"subscription_type,omitempty"`
+	SubscriptionAt    *time.Time     `json:"subscription_at,omitempty"`
 	RegisteredAt      *time.Time     `json:"registered_at,omitempty"`
 }
 
@@ -125,8 +133,12 @@ func (r UpsertAccountRequest) Normalized(now time.Time) (UpsertAccountRequest, e
 	normalized.ProxyUsed = strings.TrimSpace(normalized.ProxyUsed)
 	normalized.Status = strings.TrimSpace(normalized.Status)
 	normalized.Source = strings.TrimSpace(normalized.Source)
+	normalized.SubscriptionType = strings.TrimSpace(normalized.SubscriptionType)
+	normalized.LastRefresh = cloneTimePtr(normalized.LastRefresh)
+	normalized.ExpiresAt = cloneTimePtr(normalized.ExpiresAt)
 	normalized.CPAUploadedAt = cloneTimePtr(normalized.CPAUploadedAt)
 	normalized.Sub2APIUploadedAt = cloneTimePtr(normalized.Sub2APIUploadedAt)
+	normalized.SubscriptionAt = cloneTimePtr(normalized.SubscriptionAt)
 
 	if normalized.Status == "" {
 		normalized.Status = DefaultAccountStatus
@@ -158,11 +170,15 @@ func (r UpsertAccountRequest) ToAccount() Account {
 		IDToken:           r.IDToken,
 		Cookies:           r.Cookies,
 		ProxyUsed:         r.ProxyUsed,
+		LastRefresh:       cloneTimePtr(r.LastRefresh),
+		ExpiresAt:         cloneTimePtr(r.ExpiresAt),
 		ExtraData:         cloneExtraData(r.ExtraData),
 		CPAUploadedAt:     cloneTimePtr(r.CPAUploadedAt),
 		Sub2APIUploadedAt: cloneTimePtr(r.Sub2APIUploadedAt),
 		Status:            r.Status,
 		Source:            r.Source,
+		SubscriptionType:  r.SubscriptionType,
+		SubscriptionAt:    cloneTimePtr(r.SubscriptionAt),
 		RegisteredAt:      cloneTimePtr(r.RegisteredAt),
 	}
 	if r.CPAUploaded != nil {

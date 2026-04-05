@@ -133,12 +133,193 @@ func TestEmailServicesTypeCatalogPreservesKnownTypes(t *testing.T) {
 	}
 }
 
+func TestEmailServicesWriteOperationsPreservePythonContracts(t *testing.T) {
+	t.Parallel()
+
+	existing := EmailServiceRecord{
+		ID:          1,
+		ServiceType: ServiceTypeOutlook,
+		Name:        "owner@example.com",
+		Enabled:     true,
+		Priority:    5,
+		Config: map[string]any{
+			"email":    "owner@example.com",
+			"password": "secret-password",
+		},
+	}
+
+	repo := &fakeRepository{
+		services: []EmailServiceRecord{existing},
+	}
+	tester := &fakeTester{
+		results: map[string]ServiceTestResult{
+			ServiceTypeOutlook: {Success: true, Message: "服务连接正常"},
+		},
+	}
+
+	svc := NewService(repo, tester)
+
+	created, err := svc.CreateService(context.Background(), CreateServiceRequest{
+		ServiceType: ServiceTypeDuckMail,
+		Name:        "duck-primary",
+		Config: map[string]any{
+			"base_url":       "https://duckmail.example",
+			"default_domain": "duckmail.sbs",
+			"api_key":        "duck-key",
+		},
+		Enabled:  true,
+		Priority: 3,
+	})
+	if err != nil {
+		t.Fatalf("create service: %v", err)
+	}
+	if created.ServiceType != ServiceTypeDuckMail || created.Config["has_api_key"] != true {
+		t.Fatalf("unexpected created service response: %+v", created)
+	}
+
+	updated, err := svc.UpdateService(context.Background(), 1, UpdateServiceRequest{
+		Name:     stringPtr("owner+updated@example.com"),
+		Enabled:  boolPtr(false),
+		Priority: intPtr(1),
+		Config: map[string]any{
+			"email":    "owner+updated@example.com",
+			"password": "",
+		},
+	})
+	if err != nil {
+		t.Fatalf("update service: %v", err)
+	}
+	if updated.Name != "owner+updated@example.com" || updated.Enabled {
+		t.Fatalf("unexpected updated service response: %+v", updated)
+	}
+	full, err := svc.GetServiceFull(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("get full service after update: %v", err)
+	}
+	if _, ok := full.Config["password"]; ok {
+		t.Fatalf("expected empty password to be removed from merged config, got %+v", full.Config)
+	}
+
+	testResult, err := svc.TestService(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("test service: %v", err)
+	}
+	if !testResult.Success || len(tester.calls) == 0 || tester.calls[0] != ServiceTypeOutlook {
+		t.Fatalf("expected native tester call for outlook service, got result=%+v calls=%+v", testResult, tester.calls)
+	}
+
+	enableResp, err := svc.EnableService(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("enable service: %v", err)
+	}
+	if !enableResp.Success || enableResp.Message != "服务 owner+updated@example.com 已启用" {
+		t.Fatalf("unexpected enable response: %+v", enableResp)
+	}
+
+	reorderResp, err := svc.ReorderServices(context.Background(), []int{created.ID, 1})
+	if err != nil {
+		t.Fatalf("reorder services: %v", err)
+	}
+	if !reorderResp.Success || repo.services[0].Priority != 1 || repo.services[1].Priority != 0 {
+		t.Fatalf("unexpected reorder response/state: resp=%+v services=%+v", reorderResp, repo.services)
+	}
+
+	deleteResp, err := svc.DeleteService(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("delete service: %v", err)
+	}
+	if !deleteResp.Success || deleteResp.Message != "服务 duck-primary 已删除" {
+		t.Fatalf("unexpected delete response: %+v", deleteResp)
+	}
+}
+
+func TestOutlookBatchImportAndTempmailDependencyStayInGo(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeRepository{
+		services: []EmailServiceRecord{
+			{
+				ID:          9,
+				ServiceType: ServiceTypeOutlook,
+				Name:        "exists@example.com",
+				Config: map[string]any{
+					"email":    "exists@example.com",
+					"password": "exists-password",
+				},
+			},
+		},
+		settings: map[string]string{
+			"tempmail.enabled":     "true",
+			"tempmail.base_url":    "https://api.tempmail.example/v2",
+			"tempmail.timeout":     "45",
+			"tempmail.max_retries": "7",
+			"yyds_mail.enabled":    "true",
+			"yyds_mail.base_url":   "https://maliapi.example/v1",
+			"yyds_mail.api_key":    "saved-key",
+		},
+	}
+	tester := &fakeTester{
+		results: map[string]ServiceTestResult{
+			ServiceTypeTempmail: {Success: true, Message: "临时邮箱连接正常"},
+			ServiceTypeYYDSMail: {Success: true, Message: "YYDS Mail 连接正常"},
+		},
+	}
+
+	svc := NewService(repo, tester)
+
+	importResp, err := svc.BatchImportOutlook(context.Background(), OutlookBatchImportRequest{
+		Data:     "new@example.com----secret\nexists@example.com----secret\nnew@example.com----duplicate\nbad-line",
+		Enabled:  true,
+		Priority: 4,
+	})
+	if err != nil {
+		t.Fatalf("batch import outlook: %v", err)
+	}
+	if importResp.Total != 4 || importResp.Success != 1 || importResp.Failed != 3 {
+		t.Fatalf("unexpected import response: %+v", importResp)
+	}
+	if len(importResp.Accounts) != 1 || importResp.Accounts[0]["has_oauth"] != false {
+		t.Fatalf("expected exactly one created outlook account, got %+v", importResp.Accounts)
+	}
+
+	deleteResp, err := svc.BatchDeleteOutlook(context.Background(), []int{9, 10})
+	if err != nil {
+		t.Fatalf("batch delete outlook: %v", err)
+	}
+	if !deleteResp.Success || deleteResp.Deleted != 2 {
+		t.Fatalf("unexpected batch delete response: %+v", deleteResp)
+	}
+
+	tempmailResp, err := svc.TestTempmail(context.Background(), TempmailTestRequest{
+		Provider: ServiceTypeTempmail,
+	})
+	if err != nil {
+		t.Fatalf("test tempmail: %v", err)
+	}
+	if !tempmailResp.Success || tester.calls[len(tester.calls)-1] != ServiceTypeTempmail {
+		t.Fatalf("expected tempmail test to stay inside Go dependency chain, got %+v calls=%+v", tempmailResp, tester.calls)
+	}
+
+	yydsResp, err := svc.TestTempmail(context.Background(), TempmailTestRequest{
+		Provider: ServiceTypeYYDSMail,
+		APIURL:   "https://override.maliapi.example/v1",
+		APIKey:   "override-key",
+	})
+	if err != nil {
+		t.Fatalf("test yyds mail: %v", err)
+	}
+	if !yydsResp.Success || tester.calls[len(tester.calls)-1] != ServiceTypeYYDSMail {
+		t.Fatalf("expected yyds tempmail test to use Go tester, got %+v calls=%+v", yydsResp, tester.calls)
+	}
+}
+
 type fakeRepository struct {
 	services     []EmailServiceRecord
 	stats        map[string]int
 	enabledCount int
 	accounts     []RegisteredAccountRecord
 	settings     map[string]string
+	nextID       int
 }
 
 func (f *fakeRepository) ListServices(context.Context, ListServicesRequest) ([]EmailServiceRecord, error) {
@@ -164,6 +345,57 @@ func (f *fakeRepository) ListRegisteredAccountsByEmails(context.Context, []strin
 	return append([]RegisteredAccountRecord(nil), f.accounts...), nil
 }
 
+func (f *fakeRepository) FindServiceByName(_ context.Context, name string) (EmailServiceRecord, bool, error) {
+	for _, service := range f.services {
+		if service.Name == name {
+			return service, true, nil
+		}
+	}
+	return EmailServiceRecord{}, false, nil
+}
+
+func (f *fakeRepository) CreateService(_ context.Context, service EmailServiceRecord) (EmailServiceRecord, error) {
+	if f.nextID == 0 {
+		f.nextID = len(f.services) + 1
+	}
+	service.ID = f.nextID
+	f.nextID++
+	f.services = append(f.services, service)
+	return service, nil
+}
+
+func (f *fakeRepository) SaveService(_ context.Context, service EmailServiceRecord) (EmailServiceRecord, error) {
+	for idx := range f.services {
+		if f.services[idx].ID == service.ID {
+			f.services[idx] = service
+			return service, nil
+		}
+	}
+	f.services = append(f.services, service)
+	return service, nil
+}
+
+func (f *fakeRepository) DeleteService(_ context.Context, serviceID int) (EmailServiceRecord, bool, error) {
+	for idx := range f.services {
+		if f.services[idx].ID == serviceID {
+			service := f.services[idx]
+			f.services = append(f.services[:idx], f.services[idx+1:]...)
+			return service, true, nil
+		}
+	}
+	return EmailServiceRecord{}, false, nil
+}
+
+func (f *fakeRepository) UpdateServicePriority(_ context.Context, serviceID int, priority int) error {
+	for idx := range f.services {
+		if f.services[idx].ID == serviceID {
+			f.services[idx].Priority = priority
+			return nil
+		}
+	}
+	return nil
+}
+
 func typeCatalogContains(items []ServiceTypeDefinition, want string) bool {
 	for _, item := range items {
 		if item.Value == want {
@@ -171,4 +403,29 @@ func typeCatalogContains(items []ServiceTypeDefinition, want string) bool {
 		}
 	}
 	return false
+}
+
+type fakeTester struct {
+	results map[string]ServiceTestResult
+	calls   []string
+}
+
+func (f *fakeTester) Test(_ context.Context, serviceType string, config map[string]any) (ServiceTestResult, error) {
+	f.calls = append(f.calls, serviceType)
+	if result, ok := f.results[serviceType]; ok {
+		return result, nil
+	}
+	return ServiceTestResult{Success: false, Message: "服务连接失败", Details: config}, nil
+}
+
+func stringPtr(value string) *string {
+	return &value
+}
+
+func boolPtr(value bool) *bool {
+	return &value
+}
+
+func intPtr(value int) *int {
+	return &value
 }

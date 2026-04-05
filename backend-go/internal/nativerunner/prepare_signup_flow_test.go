@@ -656,6 +656,106 @@ func TestPrepareSignupFlowDispatchesPasswordTokenCompletionForUserExistsWithHist
 	}
 }
 
+func TestPrepareSignupFlowContinuesWhenCreateAccountReturnsTypedUserExistsError(t *testing.T) {
+	t.Parallel()
+
+	postSignupClient := &stubAuthPostSignupClient{
+		verifyResult: auth.PrepareSignupResult{
+			CSRFToken:    "csrf-123",
+			AuthorizeURL: "https://auth.example.com/authorize",
+			FinalURL:     "https://auth.example.com/about-you",
+			FinalPath:    "/about-you",
+			ContinueURL:  "https://auth.example.com/about-you",
+			PageType:     "about_you",
+		},
+		createResult: auth.CreateAccountResult{
+			StatusCode:   409,
+			FinalURL:     "https://auth.example.com/user-exists",
+			FinalPath:    "/user-exists",
+			PageType:     "user_exists",
+			ContinueURL:  "https://auth.example.com/api/auth/callback/openai?code=user-exists",
+			CallbackURL:  "https://auth.example.com/api/auth/callback/openai?code=user-exists",
+			AccountID:    "account-created",
+			WorkspaceID:  "workspace-created",
+		},
+		createErr: &auth.CreateAccountUserExistsError{
+			StatusCode: 409,
+			Code:       "user_exists",
+			Message:    "Email already exists",
+			Result: auth.CreateAccountResult{
+				StatusCode:   409,
+				PageType:     "user_exists",
+				ContinueURL:  "https://auth.example.com/api/auth/callback/openai?code=user-exists",
+				CallbackURL:  "https://auth.example.com/api/auth/callback/openai?code=user-exists",
+				AccountID:    "account-created",
+				WorkspaceID:  "workspace-created",
+			},
+		},
+		continueErr: errors.New("unexpected continue create account call"),
+		sessionErr:  errors.New("unexpected read session call"),
+	}
+	tokenCompletion := &stubPrepareSignupFlowTokenCompletionCoordinator{
+		result: TokenCompletionResult{
+			State:    TokenCompletionStateCompleted,
+			Email:    "signup@example.com",
+			Strategy: TokenCompletionStrategyPasswordless,
+			Provider: TokenCompletionProviderResult{
+				AccessToken:  "access-from-login",
+				RefreshToken: "refresh-from-login",
+				SessionToken: "session-from-login",
+				AccountID:    "account-created",
+				WorkspaceID:  "workspace-created",
+			},
+		},
+	}
+
+	flow := NewPrepareSignupFlow(PrepareSignupFlowOptions{
+		PreparerFactory: SignupPreparerFactoryFunc(func(context.Context, FlowRequest) (SignupPreparer, error) {
+			return SignupPreparerFunc(func(context.Context, string) (SignupPreparation, error) {
+				return SignupPreparation{
+					CSRFToken:    "csrf-123",
+					AuthorizeURL: "https://auth.example.com/authorize",
+					FinalURL:     "https://auth.example.com/email-verification",
+					FinalPath:    "/email-verification",
+					PageType:     "email_otp_verification",
+					Password:     "Password123!",
+				}, nil
+			}), nil
+		}),
+		PostSignupClientFactory: AuthPostSignupClientFactoryFunc(func(context.Context, FlowRequest) (AuthPostSignupClient, error) {
+			return postSignupClient, nil
+		}),
+		AccountProfileProvider: AccountProfileProviderFunc(func(context.Context, FlowRequest) (AccountProfile, error) {
+			return AccountProfile{FirstName: "Teammate", LastName: "Example", Birthdate: "1990-01-02"}, nil
+		}),
+		ClientIDResolver: ClientIDResolverFunc(func(context.Context, FlowRequest) (string, error) {
+			return "client-123", nil
+		}),
+		TokenCompletionCoordinator: tokenCompletion,
+	})
+
+	result, err := flow.Run(context.Background(), FlowRequest{
+		RunnerRequest: registration.RunnerRequest{
+			TaskUUID: "task-user-exists-typed-error",
+			StartRequest: registration.StartRequest{
+				EmailServiceType: "tempmail",
+			},
+		},
+		MailProvider: &stubPrepareSignupFlowMailProvider{code: "123456"},
+		Inbox:        mail.Inbox{Email: "signup@example.com", Token: "mail-token-1"},
+	})
+	if err != nil {
+		t.Fatalf("run flow: %v", err)
+	}
+
+	if tokenCompletion.calls != 1 {
+		t.Fatalf("expected token completion to proceed after typed user_exists error, got %d calls", tokenCompletion.calls)
+	}
+	if got := result.Result["refresh_token"]; got != "refresh-from-login" {
+		t.Fatalf("expected token-completion refresh token, got %#v", got)
+	}
+}
+
 func TestAuthSignupPreparerChainsPrepareSignupAndSendOTP(t *testing.T) {
 	t.Parallel()
 

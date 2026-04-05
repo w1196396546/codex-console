@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -72,6 +76,89 @@ func TestAPISub2APIUploadServiceInjectsUploadAccountStore(t *testing.T) {
 	}
 	if store.markedAt == nil || !store.markedAt.Equal(uploadedAt) {
 		t.Fatalf("expected uploaded_at writeback %v, got %#v", uploadedAt, store.markedAt)
+	}
+}
+
+func TestAPISub2APIUploadWiring(t *testing.T) {
+	serviceID := 77
+	uploadedAt := time.Date(2026, 4, 5, 16, 0, 0, 0, time.UTC)
+	repo := &fakeAPIUploadAdminRepository{
+		config: uploader.ManagedServiceConfig{
+			ServiceConfig: uploader.ServiceConfig{
+				ID:         serviceID,
+				Kind:       uploader.UploadKindSub2API,
+				Name:       "Sub2API Main",
+				BaseURL:    "https://sub2api.example.com",
+				Credential: "sub2api-key",
+				TargetType: uploader.DefaultSub2APITargetType,
+				Enabled:    true,
+				Priority:   6,
+			},
+		},
+	}
+	store := &fakeAPIUploadAccountStore{
+		accounts: []uploader.UploadAccount{
+			{ID: 1, Email: "alpha@example.com", AccessToken: "access-1"},
+			{ID: 2, Email: "skip@example.com"},
+		},
+	}
+	sender := &fakeAPIUploadSender{
+		results: []uploader.UploadResult{
+			{
+				Kind:         uploader.UploadKindSub2API,
+				ServiceID:    serviceID,
+				AccountEmail: "alpha@example.com",
+				Success:      true,
+				Message:      "上传成功",
+			},
+		},
+	}
+	server := httptest.NewServer(newAPIHandler(nil, newAPIUploaderService(
+		repo,
+		store,
+		uploader.WithClock(func() time.Time { return uploadedAt }),
+		uploader.WithSenderFactory(func(kind uploader.UploadKind) (uploader.Sender, error) {
+			if kind != uploader.UploadKindSub2API {
+				t.Fatalf("unexpected sender kind %q", kind)
+			}
+			return sender, nil
+		}),
+	)))
+	defer server.Close()
+
+	payload, err := json.Marshal(map[string]any{
+		"account_ids": []int{1, 2, 999},
+		"service_id":  serviceID,
+		"concurrency": 5,
+		"priority":    80,
+	})
+	if err != nil {
+		t.Fatalf("marshal upload payload: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/sub2api-services/upload", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("post upload route: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 response, got %d", resp.StatusCode)
+	}
+
+	var result uploader.Sub2APIUploadResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode upload response: %v", err)
+	}
+	if result.SuccessCount != 1 || result.FailedCount != 1 || result.SkippedCount != 1 {
+		t.Fatalf("unexpected upload counts: %+v", result)
+	}
+	if len(result.Details) != 3 {
+		t.Fatalf("expected 3 upload details, got %+v", result.Details)
+	}
+	if result.Details[0].Error == uploader.ErrUploadAccountStoreNotConfigured.Error() {
+		t.Fatalf("unexpected store-not-configured failure leaked into route response: %+v", result.Details[0])
+	}
+	if len(store.markedIDs) != 1 || store.markedIDs[0] != 1 {
+		t.Fatalf("expected successful account writeback, got %+v", store.markedIDs)
 	}
 }
 

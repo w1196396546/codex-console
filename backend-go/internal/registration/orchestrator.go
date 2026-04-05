@@ -8,13 +8,19 @@ import (
 	"strings"
 )
 
-const PythonFallbackStageExecute = "python_execute_registration"
+const (
+	ExecuteStageRegistration   = "execute_registration"
+	PythonFallbackStageExecute = ExecuteStageRegistration
+)
 
 var (
-	errPreparationSettingsLookup = errors.New("registration preparation settings lookup failed")
-	errEmailServiceLookup        = errors.New("registration email service lookup failed")
-	errOutlookLookup             = errors.New("registration outlook lookup failed")
-	errOutlookReservation        = errors.New("registration outlook reservation failed")
+	errPreparationSettingsLookup          = errors.New("registration preparation settings lookup failed")
+	errEmailServiceLookup                 = errors.New("registration email service lookup failed")
+	errOutlookLookup                      = errors.New("registration outlook lookup failed")
+	errOutlookReservation                 = errors.New("registration outlook reservation failed")
+	errNativeUnsupportedEmailService      = errors.New("registration native flow does not support this email service")
+	errNativePreparationDependencyMissing = errors.New("registration native preparation dependency is not configured")
+	errNativeEmailServiceConfiguration    = errors.New("registration native email service configuration is unavailable")
 )
 
 type PreparationDependencies struct {
@@ -115,7 +121,7 @@ func (o *orchestrator) Prepare(ctx context.Context, taskUUID string, req StartRe
 	result := PreparationResult{
 		Request: normalized,
 		Plan: ExecutionPlan{
-			Stage: PythonFallbackStageExecute,
+			Stage: ExecuteStageRegistration,
 			Task: ExecutionTaskContext{
 				TaskUUID: strings.TrimSpace(taskUUID),
 			},
@@ -135,6 +141,9 @@ func (o *orchestrator) Prepare(ctx context.Context, taskUUID string, req StartRe
 	}
 
 	if len(normalized.EmailServiceConfig) > 0 {
+		if err := ensureSupportedNativeEmailServiceType(normalized.EmailServiceType); err != nil {
+			return PreparationResult{}, err
+		}
 		result.Plan.EmailService = PreparedEmailService{
 			Prepared:  true,
 			Type:      canonicalNativeEmailServiceType(normalized.EmailServiceType),
@@ -181,13 +190,7 @@ func (o *orchestrator) Prepare(ctx context.Context, taskUUID string, req StartRe
 		result.Plan.EmailService = prepared
 		result.Plan.Outlook = outlookPlan
 	default:
-		result.Plan.EmailService = PreparedEmailService{
-			Prepared:       false,
-			Type:           canonicalNativeEmailServiceType(normalized.EmailServiceType),
-			ServiceID:      cloneIntPointer(normalized.EmailServiceID),
-			Source:         "python_fallback",
-			FallbackReason: "go preparation does not yet resolve this email service",
-		}
+		return PreparationResult{}, ensureSupportedNativeEmailServiceType(normalized.EmailServiceType)
 	}
 
 	return result, nil
@@ -235,13 +238,7 @@ func (o *orchestrator) prepareByServiceID(
 		return nil, nil, nil
 	}
 	if o.deps.EmailServices == nil {
-		return &PreparedEmailService{
-			Prepared:       false,
-			Type:           canonicalNativeEmailServiceType(req.EmailServiceType),
-			ServiceID:      cloneIntPointer(req.EmailServiceID),
-			Source:         "python_fallback",
-			FallbackReason: "email service catalog not configured",
-		}, nil, nil
+		return nil, nil, missingNativePreparationDependency(req.EmailServiceType, "email service catalog")
 	}
 
 	services, err := o.deps.EmailServices.ListEmailServices(ctx)
@@ -259,6 +256,12 @@ func (o *orchestrator) prepareByServiceID(
 		resolvedType = req.EmailServiceType
 	}
 	resolvedType = canonicalNativeEmailServiceType(resolvedType)
+	if err := ensureSupportedNativeEmailServiceType(resolvedType); err != nil {
+		return nil, nil, err
+	}
+	if len(service.Config) == 0 {
+		return nil, nil, missingNativeEmailServiceConfiguration(resolvedType, fmt.Sprintf("email service %d has no config", *req.EmailServiceID))
+	}
 	prepared := &PreparedEmailService{
 		Prepared:  true,
 		Type:      resolvedType,
@@ -279,12 +282,7 @@ func (o *orchestrator) prepareByServiceID(
 
 func (o *orchestrator) prepareTempmail(ctx context.Context, req StartRequest, proxy ProxySelection) (PreparedEmailService, error) {
 	if o.deps.Settings == nil {
-		return PreparedEmailService{
-			Prepared:       false,
-			Type:           canonicalNativeEmailServiceType(req.EmailServiceType),
-			Source:         "python_fallback",
-			FallbackReason: "settings provider not configured",
-		}, nil
+		return PreparedEmailService{}, missingNativePreparationDependency(req.EmailServiceType, "settings provider")
 	}
 
 	settings, err := o.deps.Settings.GetSettings(ctx, []string{
@@ -297,11 +295,16 @@ func (o *orchestrator) prepareTempmail(ctx context.Context, req StartRequest, pr
 		return PreparedEmailService{}, fmt.Errorf("%w: %v", errPreparationSettingsLookup, err)
 	}
 	if !parseBoolSetting(settings["tempmail.enabled"]) {
-		return PreparedEmailService{}, errors.New("tempmail service is disabled")
+		return PreparedEmailService{}, missingNativeEmailServiceConfiguration(req.EmailServiceType, "service is disabled")
+	}
+
+	baseURL := strings.TrimSpace(settings["tempmail.base_url"])
+	if baseURL == "" {
+		return PreparedEmailService{}, missingNativeEmailServiceConfiguration(req.EmailServiceType, "base_url is not configured")
 	}
 
 	config := map[string]any{
-		"base_url": settings["tempmail.base_url"],
+		"base_url": baseURL,
 	}
 	if timeout, ok := parseOptionalInt(settings["tempmail.timeout"]); ok {
 		config["timeout"] = timeout
@@ -321,12 +324,7 @@ func (o *orchestrator) prepareTempmail(ctx context.Context, req StartRequest, pr
 
 func (o *orchestrator) prepareYYDSMail(ctx context.Context, req StartRequest, proxy ProxySelection) (PreparedEmailService, error) {
 	if o.deps.Settings == nil {
-		return PreparedEmailService{
-			Prepared:       false,
-			Type:           canonicalNativeEmailServiceType(req.EmailServiceType),
-			Source:         "python_fallback",
-			FallbackReason: "settings provider not configured",
-		}, nil
+		return PreparedEmailService{}, missingNativePreparationDependency(req.EmailServiceType, "settings provider")
 	}
 
 	settings, err := o.deps.Settings.GetSettings(ctx, []string{
@@ -341,20 +339,10 @@ func (o *orchestrator) prepareYYDSMail(ctx context.Context, req StartRequest, pr
 		return PreparedEmailService{}, fmt.Errorf("%w: %v", errPreparationSettingsLookup, err)
 	}
 	if !parseBoolSetting(settings["yyds_mail.enabled"]) {
-		return PreparedEmailService{
-			Prepared:       false,
-			Type:           canonicalNativeEmailServiceType(req.EmailServiceType),
-			Source:         "python_fallback",
-			FallbackReason: "yyds_mail service is disabled",
-		}, nil
+		return PreparedEmailService{}, missingNativeEmailServiceConfiguration(req.EmailServiceType, "service is disabled")
 	}
 	if strings.TrimSpace(settings["yyds_mail.api_key"]) == "" {
-		return PreparedEmailService{
-			Prepared:       false,
-			Type:           canonicalNativeEmailServiceType(req.EmailServiceType),
-			Source:         "python_fallback",
-			FallbackReason: "yyds_mail api_key is not configured",
-		}, nil
+		return PreparedEmailService{}, missingNativeEmailServiceConfiguration(req.EmailServiceType, "api_key is not configured")
 	}
 
 	config := map[string]any{
@@ -383,12 +371,7 @@ func (o *orchestrator) prepareConfiguredEmailServiceByType(
 	proxy ProxySelection,
 ) (PreparedEmailService, error) {
 	if o.deps.EmailServices == nil {
-		return PreparedEmailService{
-			Prepared:       false,
-			Type:           canonicalNativeEmailServiceType(req.EmailServiceType),
-			Source:         "python_fallback",
-			FallbackReason: "email service catalog not configured",
-		}, nil
+		return PreparedEmailService{}, missingNativePreparationDependency(req.EmailServiceType, "email service catalog")
 	}
 
 	services, err := o.deps.EmailServices.ListEmailServices(ctx)
@@ -398,12 +381,7 @@ func (o *orchestrator) prepareConfiguredEmailServiceByType(
 
 	service, ok := findEmailServiceByType(services, req.EmailServiceType)
 	if !ok {
-		return PreparedEmailService{
-			Prepared:       false,
-			Type:           canonicalNativeEmailServiceType(req.EmailServiceType),
-			Source:         "python_fallback",
-			FallbackReason: "no enabled email service config found for this type",
-		}, nil
+		return PreparedEmailService{}, missingNativeEmailServiceConfiguration(req.EmailServiceType, "no enabled email service config found")
 	}
 
 	resolvedType := strings.TrimSpace(service.ServiceType)
@@ -411,6 +389,12 @@ func (o *orchestrator) prepareConfiguredEmailServiceByType(
 		resolvedType = req.EmailServiceType
 	}
 	resolvedType = canonicalNativeEmailServiceType(resolvedType)
+	if err := ensureSupportedNativeEmailServiceType(resolvedType); err != nil {
+		return PreparedEmailService{}, err
+	}
+	if len(service.Config) == 0 {
+		return PreparedEmailService{}, missingNativeEmailServiceConfiguration(resolvedType, fmt.Sprintf("email service %d has no config", service.ID))
+	}
 
 	return PreparedEmailService{
 		Prepared:  true,
@@ -423,15 +407,15 @@ func (o *orchestrator) prepareConfiguredEmailServiceByType(
 
 func (o *orchestrator) prepareMoeMail(ctx context.Context, req StartRequest, proxy ProxySelection) (PreparedEmailService, error) {
 	prepared, err := o.prepareConfiguredEmailServiceByType(ctx, req, proxy)
-	if err != nil {
+	if err != nil && !errors.Is(err, errNativePreparationDependencyMissing) && !errors.Is(err, errNativeEmailServiceConfiguration) {
 		return PreparedEmailService{}, err
 	}
-	if prepared.Prepared {
+	if err == nil && prepared.Prepared {
 		return prepared, nil
 	}
 
 	if o.deps.Settings == nil {
-		return prepared, nil
+		return PreparedEmailService{}, missingNativePreparationDependency(req.EmailServiceType, "settings provider")
 	}
 
 	settings, err := o.deps.Settings.GetSettings(ctx, []string{
@@ -442,7 +426,7 @@ func (o *orchestrator) prepareMoeMail(ctx context.Context, req StartRequest, pro
 		return PreparedEmailService{}, fmt.Errorf("%w: %v", errPreparationSettingsLookup, err)
 	}
 	if strings.TrimSpace(settings["custom_domain.base_url"]) == "" || strings.TrimSpace(settings["custom_domain.api_key"]) == "" {
-		return prepared, nil
+		return PreparedEmailService{}, missingNativeEmailServiceConfiguration(req.EmailServiceType, "custom_domain settings are not configured")
 	}
 
 	return PreparedEmailService{
@@ -463,15 +447,7 @@ func (o *orchestrator) prepareOutlook(
 	proxy ProxySelection,
 ) (PreparedEmailService, *PreparedOutlook, error) {
 	if o.deps.Outlook == nil {
-		return PreparedEmailService{
-				Prepared:       false,
-				Type:           req.EmailServiceType,
-				Source:         "python_fallback",
-				FallbackReason: "outlook preparation repository not configured",
-			}, &PreparedOutlook{
-				ReservationStatus: "reservation_not_configured",
-				ReservationReason: "outlook preparation repository not configured",
-			}, nil
+		return PreparedEmailService{}, nil, missingNativePreparationDependency(req.EmailServiceType, "outlook preparation repository")
 	}
 
 	services, err := o.deps.Outlook.ListOutlookServices(ctx)
@@ -537,6 +513,9 @@ func (o *orchestrator) selectOutlookService(
 
 	for _, service := range services {
 		if _, ok := claimed[service.ID]; ok {
+			continue
+		}
+		if len(service.Config) == 0 {
 			continue
 		}
 		email := resolveOutlookServiceEmail(service)
@@ -683,6 +662,43 @@ func canonicalNativeEmailServiceType(serviceType string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(serviceType))
 	}
+}
+
+func ensureSupportedNativeEmailServiceType(serviceType string) error {
+	if isSupportedNativeEmailServiceType(serviceType) {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", errNativeUnsupportedEmailService, serviceTypeLabel(serviceType))
+}
+
+func isSupportedNativeEmailServiceType(serviceType string) bool {
+	switch canonicalNativeEmailServiceType(serviceType) {
+	case "tempmail", "yyds_mail", "duck_mail", "freemail", "luckmail", "imap_mail", "moe_mail", "outlook":
+		return true
+	default:
+		return false
+	}
+}
+
+func missingNativePreparationDependency(serviceType string, dependency string) error {
+	return fmt.Errorf("%w: %s requires %s", errNativePreparationDependencyMissing, serviceTypeLabel(serviceType), strings.TrimSpace(dependency))
+}
+
+func missingNativeEmailServiceConfiguration(serviceType string, reason string) error {
+	label := serviceTypeLabel(serviceType)
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return fmt.Errorf("%w: %s", errNativeEmailServiceConfiguration, label)
+	}
+	return fmt.Errorf("%w: %s: %s", errNativeEmailServiceConfiguration, label, reason)
+}
+
+func serviceTypeLabel(serviceType string) string {
+	normalized := canonicalNativeEmailServiceType(serviceType)
+	if normalized != "" {
+		return normalized
+	}
+	return strings.TrimSpace(serviceType)
 }
 
 func parseOptionalInt(raw string) (int, bool) {

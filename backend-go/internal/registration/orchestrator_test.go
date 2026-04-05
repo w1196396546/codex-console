@@ -27,8 +27,8 @@ func TestOrchestratorPreparesTempmailFromSettings(t *testing.T) {
 	if prepared.Request.EmailServiceType != "tempmail" {
 		t.Fatalf("expected normalized tempmail request, got %+v", prepared.Request)
 	}
-	if prepared.Plan.Stage != PythonFallbackStageExecute {
-		t.Fatalf("expected python execute stage, got %+v", prepared.Plan)
+	if prepared.Plan.Stage != ExecuteStageRegistration {
+		t.Fatalf("expected execute stage, got %+v", prepared.Plan)
 	}
 	if !prepared.Plan.EmailService.Prepared || prepared.Plan.EmailService.Source != "settings.tempmail" {
 		t.Fatalf("expected native tempmail preparation, got %+v", prepared.Plan.EmailService)
@@ -491,6 +491,128 @@ func TestOrchestratorReturnsWrappedSettingsError(t *testing.T) {
 	}
 	if !errors.Is(err, errPreparationSettingsLookup) {
 		t.Fatalf("expected settings sentinel, got %v", err)
+	}
+}
+
+func TestOrchestratorRejectsUnsupportedInlineEmailServiceType(t *testing.T) {
+	orchestrator := newOrchestrator(PreparationDependencies{})
+
+	_, err := orchestrator.Prepare(context.Background(), "task-unsupported", StartRequest{
+		EmailServiceType: "custom_mail",
+		EmailServiceConfig: map[string]any{
+			"base_url": "https://custom.example/api",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected unsupported email service error")
+	}
+	if !errors.Is(err, errNativeUnsupportedEmailService) {
+		t.Fatalf("expected unsupported email service sentinel, got %v", err)
+	}
+}
+
+func TestOrchestratorRequiresSettingsProviderForTempmail(t *testing.T) {
+	orchestrator := newOrchestrator(PreparationDependencies{})
+
+	_, err := orchestrator.Prepare(context.Background(), "task-tempmail-missing-settings", StartRequest{
+		EmailServiceType: "tempmail",
+	})
+	if err == nil {
+		t.Fatal("expected missing settings provider error")
+	}
+	if !errors.Is(err, errNativePreparationDependencyMissing) {
+		t.Fatalf("expected missing dependency sentinel, got %v", err)
+	}
+}
+
+func TestOrchestratorRequiresEmailServiceCatalogForBoundServiceID(t *testing.T) {
+	orchestrator := newOrchestrator(PreparationDependencies{})
+
+	serviceID := 42
+	_, err := orchestrator.Prepare(context.Background(), "task-bound-service", StartRequest{
+		EmailServiceType: "outlook",
+		EmailServiceID:   &serviceID,
+	})
+	if err == nil {
+		t.Fatal("expected email service catalog dependency error")
+	}
+	if !errors.Is(err, errNativePreparationDependencyMissing) {
+		t.Fatalf("expected missing dependency sentinel, got %v", err)
+	}
+}
+
+func TestOrchestratorRejectsYYDSMailWithoutAPIKey(t *testing.T) {
+	orchestrator := newOrchestrator(PreparationDependencies{
+		Settings: fakePreparationSettings{
+			settings: map[string]string{
+				"yyds_mail.enabled":        "true",
+				"yyds_mail.base_url":       "https://maliapi.example/v1",
+				"yyds_mail.default_domain": "mail.example.com",
+			},
+		},
+	})
+
+	_, err := orchestrator.Prepare(context.Background(), "task-yyds-missing-key", StartRequest{
+		EmailServiceType: "yyds_mail",
+	})
+	if err == nil {
+		t.Fatal("expected missing yyds api key error")
+	}
+	if !errors.Is(err, errNativeEmailServiceConfiguration) {
+		t.Fatalf("expected missing configuration sentinel, got %v", err)
+	}
+}
+
+func TestOrchestratorRejectsTempmailWithoutBaseURL(t *testing.T) {
+	orchestrator := newOrchestrator(PreparationDependencies{
+		Settings: fakePreparationSettings{
+			settings: map[string]string{
+				"tempmail.enabled": "true",
+			},
+		},
+	})
+
+	_, err := orchestrator.Prepare(context.Background(), "task-tempmail-missing-base-url", StartRequest{
+		EmailServiceType: "tempmail",
+	})
+	if err == nil {
+		t.Fatal("expected missing tempmail base_url error")
+	}
+	if !errors.Is(err, errNativeEmailServiceConfiguration) {
+		t.Fatalf("expected missing configuration sentinel, got %v", err)
+	}
+}
+
+func TestOrchestratorMoeMailFallsBackToSettingsWhenCatalogHasNoMatchingService(t *testing.T) {
+	orchestrator := newOrchestrator(PreparationDependencies{
+		Settings: fakePreparationSettings{
+			settings: map[string]string{
+				"custom_domain.base_url": "https://settings.moe.example/api",
+				"custom_domain.api_key":  "settings-key",
+			},
+		},
+		EmailServices: fakeEmailServiceCatalog{
+			services: []EmailServiceRecord{
+				{
+					ID:          99,
+					ServiceType: "duck_mail",
+					Name:        "Other Service",
+					Config: map[string]any{
+						"api_url": "https://duck.example/api",
+					},
+				},
+			},
+		},
+	})
+
+	prepared, err := orchestrator.Prepare(context.Background(), "task-moe-settings-fallback", StartRequest{
+		EmailServiceType: "moe_mail",
+	})
+	if err != nil {
+		t.Fatalf("unexpected prepare error: %v", err)
+	}
+	if !prepared.Plan.EmailService.Prepared || prepared.Plan.EmailService.Source != "settings.custom_domain" {
+		t.Fatalf("expected moe_mail settings preparation, got %+v", prepared.Plan.EmailService)
 	}
 }
 

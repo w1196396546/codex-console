@@ -5,10 +5,12 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
 	"github.com/dou-jiang/codex-console/backend-go/internal/nativerunner"
 	"github.com/hibiken/asynq"
+	redisv9 "github.com/redis/go-redis/v9"
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
 	"github.com/dou-jiang/codex-console/backend-go/internal/registration"
@@ -97,9 +99,9 @@ func TestNewRegistrationExecutorUsesPreparationDependencies(t *testing.T) {
 	executor := newRegistrationExecutor(
 		service,
 		workerMainFakeRunner{
-			runFn: func(context.Context, registration.RunnerRequest, func(level string, message string) error) (map[string]any, error) {
+			runFn: func(context.Context, registration.RunnerRequest, func(level string, message string) error) (registration.RunnerOutput, error) {
 				t.Fatal("runner should not be called when preparation fails")
-				return nil, nil
+				return registration.RunnerOutput{}, nil
 			},
 		},
 		nil,
@@ -145,10 +147,20 @@ func TestNewRegistrationPreparationDependenciesUsesPostgresRepositories(t *testi
 	if !ok || outlookRepo == nil {
 		t.Fatalf("expected postgres outlook repository, got %#v", deps.Outlook)
 	}
+
+	proxySelector, ok := deps.Proxies.(*registration.PostgresProxySelector)
+	if !ok || proxySelector == nil {
+		t.Fatalf("expected postgres proxy selector, got %#v", deps.Proxies)
+	}
+
+	reservationStore, ok := deps.Reservations.(*registration.JobPayloadOutlookReservationStore)
+	if !ok || reservationStore == nil {
+		t.Fatalf("expected jobs-backed outlook reservation store, got %#v", deps.Reservations)
+	}
 }
 
 func TestNewWorkerRegistrationRunnerUsesNativeRunner(t *testing.T) {
-	runner, err := newWorkerRegistrationRunner(nil)
+	runner, err := newWorkerRegistrationRunner(nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected create runner error: %v", err)
 	}
@@ -176,7 +188,7 @@ func TestNewWorkerRegistrationRunnerUsesNativeRunner(t *testing.T) {
 func TestNewWorkerHistoricalPasswordProviderReadsRepositoryPassword(t *testing.T) {
 	t.Parallel()
 
-	provider := newWorkerHistoricalPasswordProvider(workerMainFakeAccountRepository{
+	provider := newWorkerHistoricalPasswordProvider(&workerMainFakeAccountRepository{
 		account: accounts.Account{
 			Email:    "native@example.com",
 			Password: "known-pass",
@@ -199,7 +211,7 @@ func TestNewWorkerHistoricalPasswordProviderReadsRepositoryPassword(t *testing.T
 func TestNewWorkerHistoricalPasswordProviderReturnsEmptyWhenAccountMissing(t *testing.T) {
 	t.Parallel()
 
-	provider := newWorkerHistoricalPasswordProvider(workerMainFakeAccountRepository{})
+	provider := newWorkerHistoricalPasswordProvider(&workerMainFakeAccountRepository{})
 	if provider == nil {
 		t.Fatal("expected historical password provider")
 	}
@@ -213,15 +225,297 @@ func TestNewWorkerHistoricalPasswordProviderReturnsEmptyWhenAccountMissing(t *te
 	}
 }
 
-type workerMainFakeRunner struct {
-	runFn func(ctx context.Context, req registration.RunnerRequest, logf func(level string, message string) error) (map[string]any, error)
+func TestNewWorkerTokenCompletionLeaseStoreClaimsRenewsAndReleasesLease(t *testing.T) {
+	t.Parallel()
+
+	backend := &workerMainFakeLeaseRedisBackend{
+		values: make(map[string]string),
+	}
+	store := &workerTokenCompletionLeaseStore{backend: backend}
+	key := workerTokenCompletionLeaseKey("native@example.com")
+
+	claimed, err := store.Claim(context.Background(), "native@example.com", "lease-1", 30*time.Second)
+	if err != nil {
+		t.Fatalf("claim external lease: %v", err)
+	}
+	if !claimed {
+		t.Fatal("expected lease claim to succeed")
+	}
+	if backend.values[key] != "lease-1" {
+		t.Fatalf("expected claimed lease value, got %#v", backend.values)
+	}
+
+	active, err := store.IsActive(context.Background(), "native@example.com", "lease-1")
+	if err != nil {
+		t.Fatalf("check lease activity: %v", err)
+	}
+	if !active {
+		t.Fatal("expected lease to be active for owner")
+	}
+
+	renewed, err := store.Renew(context.Background(), "native@example.com", "lease-1", 45*time.Second)
+	if err != nil {
+		t.Fatalf("renew external lease: %v", err)
+	}
+	if !renewed {
+		t.Fatal("expected lease renew to succeed")
+	}
+
+	if err := store.Release(context.Background(), "native@example.com", "lease-1"); err != nil {
+		t.Fatalf("release external lease: %v", err)
+	}
+	if _, ok := backend.values[key]; ok {
+		t.Fatalf("expected released lease to be removed, got %#v", backend.values)
+	}
 }
 
-func (f workerMainFakeRunner) Run(ctx context.Context, req registration.RunnerRequest, logf func(level string, message string) error) (map[string]any, error) {
+func TestNewWorkerTokenCompletionLeaseStoreRejectsRenewForDifferentOwner(t *testing.T) {
+	t.Parallel()
+
+	backend := &workerMainFakeLeaseRedisBackend{
+		values: map[string]string{
+			workerTokenCompletionLeaseKey("native@example.com"): "lease-active",
+		},
+	}
+	store := &workerTokenCompletionLeaseStore{backend: backend}
+
+	renewed, err := store.Renew(context.Background(), "native@example.com", "lease-other", 45*time.Second)
+	if err != nil {
+		t.Fatalf("renew external lease: %v", err)
+	}
+	if renewed {
+		t.Fatal("expected renew to fail for different owner")
+	}
+
+	active, err := store.IsActive(context.Background(), "native@example.com", "lease-other")
+	if err != nil {
+		t.Fatalf("check lease activity: %v", err)
+	}
+	if active {
+		t.Fatal("expected different owner lease check to be inactive")
+	}
+}
+
+func TestNewWorkerTokenCompletionCooldownProviderReadsCooldownFromExtraData(t *testing.T) {
+	t.Parallel()
+
+	provider := newWorkerTokenCompletionCooldownProvider(&workerMainFakeAccountRepository{
+		account: accounts.Account{
+			Email: "native@example.com",
+			ExtraData: map[string]any{
+				"refresh_token_cooldown_until": "2026-04-05T10:07:00Z",
+			},
+		},
+		found: true,
+	})
+	if provider == nil {
+		t.Fatal("expected cooldown provider")
+	}
+
+	cooldownUntil, err := provider.ResolveTokenCompletionCooldown(context.Background(), nativerunner.FlowRequest{}, "native@example.com")
+	if err != nil {
+		t.Fatalf("resolve token completion cooldown: %v", err)
+	}
+	if cooldownUntil == nil {
+		t.Fatal("expected cooldown timestamp")
+	}
+	expected := time.Date(2026, time.April, 5, 10, 7, 0, 0, time.UTC)
+	if !cooldownUntil.Equal(expected) {
+		t.Fatalf("expected %v, got %v", expected, cooldownUntil)
+	}
+}
+
+func TestNewWorkerTokenCompletionAttemptProviderReadsAttemptsFromExtraData(t *testing.T) {
+	t.Parallel()
+
+	provider := newWorkerTokenCompletionAttemptProvider(&workerMainFakeAccountRepository{
+		account: accounts.Account{
+			Email: "native@example.com",
+			ExtraData: map[string]any{
+				"token_completion_attempts": []map[string]any{
+					{
+						"email":        "native@example.com",
+						"state":        "failed",
+						"started_at":   "2026-04-05T10:00:00Z",
+						"completed_at": "2026-04-05T10:00:05Z",
+						"error": map[string]any{
+							"kind":      "rate_limited",
+							"message":   "rate limited",
+							"retryable": true,
+						},
+					},
+				},
+			},
+		},
+		found: true,
+	})
+
+	attempts, err := provider.ResolveTokenCompletionAttempts(context.Background(), nativerunner.FlowRequest{}, "native@example.com")
+	if err != nil {
+		t.Fatalf("resolve token completion attempts: %v", err)
+	}
+	if len(attempts) != 1 {
+		t.Fatalf("expected one attempt, got %+v", attempts)
+	}
+	if attempts[0].State != nativerunner.TokenCompletionStateFailed || attempts[0].Error == nil || attempts[0].Error.Kind != nativerunner.TokenCompletionErrorKindRateLimited {
+		t.Fatalf("unexpected parsed attempts: %+v", attempts)
+	}
+}
+
+func TestNewWorkerTokenCompletionRuntimeStorePersistsRunningAttemptIntoAccountExtraData(t *testing.T) {
+	t.Parallel()
+
+	repo := &workerMainFakeAccountRepository{
+		account: accounts.Account{
+			Email:  "native@example.com",
+			Status: accounts.DefaultAccountStatus,
+			ExtraData: map[string]any{
+				"existing_account_detected": true,
+			},
+		},
+		found: true,
+	}
+	store := newWorkerTokenCompletionRuntimeStore(repo)
+
+	now := time.Date(2026, time.April, 5, 10, 0, 0, 0, time.UTC)
+	err := store.Save(context.Background(), "native@example.com", nativerunner.TokenCompletionRuntimeState{
+		Attempts: []nativerunner.TokenCompletionAttempt{
+			{
+				Email:      "native@example.com",
+				State:      nativerunner.TokenCompletionStateRunning,
+				LeaseToken: "lease-running",
+				StartedAt:  now,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("save runtime state: %v", err)
+	}
+
+	if repo.savedAccount.Email != "native@example.com" {
+		t.Fatalf("expected runtime store to persist account by email, got %+v", repo.savedAccount)
+	}
+	if repo.savedAccount.Status != accounts.DefaultAccountStatus {
+		t.Fatalf("expected runtime store to preserve existing status, got %+v", repo.savedAccount)
+	}
+	if repo.savedAccount.ExtraData["existing_account_detected"] != true {
+		t.Fatalf("expected runtime store to preserve extra data, got %#v", repo.savedAccount.ExtraData)
+	}
+
+	runtimeState, err := nativerunner.ParseTokenCompletionRuntimeState(repo.savedAccount.ExtraData, "native@example.com")
+	if err != nil {
+		t.Fatalf("parse persisted runtime state: %v", err)
+	}
+	if len(runtimeState.Attempts) != 1 || runtimeState.Attempts[0].State != nativerunner.TokenCompletionStateRunning {
+		t.Fatalf("expected persisted running attempt, got %+v", runtimeState.Attempts)
+	}
+	if runtimeState.Attempts[0].LeaseToken != "lease-running" {
+		t.Fatalf("expected persisted running lease token, got %+v", runtimeState.Attempts[0])
+	}
+}
+
+func TestNewWorkerTokenCompletionRuntimeStoreExposesCompareAndSwap(t *testing.T) {
+	t.Parallel()
+
+	repo := &workerMainFakeAccountRepository{
+		compareAndSwapResult: true,
+	}
+	store := newWorkerTokenCompletionRuntimeStore(repo)
+
+	casStore, ok := store.(interface {
+		CompareAndSwap(context.Context, string, nativerunner.TokenCompletionRuntimeState, nativerunner.TokenCompletionRuntimeState) (bool, error)
+	})
+	if !ok {
+		t.Fatal("expected worker runtime store to expose compare-and-swap")
+	}
+
+	nextState := nativerunner.TokenCompletionRuntimeState{
+		Attempts: []nativerunner.TokenCompletionAttempt{
+			{
+				Email:      "native@example.com",
+				State:      nativerunner.TokenCompletionStateRunning,
+				LeaseToken: "lease-next",
+				StartedAt:  time.Date(2026, time.April, 5, 10, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	swapped, err := casStore.CompareAndSwap(context.Background(), "native@example.com", nativerunner.TokenCompletionRuntimeState{}, nextState)
+	if err != nil {
+		t.Fatalf("compare and swap runtime state: %v", err)
+	}
+	if !swapped {
+		t.Fatal("expected compare-and-swap to succeed")
+	}
+	if repo.compareAndSwapEmail != "native@example.com" {
+		t.Fatalf("expected compare-and-swap email recorded, got %q", repo.compareAndSwapEmail)
+	}
+	runtimeState, err := nativerunner.ParseTokenCompletionRuntimeState(repo.compareAndSwapNextData, "native@example.com")
+	if err != nil {
+		t.Fatalf("parse compare-and-swap runtime state: %v", err)
+	}
+	if len(runtimeState.Attempts) != 1 || runtimeState.Attempts[0].State != nativerunner.TokenCompletionStateRunning {
+		t.Fatalf("expected compare-and-swap runtime state forwarded, got %+v", runtimeState)
+	}
+	if runtimeState.Attempts[0].LeaseToken != "lease-next" {
+		t.Fatalf("expected compare-and-swap to forward lease token, got %+v", runtimeState.Attempts[0])
+	}
+}
+
+func TestNewWorkerTokenCompletionRuntimeStoreCompareAndSwapReturnsFenceConflictWithoutSave(t *testing.T) {
+	t.Parallel()
+
+	repo := &workerMainFakeAccountRepository{
+		account: accounts.Account{
+			Email: "native@example.com",
+		},
+		compareAndSwapResult: false,
+	}
+	store := newWorkerTokenCompletionRuntimeStore(repo)
+
+	casStore, ok := store.(interface {
+		CompareAndSwap(context.Context, string, nativerunner.TokenCompletionRuntimeState, nativerunner.TokenCompletionRuntimeState) (bool, error)
+	})
+	if !ok {
+		t.Fatal("expected worker runtime store to expose compare-and-swap")
+	}
+
+	swapped, err := casStore.CompareAndSwap(context.Background(), "native@example.com", nativerunner.TokenCompletionRuntimeState{
+		Attempts: []nativerunner.TokenCompletionAttempt{
+			{
+				Email:      "native@example.com",
+				State:      nativerunner.TokenCompletionStateRunning,
+				LeaseToken: "lease-stale",
+			},
+		},
+	}, nativerunner.TokenCompletionRuntimeState{
+		Attempts: []nativerunner.TokenCompletionAttempt{
+			{
+				Email:      "native@example.com",
+				State:      nativerunner.TokenCompletionStateCompleted,
+				LeaseToken: "lease-stale",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compare and swap runtime state: %v", err)
+	}
+	if swapped {
+		t.Fatal("expected compare-and-swap fence conflict")
+	}
+	if repo.savedAccount.Email != "" || len(repo.savedAccount.ExtraData) != 0 || repo.savedAccount.Status != "" || repo.savedAccount.Source != "" {
+		t.Fatalf("expected fence conflict not to fall back to save, got %+v", repo.savedAccount)
+	}
+}
+
+type workerMainFakeRunner struct {
+	runFn func(ctx context.Context, req registration.RunnerRequest, logf func(level string, message string) error) (registration.RunnerOutput, error)
+}
+
+func (f workerMainFakeRunner) Run(ctx context.Context, req registration.RunnerRequest, logf func(level string, message string) error) (registration.RunnerOutput, error) {
 	if f.runFn != nil {
 		return f.runFn(ctx, req, logf)
 	}
-	return map[string]any{"ok": true}, nil
+	return registration.RunnerOutput{Result: map[string]any{"ok": true}}, nil
 }
 
 type workerMainFailingPreparationSettings struct {
@@ -233,9 +527,20 @@ func (f workerMainFailingPreparationSettings) GetSettings(context.Context, []str
 }
 
 type workerMainFakeAccountRepository struct {
-	account accounts.Account
-	found   bool
-	err     error
+	account      accounts.Account
+	found        bool
+	err          error
+	savedAccount accounts.Account
+
+	compareAndSwapEmail       string
+	compareAndSwapCurrentData map[string]any
+	compareAndSwapNextData    map[string]any
+	compareAndSwapResult      bool
+	compareAndSwapErr         error
+}
+
+type workerMainFakeLeaseRedisBackend struct {
+	values map[string]string
 }
 
 func (f workerMainFakeAccountRepository) ListAccounts(context.Context, accounts.ListAccountsRequest) ([]accounts.Account, int, error) {
@@ -249,6 +554,61 @@ func (f workerMainFakeAccountRepository) GetAccountByEmail(context.Context, stri
 	return f.account, f.found, nil
 }
 
-func (f workerMainFakeAccountRepository) UpsertAccount(context.Context, accounts.Account) (accounts.Account, error) {
-	return accounts.Account{}, nil
+func (f *workerMainFakeAccountRepository) UpsertAccount(_ context.Context, account accounts.Account) (accounts.Account, error) {
+	f.savedAccount = account
+	if f.err != nil {
+		return accounts.Account{}, f.err
+	}
+	if account.Email == "" && f.account.Email != "" {
+		account.Email = f.account.Email
+	}
+	return account, nil
+}
+
+func (f *workerMainFakeAccountRepository) CompareAndSwapTokenCompletionRuntime(_ context.Context, email string, currentExtraData map[string]any, nextExtraData map[string]any, _ accounts.Account) (accounts.Account, bool, error) {
+	f.compareAndSwapEmail = email
+	f.compareAndSwapCurrentData = currentExtraData
+	f.compareAndSwapNextData = nextExtraData
+	if f.compareAndSwapErr != nil {
+		return accounts.Account{}, false, f.compareAndSwapErr
+	}
+	return f.account, f.compareAndSwapResult, nil
+}
+
+func (f *workerMainFakeLeaseRedisBackend) SetNX(_ context.Context, key string, value string, _ time.Duration) (bool, error) {
+	if _, exists := f.values[key]; exists {
+		return false, nil
+	}
+	f.values[key] = value
+	return true, nil
+}
+
+func (f *workerMainFakeLeaseRedisBackend) Get(_ context.Context, key string) (string, error) {
+	value, ok := f.values[key]
+	if !ok {
+		return "", redisv9.Nil
+	}
+	return value, nil
+}
+
+func (f *workerMainFakeLeaseRedisBackend) Eval(_ context.Context, script string, keys []string, args ...any) (any, error) {
+	if len(keys) == 0 {
+		return int64(0), nil
+	}
+	key := keys[0]
+	leaseToken := strings.TrimSpace(args[0].(string))
+	currentValue, ok := f.values[key]
+	if !ok || currentValue != leaseToken {
+		return int64(0), nil
+	}
+
+	switch script {
+	case workerTokenCompletionLeaseRenewScript:
+		return int64(1), nil
+	case workerTokenCompletionLeaseReleaseScript:
+		delete(f.values, key)
+		return int64(1), nil
+	default:
+		return int64(0), nil
+	}
 }

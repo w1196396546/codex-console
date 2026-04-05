@@ -12,7 +12,7 @@ This roadmap finishes the remaining Python-to-Go backend migration in the curren
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Compatibility Baseline** - Freeze the migration contract, parity matrix, and shared data/runtime rules.
+- [x] **Phase 1: Compatibility Baseline** - Freeze the migration contract, parity matrix, and shared data/runtime rules. (completed 2026-04-05)
 - [ ] **Phase 2: Native Registration Runtime** - Remove Python from the registration critical path while preserving task behavior.
 - [ ] **Phase 3: Management APIs** - Move current admin and management domains to Go behind the existing UI.
 - [ ] **Phase 4: Payment and Team Domains** - Migrate the remaining Python-only product workflows with compatible runtime semantics.
@@ -33,9 +33,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 3 plans
 
 Plans:
-- [ ] 01-01: Build the Python-versus-Go route and client parity matrix
-- [ ] 01-02: Define the shared schema and runtime compatibility contract
-- [ ] 01-03: Add migration harness, compatibility fixtures, and cutover safety checks
+- [x] 01-01: Build the Python-versus-Go route and client parity matrix
+- [x] 01-02: Define the shared schema and runtime compatibility contract
+- [x] 01-03: Add migration harness, compatibility fixtures, and cutover safety checks
 
 ### Phase 2: Native Registration Runtime
 **Goal**: Complete Go ownership of registration execution, task lifecycle, and upload side effects so Python is no longer required on the registration critical path.
@@ -111,7 +111,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Compatibility Baseline | 0/3 | Not started | - |
+| 1. Compatibility Baseline | 3/3 | Complete    | 2026-04-05 |
 | 2. Native Registration Runtime | 0/3 | Not started | - |
 | 3. Management APIs | 0/3 | Not started | - |
 | 4. Payment and Team Domains | 0/3 | Not started | - |

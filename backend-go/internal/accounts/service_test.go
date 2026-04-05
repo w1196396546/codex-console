@@ -3,6 +3,9 @@ package accounts
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -331,6 +334,151 @@ func TestServiceListAccountsNormalizesCompatibilityFiltersAndEnvelope(t *testing
 	}
 }
 
+func TestServiceOverviewRefreshFetchesRemoteQuotaAndPersistsOverview(t *testing.T) {
+	repo := &fakeRepository{
+		listedAccounts: []Account{
+			{
+				ID:               201,
+				Email:            "team@example.com",
+				EmailService:     "outlook",
+				SubscriptionType: "team",
+				AccessToken:      "access-201",
+				AccountID:        "account-201",
+			},
+		},
+	}
+	service := NewService(repo)
+	service.httpDoer = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("Authorization"); got != "Bearer access-201" {
+			t.Fatalf("expected authorization header to reuse account token, got %q", got)
+		}
+		switch req.URL.Path {
+		case "/backend-api/me":
+			return jsonHTTPResponse(http.StatusOK, `{"plan_type":"team"}`), nil
+		case "/backend-api/wham/usage":
+			return jsonHTTPResponse(http.StatusOK, `{
+				"rate_limit": {
+					"primary_window": {
+						"remaining_percent": 75,
+						"total": 100,
+						"remaining": 75,
+						"resets_in_seconds": 3600
+					},
+					"secondary_window": {
+						"remaining_percent": 50,
+						"total": 200,
+						"remaining": 100,
+						"resets_in_seconds": 604800
+					}
+				},
+				"code_review_rate_limit": {
+					"primary_window": {
+						"remaining_percent": 80,
+						"total": 20,
+						"remaining": 16,
+						"resets_in_seconds": 7200
+					}
+				}
+			}`), nil
+		case "/backend-api/codex/usage":
+			return jsonHTTPResponse(http.StatusOK, `{}`), nil
+		default:
+			t.Fatalf("unexpected refresh request path: %s", req.URL.Path)
+			return nil, nil
+		}
+	})
+
+	resp, err := service.RefreshOverview(context.Background(), OverviewRefreshRequest{
+		IDs:   []int{201},
+		Force: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected refresh overview error: %v", err)
+	}
+
+	if resp.SuccessCount != 1 || resp.FailedCount != 0 {
+		t.Fatalf("expected 1 success and 0 failures, got %+v", resp)
+	}
+	if len(resp.Details) != 1 || !resp.Details[0].Success || resp.Details[0].PlanType != "Team" {
+		t.Fatalf("unexpected detail payload: %+v", resp.Details)
+	}
+
+	overview, ok := repo.savedAccount.ExtraData[OverviewExtraDataKey].(map[string]any)
+	if !ok {
+		t.Fatalf("expected overview to be written back, got %#v", repo.savedAccount.ExtraData)
+	}
+	if extractStringMapValue(overview, "plan_type") != "Team" {
+		t.Fatalf("expected persisted plan_type=Team, got %#v", overview)
+	}
+	if extractStringMapValue(extractQuotaSnapshot(overview, "hourly_quota"), "status") != "ok" {
+		t.Fatalf("expected hourly quota to be refreshed, got %#v", overview["hourly_quota"])
+	}
+	if extractStringMapValue(extractQuotaSnapshot(overview, "weekly_quota"), "status") != "ok" {
+		t.Fatalf("expected weekly quota to be refreshed, got %#v", overview["weekly_quota"])
+	}
+	if extractStringMapValue(extractQuotaSnapshot(overview, "code_review_quota"), "status") != "ok" {
+		t.Fatalf("expected code review quota to be refreshed, got %#v", overview["code_review_quota"])
+	}
+}
+
+func TestServiceOverviewRefreshFailsWhenQuotaRemainsUnknown(t *testing.T) {
+	repo := &fakeRepository{
+		listedAccounts: []Account{
+			{
+				ID:               202,
+				Email:            "unknown@example.com",
+				EmailService:     "outlook",
+				SubscriptionType: "team",
+				AccessToken:      "access-202",
+			},
+		},
+	}
+	service := NewService(repo)
+	service.httpDoer = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/backend-api/me":
+			return jsonHTTPResponse(http.StatusOK, `{"plan_type":"team"}`), nil
+		case "/backend-api/wham/usage", "/backend-api/codex/usage":
+			return jsonHTTPResponse(http.StatusOK, `{}`), nil
+		default:
+			t.Fatalf("unexpected refresh request path: %s", req.URL.Path)
+			return nil, nil
+		}
+	})
+
+	resp, err := service.RefreshOverview(context.Background(), OverviewRefreshRequest{
+		IDs:   []int{202},
+		Force: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected refresh overview error: %v", err)
+	}
+
+	if resp.SuccessCount != 0 || resp.FailedCount != 1 {
+		t.Fatalf("expected 0 success and 1 failure, got %+v", resp)
+	}
+	if len(resp.Details) != 1 {
+		t.Fatalf("expected one detail, got %+v", resp.Details)
+	}
+	if resp.Details[0].Success {
+		t.Fatalf("expected unknown quota refresh to fail, got %+v", resp.Details[0])
+	}
+	if resp.Details[0].Error != "未获取到配额数据" {
+		t.Fatalf("expected compatibility error detail, got %+v", resp.Details[0])
+	}
+
+	overview, ok := repo.savedAccount.ExtraData[OverviewExtraDataKey].(map[string]any)
+	if !ok {
+		t.Fatalf("expected overview fallback to still be written back, got %#v", repo.savedAccount.ExtraData)
+	}
+	if extractStringMapValue(extractQuotaSnapshot(overview, "hourly_quota"), "status") != "unknown" {
+		t.Fatalf("expected hourly quota to remain unknown, got %#v", overview["hourly_quota"])
+	}
+	if extractStringMapValue(extractQuotaSnapshot(overview, "weekly_quota"), "status") != "unknown" {
+		t.Fatalf("expected weekly quota to remain unknown, got %#v", overview["weekly_quota"])
+	}
+}
+
 type fakeRepository struct {
 	foundAccount    Account
 	found           bool
@@ -419,4 +567,18 @@ func (f *fakeRepository) DeleteAccount(context.Context, int) error {
 
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+type roundTripFunc func(req *http.Request) (*http.Response, error)
+
+func (f roundTripFunc) Do(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func jsonHTTPResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
 }

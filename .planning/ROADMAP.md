@@ -51,7 +51,7 @@ Plans:
 
 Plans:
 - [x] 02-01: Close native registration preparation and worker critical-path parity
-- [ ] 02-02: Complete task, batch, Outlook, and polling runtime-semantics compatibility
+- [x] 02-02: Complete task, batch, Outlook, and polling runtime-semantics compatibility
 - [ ] 02-03: Finalize Go-owned account persistence and auto-upload side effects
 - [ ] 02-04: Align task and batch websocket runtime semantics
 

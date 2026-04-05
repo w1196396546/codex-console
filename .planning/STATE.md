@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 02-01-PLAN.md
-last_updated: "2026-04-05T10:37:11.358Z"
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-04-05T10:41:33.726Z"
 last_activity: 2026-04-05
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 7
-  completed_plans: 4
-  percent: 57
+  completed_plans: 5
+  percent: 71
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-05)
 ## Current Position
 
 Phase: 02 (Native Registration Runtime) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-04-05
 
@@ -52,6 +52,7 @@ Progress: [██░░░░░░░░] 20%
 - Trend: Stable
 
 | Phase 02 P01 | 10m | 2 tasks | 14 files |
+| Phase 02 P02 | 15m | 1 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -66,6 +67,8 @@ Recent decisions affecting current work:
 - [Phase 02]: Worker preparation now injects explicit Postgres-backed proxy selection and Outlook reservation adapters instead of implicit no-op wiring.
 - [Phase 02]: Outlook reservation state stays in registration job payloads so concurrent child jobs do not require a second runtime store before 02-02.
 - [Phase 02]: Password login, workspace continuation, and add-phone recovery remain inside native auth helpers to keep Python off the normal registration path.
+- [Phase 02]: Reuse jobs.Service as the durable registration task list/delete source instead of introducing a second runtime store.
+- [Phase 02]: Project batch and outlook cancelling as a two-step HTTP/polling transition while leaving websocket-specific files for 02-04.
 
 ### Pending Todos
 
@@ -79,6 +82,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-05T10:37:11.355Z
-Stopped at: Completed 02-01-PLAN.md
+Last session: 2026-04-05T10:41:33.723Z
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None

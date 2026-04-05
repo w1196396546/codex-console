@@ -9,7 +9,7 @@
 
 - [ ] **COMP-01**: Existing clients can call every remaining Python-only backend capability through a Go-owned route using the same path and HTTP method.
 - [ ] **COMP-02**: Existing clients receive compatible JSON field names, status values, and error semantics from migrated Go endpoints.
-- [ ] **COMP-03**: Existing polling and websocket consumers receive compatible task and batch progress semantics from Go-owned backend flows.
+- [x] **COMP-03**: Existing polling and websocket consumers receive compatible task and batch progress semantics from Go-owned backend flows.
 
 ### Data Contracts
 
@@ -18,7 +18,7 @@
 ### Runtime
 
 - [x] **RUN-01**: Registration start, batch, and Outlook batch flows execute on Go-owned runtime logic without requiring the Python runner bridge on the critical path.
-- [ ] **RUN-02**: Existing clients can list, inspect, pause, resume, cancel, and clean up registration tasks and batches through Go with current behavior.
+- [x] **RUN-02**: Existing clients can list, inspect, pause, resume, cancel, and clean up registration tasks and batches through Go with current behavior.
 - [ ] **RUN-03**: Registration side effects continue to persist accounts and trigger CPA, Sub2API, and TM uploads with current semantics.
 
 ### Management
@@ -67,9 +67,9 @@
 | DATA-01 | Phase 1 | Pending |
 | OPS-01 | Phase 1 | Pending |
 | RUN-01 | Phase 2 | Complete |
-| RUN-02 | Phase 2 | Pending |
+| RUN-02 | Phase 2 | Complete |
 | RUN-03 | Phase 2 | Pending |
-| COMP-03 | Phase 2 | Pending |
+| COMP-03 | Phase 2 | Complete |
 | MGMT-01 | Phase 3 | Pending |
 | MGMT-02 | Phase 3 | Pending |
 | CUT-01 | Phase 3 | Pending |

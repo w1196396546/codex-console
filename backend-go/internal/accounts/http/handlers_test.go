@@ -69,7 +69,7 @@ func TestAccountsReadCompatibilityEndpoints(t *testing.T) {
 			Accounts: []accountspkg.Account{{ID: 99, Email: "viewer@example.com", EmailService: "outlook", Status: "active"}},
 		},
 		currentResponse: accountspkg.CurrentAccountResponse{
-			CurrentAccountID: 99,
+			CurrentAccountID: intPtr(99),
 			Account: &accountspkg.CurrentAccountSummary{
 				ID:           99,
 				Email:        "viewer@example.com",
@@ -102,7 +102,7 @@ func TestAccountsReadCompatibilityEndpoints(t *testing.T) {
 		},
 		overviewCardsResponse: accountspkg.AccountOverviewCardsResponse{
 			Total:            1,
-			CurrentAccountID: 99,
+			CurrentAccountID: intPtr(99),
 			Accounts: []accountspkg.AccountOverviewCard{
 				{
 					ID:               99,
@@ -266,4 +266,8 @@ func (f fakeAccountsService) GetAccountTokens(context.Context, int) (accountspkg
 
 func (f fakeAccountsService) GetAccountCookies(context.Context, int) (accountspkg.AccountCookiesResponse, error) {
 	return f.cookiesResponse, f.err
+}
+
+func intPtr(value int) *int {
+	return &value
 }

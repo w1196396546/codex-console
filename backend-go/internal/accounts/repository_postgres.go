@@ -5,12 +5,51 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+const accountSelectColumns = `
+		id,
+		email,
+		COALESCE(password, ''),
+		COALESCE(client_id, ''),
+		COALESCE(session_token, ''),
+		COALESCE(email_service, ''),
+		COALESCE(email_service_id, ''),
+		COALESCE(account_id, ''),
+		COALESCE(workspace_id, ''),
+		COALESCE(access_token, ''),
+		COALESCE(refresh_token, ''),
+		COALESCE(id_token, ''),
+		COALESCE(cookies, ''),
+		COALESCE(proxy_used, ''),
+		COALESCE(cpa_uploaded, FALSE),
+		cpa_uploaded_at,
+		COALESCE(sub2api_uploaded, FALSE),
+		sub2api_uploaded_at,
+		last_refresh,
+		expires_at,
+		COALESCE(extra_data::text, '{}'),
+		COALESCE(status, ''),
+		COALESCE(source, ''),
+		COALESCE(subscription_type, ''),
+		subscription_at,
+		registered_at,
+		created_at,
+		updated_at
+`
+
+type accountFilters struct {
+	Status            string
+	EmailService      string
+	RefreshTokenState string
+	Search            string
+}
 
 type postgresQuerier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
@@ -32,30 +71,30 @@ func newPostgresRepository(db postgresQuerier) *PostgresRepository {
 func (r *PostgresRepository) ListAccounts(ctx context.Context, req ListAccountsRequest) ([]Account, int, error) {
 	normalized := req.Normalized()
 
-	total, err := r.countAccounts(ctx)
+	total, err := r.countAccounts(ctx, accountFilters{
+		Status:            normalized.Status,
+		EmailService:      normalized.EmailService,
+		RefreshTokenState: normalized.RefreshTokenState,
+		Search:            normalized.Search,
+	})
 	if err != nil {
 		return nil, 0, err
 	}
 
-	rows, err := r.db.Query(ctx, `
-		SELECT
-			id,
-			email,
-			COALESCE(password, ''),
-			COALESCE(cpa_uploaded, FALSE),
-			cpa_uploaded_at,
-			COALESCE(sub2api_uploaded, FALSE),
-			sub2api_uploaded_at,
-			last_refresh,
-			expires_at,
-			COALESCE(status, ''),
-			registered_at,
-			created_at,
-			updated_at
+	whereClause, args := buildAccountFiltersSQL(accountFilters{
+		Status:            normalized.Status,
+		EmailService:      normalized.EmailService,
+		RefreshTokenState: normalized.RefreshTokenState,
+		Search:            normalized.Search,
+	}, 1)
+	args = append(args, normalized.PageSize, normalized.Offset())
+	rows, err := r.db.Query(ctx, fmt.Sprintf(`
+		SELECT %s
 		FROM accounts
-		ORDER BY COALESCE(registered_at, created_at, updated_at) DESC, id DESC
-		LIMIT $1 OFFSET $2
-	`, normalized.PageSize, normalized.Offset())
+		%s
+		ORDER BY COALESCE(created_at, registered_at, updated_at) DESC, id DESC
+		LIMIT $%d OFFSET $%d
+	`, accountSelectColumns, whereClause, len(args)-1, len(args)), args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query accounts: %w", err)
 	}
@@ -63,45 +102,10 @@ func (r *PostgresRepository) ListAccounts(ctx context.Context, req ListAccountsR
 
 	accounts := make([]Account, 0, normalized.PageSize)
 	for rows.Next() {
-		var (
-			account           Account
-			cpaUploaded       bool
-			cpaUploadedAt     *time.Time
-			sub2apiUploaded   bool
-			sub2apiUploadedAt *time.Time
-			lastRefresh       *time.Time
-			expiresAt         *time.Time
-			registeredAt      *time.Time
-			createdAt         *time.Time
-			updatedAt         *time.Time
-		)
-		if err := rows.Scan(
-			&account.ID,
-			&account.Email,
-			&account.Password,
-			&cpaUploaded,
-			&cpaUploadedAt,
-			&sub2apiUploaded,
-			&sub2apiUploadedAt,
-			&lastRefresh,
-			&expiresAt,
-			&account.Status,
-			&registeredAt,
-			&createdAt,
-			&updatedAt,
-		); err != nil {
+		account, err := scanAccount(rows)
+		if err != nil {
 			return nil, 0, fmt.Errorf("scan account: %w", err)
 		}
-
-		account.CPAUploaded = cpaUploaded
-		account.CPAUploadedAt = cpaUploadedAt
-		account.Sub2APIUploaded = sub2apiUploaded
-		account.Sub2APIUploadedAt = sub2apiUploadedAt
-		account.LastRefresh = lastRefresh
-		account.ExpiresAt = expiresAt
-		account.RegisteredAt = registeredAt
-		account.CreatedAt = createdAt
-		account.UpdatedAt = updatedAt
 		accounts = append(accounts, account)
 	}
 	if err := rows.Err(); err != nil {
@@ -109,6 +113,189 @@ func (r *PostgresRepository) ListAccounts(ctx context.Context, req ListAccountsR
 	}
 
 	return accounts, total, nil
+}
+
+func (r *PostgresRepository) ListAccountsForOverview(ctx context.Context, req AccountOverviewCardsRequest) ([]Account, error) {
+	normalized := req.Normalized()
+	return r.listAccountsByFilters(ctx, accountFilters{
+		Status:       normalized.Status,
+		EmailService: normalized.EmailService,
+		Search:       normalized.Search,
+	})
+}
+
+func (r *PostgresRepository) ListAccountsForSelectable(ctx context.Context, req AccountOverviewSelectableRequest) ([]Account, error) {
+	normalized := req.Normalized()
+	return r.listAccountsByFilters(ctx, accountFilters{
+		Status:       normalized.Status,
+		EmailService: normalized.EmailService,
+		Search:       normalized.Search,
+	})
+}
+
+func (r *PostgresRepository) GetAccountByID(ctx context.Context, accountID int) (Account, error) {
+	account, err := scanAccount(r.db.QueryRow(ctx, fmt.Sprintf(`
+		SELECT %s
+		FROM accounts
+		WHERE id = $1
+	`, accountSelectColumns), accountID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Account{}, ErrAccountNotFound
+		}
+		return Account{}, fmt.Errorf("get account by id: %w", err)
+	}
+	return account, nil
+}
+
+func (r *PostgresRepository) GetCurrentAccountID(ctx context.Context) (*int, error) {
+	var raw string
+	if err := r.db.QueryRow(ctx, `
+		SELECT COALESCE(value, '')
+		FROM settings
+		WHERE key = $1
+		LIMIT 1
+	`, CurrentAccountSettingKey).Scan(&raw); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get current account id: %w", err)
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return nil, nil
+	}
+	return &value, nil
+}
+
+func (r *PostgresRepository) GetAccountsStatsSummary(ctx context.Context) (AccountsStatsSummary, error) {
+	var total int
+	if err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM accounts`).Scan(&total); err != nil {
+		return AccountsStatsSummary{}, fmt.Errorf("count accounts summary: %w", err)
+	}
+
+	byStatus, err := r.scanCountMap(ctx, `
+		SELECT COALESCE(status, ''), COUNT(*)
+		FROM accounts
+		GROUP BY COALESCE(status, '')
+	`)
+	if err != nil {
+		return AccountsStatsSummary{}, err
+	}
+	byEmailService, err := r.scanCountMap(ctx, `
+		SELECT COALESCE(email_service, ''), COUNT(*)
+		FROM accounts
+		GROUP BY COALESCE(email_service, '')
+	`)
+	if err != nil {
+		return AccountsStatsSummary{}, err
+	}
+
+	return AccountsStatsSummary{
+		Total:          total,
+		ByStatus:       byStatus,
+		ByEmailService: byEmailService,
+	}, nil
+}
+
+func (r *PostgresRepository) GetAccountsOverviewStats(ctx context.Context) (AccountsOverviewStats, error) {
+	var (
+		total             int
+		activeCount       int
+		withAccessToken   int
+		withRefreshToken  int
+		cpaUploadedCount  int
+	)
+
+	if err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM accounts`).Scan(&total); err != nil {
+		return AccountsOverviewStats{}, fmt.Errorf("count overview accounts: %w", err)
+	}
+	if err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM accounts WHERE COALESCE(status, '') = 'active'`).Scan(&activeCount); err != nil {
+		return AccountsOverviewStats{}, fmt.Errorf("count active accounts: %w", err)
+	}
+	if err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM accounts WHERE COALESCE(access_token, '') <> ''`).Scan(&withAccessToken); err != nil {
+		return AccountsOverviewStats{}, fmt.Errorf("count accounts with access_token: %w", err)
+	}
+	if err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM accounts WHERE TRIM(COALESCE(refresh_token, '')) <> ''`).Scan(&withRefreshToken); err != nil {
+		return AccountsOverviewStats{}, fmt.Errorf("count accounts with refresh_token: %w", err)
+	}
+	if err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM accounts WHERE COALESCE(cpa_uploaded, FALSE) = TRUE`).Scan(&cpaUploadedCount); err != nil {
+		return AccountsOverviewStats{}, fmt.Errorf("count cpa uploaded accounts: %w", err)
+	}
+
+	byStatus, err := r.scanCountMap(ctx, `SELECT COALESCE(status, 'unknown'), COUNT(*) FROM accounts GROUP BY COALESCE(status, 'unknown')`)
+	if err != nil {
+		return AccountsOverviewStats{}, err
+	}
+	byEmailService, err := r.scanCountMap(ctx, `SELECT COALESCE(email_service, 'unknown'), COUNT(*) FROM accounts GROUP BY COALESCE(email_service, 'unknown')`)
+	if err != nil {
+		return AccountsOverviewStats{}, err
+	}
+	bySource, err := r.scanCountMap(ctx, `SELECT COALESCE(source, 'unknown'), COUNT(*) FROM accounts GROUP BY COALESCE(source, 'unknown')`)
+	if err != nil {
+		return AccountsOverviewStats{}, err
+	}
+	bySubscription, err := r.scanCountMap(ctx, `SELECT COALESCE(subscription_type, 'free'), COUNT(*) FROM accounts GROUP BY COALESCE(subscription_type, 'free')`)
+	if err != nil {
+		return AccountsOverviewStats{}, err
+	}
+
+	recentRows, err := r.db.Query(ctx, `
+		SELECT
+			id,
+			email,
+			COALESCE(status, ''),
+			COALESCE(email_service, ''),
+			COALESCE(source, ''),
+			COALESCE(subscription_type, 'free'),
+			created_at,
+			last_refresh
+		FROM accounts
+		ORDER BY COALESCE(created_at, registered_at, updated_at) DESC, id DESC
+		LIMIT 10
+	`)
+	if err != nil {
+		return AccountsOverviewStats{}, fmt.Errorf("query recent accounts: %w", err)
+	}
+	defer recentRows.Close()
+
+	recentAccounts := make([]AccountOverviewRecentItem, 0, 10)
+	for recentRows.Next() {
+		var (
+			item        AccountOverviewRecentItem
+			createdAt   *time.Time
+			lastRefresh *time.Time
+		)
+		if err := recentRows.Scan(&item.ID, &item.Email, &item.Status, &item.EmailService, &item.Source, &item.SubscriptionType, &createdAt, &lastRefresh); err != nil {
+			return AccountsOverviewStats{}, fmt.Errorf("scan recent account: %w", err)
+		}
+		item.CreatedAt = formatTime(createdAt)
+		item.LastRefresh = formatTime(lastRefresh)
+		recentAccounts = append(recentAccounts, item)
+	}
+	if err := recentRows.Err(); err != nil {
+		return AccountsOverviewStats{}, fmt.Errorf("iterate recent accounts: %w", err)
+	}
+
+	return AccountsOverviewStats{
+		Total:       total,
+		ActiveCount: activeCount,
+		TokenStats: AccountTokenStats{
+			WithAccessToken:    withAccessToken,
+			WithRefreshToken:   withRefreshToken,
+			WithoutAccessToken: max(total-withAccessToken, 0),
+		},
+		CPAUploadedCount: cpaUploadedCount,
+		ByStatus:         byStatus,
+		ByEmailService:   byEmailService,
+		BySource:         bySource,
+		BySubscription:   bySubscription,
+		RecentAccounts:   recentAccounts,
+	}, nil
 }
 
 func (r *PostgresRepository) GetAccountByEmail(ctx context.Context, email string) (Account, bool, error) {
@@ -379,13 +566,104 @@ func (r *PostgresRepository) CompareAndSwapTokenCompletionRuntime(
 	return saved, true, nil
 }
 
-func (r *PostgresRepository) countAccounts(ctx context.Context) (int, error) {
+func (r *PostgresRepository) countAccounts(ctx context.Context, filters accountFilters) (int, error) {
+	whereClause, args := buildAccountFiltersSQL(filters, 1)
 	var total int
-	if err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM accounts`).Scan(&total); err != nil {
+	if err := r.db.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM accounts %s`, whereClause), args...).Scan(&total); err != nil {
 		return 0, fmt.Errorf("count accounts: %w", err)
 	}
 
 	return total, nil
+}
+
+func (r *PostgresRepository) listAccountsByFilters(ctx context.Context, filters accountFilters) ([]Account, error) {
+	whereClause, args := buildAccountFiltersSQL(filters, 1)
+	rows, err := r.db.Query(ctx, fmt.Sprintf(`
+		SELECT %s
+		FROM accounts
+		%s
+		ORDER BY COALESCE(created_at, registered_at, updated_at) DESC, id DESC
+	`, accountSelectColumns, whereClause), args...)
+	if err != nil {
+		return nil, fmt.Errorf("query filtered accounts: %w", err)
+	}
+	defer rows.Close()
+
+	accounts := make([]Account, 0)
+	for rows.Next() {
+		account, err := scanAccount(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan filtered account: %w", err)
+		}
+		accounts = append(accounts, account)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate filtered accounts: %w", err)
+	}
+	return accounts, nil
+}
+
+func (r *PostgresRepository) scanCountMap(ctx context.Context, query string, args ...any) (map[string]int, error) {
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query count map: %w", err)
+	}
+	defer rows.Close()
+
+	values := make(map[string]int)
+	for rows.Next() {
+		var key string
+		var count int
+		if err := rows.Scan(&key, &count); err != nil {
+			return nil, fmt.Errorf("scan count map: %w", err)
+		}
+		values[key] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate count map: %w", err)
+	}
+	return values, nil
+}
+
+func buildAccountFiltersSQL(filters accountFilters, startIndex int) (string, []any) {
+	conditions := make([]string, 0, 4)
+	args := make([]any, 0, 4)
+	next := startIndex
+
+	switch normalizeFilterText(filters.Status) {
+	case "":
+	case "failed", "invalid":
+		conditions = append(conditions, `COALESCE(status, '') IN ('failed', 'expired', 'banned')`)
+	default:
+		conditions = append(conditions, fmt.Sprintf(`COALESCE(status, '') = $%d`, next))
+		args = append(args, normalizeFilterText(filters.Status))
+		next++
+	}
+
+	if emailService := normalizeFilterText(filters.EmailService); emailService != "" {
+		conditions = append(conditions, fmt.Sprintf(`COALESCE(email_service, '') = $%d`, next))
+		args = append(args, emailService)
+		next++
+	}
+
+	switch normalizeFilterText(filters.RefreshTokenState) {
+	case "", "all":
+	case "has":
+		conditions = append(conditions, `TRIM(COALESCE(refresh_token, '')) <> ''`)
+	case "missing":
+		conditions = append(conditions, `TRIM(COALESCE(refresh_token, '')) = ''`)
+	}
+
+	if search := strings.TrimSpace(filters.Search); search != "" {
+		conditions = append(conditions, fmt.Sprintf(`(email ILIKE $%d OR COALESCE(account_id, '') ILIKE $%d)`, next, next))
+		args = append(args, "%"+search+"%")
+		next++
+	}
+
+	if len(conditions) == 0 {
+		return "", args
+	}
+	return "WHERE " + strings.Join(conditions, " AND "), args
 }
 
 type accountScanner interface {

@@ -335,6 +335,9 @@ type fakeRepository struct {
 	foundAccount    Account
 	found           bool
 	findErr         error
+	accountByID     Account
+	accountByIDErr  error
+	currentAccountID *int
 	listReq         ListAccountsRequest
 	listedAccounts  []Account
 	listedTotal     int
@@ -358,6 +361,41 @@ func (f *fakeRepository) GetAccountByEmail(_ context.Context, email string) (Acc
 		return f.foundAccount, true, nil
 	}
 	return Account{}, false, nil
+}
+
+func (f *fakeRepository) GetAccountByID(context.Context, int) (Account, error) {
+	if f.accountByIDErr != nil {
+		return Account{}, f.accountByIDErr
+	}
+	if f.accountByID.ID != 0 || f.accountByID.Email != "" {
+		return f.accountByID, nil
+	}
+	return Account{}, ErrAccountNotFound
+}
+
+func (f *fakeRepository) GetCurrentAccountID(context.Context) (*int, error) {
+	return f.currentAccountID, nil
+}
+
+func (f *fakeRepository) GetAccountsStatsSummary(context.Context) (AccountsStatsSummary, error) {
+	return AccountsStatsSummary{ByStatus: map[string]int{}, ByEmailService: map[string]int{}}, nil
+}
+
+func (f *fakeRepository) GetAccountsOverviewStats(context.Context) (AccountsOverviewStats, error) {
+	return AccountsOverviewStats{
+		ByStatus:       map[string]int{},
+		ByEmailService: map[string]int{},
+		BySource:       map[string]int{},
+		BySubscription: map[string]int{},
+	}, nil
+}
+
+func (f *fakeRepository) ListAccountsForOverview(context.Context, AccountOverviewCardsRequest) ([]Account, error) {
+	return nil, nil
+}
+
+func (f *fakeRepository) ListAccountsForSelectable(context.Context, AccountOverviewSelectableRequest) ([]Account, error) {
+	return nil, nil
 }
 
 func (f *fakeRepository) UpsertAccount(_ context.Context, account Account) (Account, error) {

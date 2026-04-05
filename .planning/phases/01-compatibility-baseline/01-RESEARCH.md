@@ -290,22 +290,19 @@ CREATE TABLE IF NOT EXISTS email_services (
 | A2 | Production OS/service registrations were not inspected in this session. [ASSUMED] | Runtime State Inventory | Final cutover planning could miss launchd/systemd/pm2/package-installer steps that still point at Python. |
 | A3 | The current environment does not provide easy local PostgreSQL/Redis bring-up because `psql`, `redis-cli`, and Docker are absent. [ASSUMED] | Environment Availability | A planner might over- or under-estimate what can be verified locally without first confirming alternate infrastructure access. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Will later cutover support current SQLite-first installs, or is PostgreSQL a hard prerequisite once Go owns more domains?**
    What we know: Python defaults to `data/database.db` when no DB URL is set, but Go requires `DATABASE_URL` and `REDIS_ADDR`. [VERIFIED: src/database/session.py, backend-go/internal/config/config.go]
-   What's unclear: Whether Phase 1 should define an explicit SQLite-to-PostgreSQL migration path or whether that policy is already settled operationally. [ASSUMED]
-   Recommendation: Treat this as a mandatory Phase 1 policy decision, because it affects every later data and rollout plan.
+   RESOLVED: Once Go owns additional backend domains beyond the current baseline, PostgreSQL + Redis are hard prerequisites for the Go production path, and SQLite remains a legacy Python reference input only. Phase 1 should document the resulting storage-policy split and require an explicit SQLite-to-PostgreSQL migration step before Phase 5 cutover claims production readiness. [VERIFIED: .planning/PROJECT.md, .planning/ROADMAP.md, src/database/session.py, backend-go/internal/config/config.go]
 
 2. **What is the intended auth boundary for `/api` and `/payment` during the migration window?**
    What we know: Most HTML pages check `_is_authenticated`, `payment_page` does not, and API routers mount without a shared auth dependency. [VERIFIED: src/web/app.py]
-   What's unclear: Whether this is intentional operator behavior or an exposure gap that later phases should not preserve. [ASSUMED]
-   Recommendation: Phase 1 should write an explicit auth/access contract and require later parity tests to follow it.
+   RESOLVED: Phase 1 treats the current page/API exposure as the compatibility reference, not as an endorsement of the long-term security model. Later migration phases must preserve current behavior unless they explicitly scope and verify an auth-boundary change; no implicit hardening is allowed to slip into compatibility work. [VERIFIED: .planning/PROJECT.md, .planning/ROADMAP.md, src/web/app.py]
 
 3. **Where are deployment-specific process registrations and environment injections managed today?**
    What we know: Tracked repo files show Python launch entrypoints and Docker startup helpers, but no tracked system service manifests. [VERIFIED: webui.py, scripts/docker/start-webui.sh, codex_register.spec, rg repo audit]
-   What's unclear: The real production service manager, reverse proxy, and env-injection path. [ASSUMED]
-   Recommendation: Gather that deployment inventory before planning Phase 5 and before any Phase 3/4 plan assumes a simple switch.
+   RESOLVED: Phase 1 will use git-tracked launch paths as the verified deployment baseline and record any out-of-repo service-manager or env-injection details as a mandatory external inventory item for Phase 5. That means lack of host-level inspection is not a blocker for Phase 1 planning, but it is a hard prerequisite before final cutover. [VERIFIED: .planning/ROADMAP.md, webui.py, scripts/docker/start-webui.sh, codex_register.spec]
 
 ## Environment Availability
 

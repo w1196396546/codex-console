@@ -92,7 +92,7 @@ Plans:
 Plans:
 - [x] 04-01-PLAN.md — Build the Go payment slice for bind-card tasks, session/bootstrap, and subscription-sync compatibility
 - [x] 04-02-PLAN.md — Build the Go team slice for discovery, sync, invite, membership, and accepted-task compatibility
-- [ ] 04-03-PLAN.md — Mount payment/team into the Go API and verify phase-wide runtime and operator parity
+- [x] 04-03-PLAN.md — Mount payment/team into the Go API and verify phase-wide runtime and operator parity
 
 ### Phase 5: Cutover and Decommission
 **Goal**: Cut production backend ownership over to Go, verify compatibility end to end, and retire Python backend responsibilities safely.

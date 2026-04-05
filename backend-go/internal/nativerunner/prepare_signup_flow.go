@@ -226,7 +226,19 @@ func (f *PrepareSignupFlow) Run(ctx context.Context, input FlowRequest) (registr
 		accountProfile.Birthdate,
 	)
 	if err != nil {
-		return registration.NativeRunnerResult{}, fmt.Errorf("create account: %w", err)
+		var userExistsErr *auth.CreateAccountUserExistsError
+		if !errors.As(err, &userExistsErr) {
+			return registration.NativeRunnerResult{}, fmt.Errorf("create account: %w", err)
+		}
+		if createAccountResult.StatusCode == 0 &&
+			strings.TrimSpace(createAccountResult.PageType) == "" &&
+			strings.TrimSpace(createAccountResult.ContinueURL) == "" &&
+			strings.TrimSpace(createAccountResult.CallbackURL) == "" &&
+			strings.TrimSpace(createAccountResult.AccountID) == "" &&
+			strings.TrimSpace(createAccountResult.WorkspaceID) == "" &&
+			strings.TrimSpace(createAccountResult.RefreshToken) == "" {
+			createAccountResult = userExistsErr.Result
+		}
 	}
 
 	clientID, err := f.clientIDResolver.ResolveClientID(ctx, input)

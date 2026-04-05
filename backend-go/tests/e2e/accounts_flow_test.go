@@ -209,6 +209,66 @@ func TestManagementAccountsCompatibilityEndpoints(t *testing.T) {
 	}
 }
 
+func TestManagementAccountsOverviewRefreshCompatibility(t *testing.T) {
+	server := httptest.NewServer(internalhttp.NewRouter(nil, e2eAccountsService{
+		refreshOverviewResponse: accountspkg.OverviewRefreshResponse{
+			SuccessCount: 1,
+			FailedCount:  1,
+			Details: []accountspkg.OverviewRefreshDetail{
+				{
+					ID:       202,
+					Email:    "plus@example.com",
+					Success:  true,
+					PlanType: "Plus",
+				},
+				{
+					ID:      303,
+					Email:   "unknown@example.com",
+					Success: false,
+					Error:   "未获取到配额数据",
+				},
+			},
+		},
+	}))
+	defer server.Close()
+
+	resp, err := http.Post(
+		server.URL+"/api/accounts/overview/refresh",
+		"application/json",
+		bytes.NewBufferString(`{"ids":[202,303],"force":true,"select_all":false}`),
+	)
+	if err != nil {
+		t.Fatalf("post overview refresh failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected overview refresh 200, got %d", resp.StatusCode)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode overview refresh response: %v", err)
+	}
+
+	if payload["success_count"] != float64(1) || payload["failed_count"] != float64(1) {
+		t.Fatalf("unexpected overview refresh counters: %#v", payload)
+	}
+	details, ok := payload["details"].([]any)
+	if !ok || len(details) != 2 {
+		t.Fatalf("expected 2 details, got %#v", payload["details"])
+	}
+
+	successDetail, ok := details[0].(map[string]any)
+	if !ok || successDetail["success"] != true || successDetail["plan_type"] != "Plus" {
+		t.Fatalf("unexpected success detail payload: %#v", details[0])
+	}
+	failedDetail, ok := details[1].(map[string]any)
+	if !ok || failedDetail["success"] != false || failedDetail["error"] != "未获取到配额数据" {
+		t.Fatalf("unexpected failed detail payload: %#v", details[1])
+	}
+}
+
 type e2eAccountsService struct {
 	response              accountspkg.AccountListResponse
 	currentResponse       accountspkg.CurrentAccountResponse

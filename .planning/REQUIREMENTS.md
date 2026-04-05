@@ -33,7 +33,7 @@
 
 ### Cutover
 
-- [ ] **CUT-01**: Current templates and static JavaScript can target the Go backend for migrated domains without requiring a UI rewrite.
+- [x] **CUT-01**: Current templates and static JavaScript can target the Go backend for migrated domains without requiring a UI rewrite.
 - [ ] **CUT-02**: Production deployment can disable Python backend responsibilities with rollback instructions and parity verification evidence in place.
 - [ ] **OPS-01**: Go backend operational controls are sufficient to replace Python backend duties safely in production for all migrated domains.
 
@@ -72,7 +72,7 @@
 | COMP-03 | Phase 2 | Complete |
 | MGMT-01 | Phase 3 | Complete |
 | MGMT-02 | Phase 3 | Complete |
-| CUT-01 | Phase 3 | Pending |
+| CUT-01 | Phase 3 | Complete |
 | PAY-01 | Phase 4 | Pending |
 | TEAM-01 | Phase 4 | Pending |
 | CUT-02 | Phase 5 | Pending |

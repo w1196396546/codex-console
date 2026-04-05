@@ -50,9 +50,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 02-01: Finish native registration preparation and execution parity
-- [ ] 02-02: Complete task, batch, and progress-semantics compatibility
-- [ ] 02-03: Preserve account persistence and auto-upload side effects in Go
+- [ ] 02-01: Close native registration preparation and worker critical-path parity
+- [ ] 02-02: Complete task, batch, Outlook, and websocket runtime-semantics compatibility
+- [ ] 02-03: Finalize Go-owned account persistence and auto-upload side effects
 
 ### Phase 3: Management APIs
 **Goal**: Migrate the current account, settings, email-service, upload-config, proxy, and log management surfaces to Go while preserving the current UI contract.

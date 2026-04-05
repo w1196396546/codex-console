@@ -38,6 +38,7 @@ func TestNativeRunnerAdapterAllowsExecutorToReturnUserResultAndPersistAccount(t 
 			},
 		}),
 		WithAccountPersistence(upserter),
+		WithPreparationDependencies(executorPreparationDependencies()),
 	)
 
 	result, err := executor.Execute(context.Background(), jobs.Job{
@@ -53,9 +54,6 @@ func TestNativeRunnerAdapterAllowsExecutorToReturnUserResultAndPersistAccount(t 
 	}
 	if got := result["success"]; got != true {
 		t.Fatalf("expected native success flag, got %#v", result)
-	}
-	if _, exists := result[runnerAccountPersistenceResultKey]; exists {
-		t.Fatalf("expected native adapter to keep persistence payload internal, got %#v", result)
 	}
 	if len(upserter.requests) != 1 {
 		t.Fatalf("expected one persisted account, got %#v", upserter.requests)
@@ -103,6 +101,7 @@ func TestNativeRunnerAdapterWorksThroughWorkerAndStoresCompletedResult(t *testin
 				},
 			}),
 			WithAccountPersistence(upserter),
+			WithPreparationDependencies(executorPreparationDependencies()),
 		),
 	)
 
@@ -130,9 +129,6 @@ func TestNativeRunnerAdapterWorksThroughWorkerAndStoresCompletedResult(t *testin
 	}
 	if storedResult["email"] != "worker-native@example.com" || storedResult["success"] != true {
 		t.Fatalf("expected completed worker result from native runner, got %#v", storedResult)
-	}
-	if _, exists := storedResult[runnerAccountPersistenceResultKey]; exists {
-		t.Fatalf("expected completed result to omit internal persistence payload, got %#v", storedResult)
 	}
 	if len(upserter.requests) != 1 {
 		t.Fatalf("expected worker path to persist native account once, got %#v", upserter.requests)

@@ -24,9 +24,9 @@ func NewNativeRunner(runner NativeRunner) Runner {
 	return &nativeRunnerAdapter{runner: runner}
 }
 
-func (r *nativeRunnerAdapter) Run(ctx context.Context, req RunnerRequest, logf func(level string, message string) error) (map[string]any, error) {
+func (r *nativeRunnerAdapter) Run(ctx context.Context, req RunnerRequest, logf func(level string, message string) error) (RunnerOutput, error) {
 	if r == nil || r.runner == nil {
-		return nil, errors.New("native runner is required")
+		return RunnerOutput{}, errors.New("native runner is required")
 	}
 	if logf == nil {
 		logf = func(string, string) error { return nil }
@@ -34,18 +34,18 @@ func (r *nativeRunnerAdapter) Run(ctx context.Context, req RunnerRequest, logf f
 
 	nativeResult, err := r.runner.RunNative(ctx, req, logf)
 	if err != nil {
-		return nil, err
+		return RunnerOutput{}, err
 	}
 
 	result := cloneNativeRunnerResult(nativeResult.Result)
 	if result == nil && nativeResult.AccountPersistence != nil {
 		result = map[string]any{}
 	}
-	if nativeResult.AccountPersistence != nil {
-		result[runnerAccountPersistenceResultKey] = nativeResult.AccountPersistence
-	}
 
-	return result, nil
+	return RunnerOutput{
+		Result:             result,
+		AccountPersistence: nativeResult.AccountPersistence,
+	}, nil
 }
 
 func cloneNativeRunnerResult(result map[string]any) map[string]any {

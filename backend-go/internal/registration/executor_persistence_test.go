@@ -2,6 +2,7 @@ package registration
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -14,32 +15,33 @@ func TestExecutorPersistsAccountPayloadAndStripsInternalResult(t *testing.T) {
 	upserter := &fakeAccountUpserter{}
 	executor := NewExecutor(
 		&executorAdmissionLogSink{},
-		admissionTestRunner(func(_ context.Context, _ RunnerRequest, _ func(level string, message string) error) (map[string]any, error) {
-			return map[string]any{
-				"email":   "alice@example.com",
-				"success": true,
-				runnerAccountPersistenceResultKey: map[string]any{
-					"email":            "alice@example.com",
-					"password":         "secret",
-					"client_id":        "client-1",
-					"session_token":    "session-1",
-					"email_service":    "outlook",
-					"email_service_id": "42",
-					"account_id":       "account-1",
-					"workspace_id":     "workspace-1",
-					"access_token":     "access-1",
-					"refresh_token":    "refresh-1",
-					"id_token":         "id-1",
-					"proxy_used":       "http://proxy.internal:8080",
-					"status":           "active",
-					"source":           "register",
-					"extra_data": map[string]any{
-						"device_id": "device-1",
-					},
+		admissionTestRunner(func(_ context.Context, _ RunnerRequest, _ func(level string, message string) error) (RunnerOutput, error) {
+			return RunnerOutput{
+				Result: map[string]any{
+					"email":   "alice@example.com",
+					"success": true,
+				},
+				AccountPersistence: &accounts.UpsertAccountRequest{
+					Email:          "alice@example.com",
+					Password:       "secret",
+					ClientID:       "client-1",
+					SessionToken:   "session-1",
+					EmailService:   "outlook",
+					EmailServiceID: "42",
+					AccountID:      "account-1",
+					WorkspaceID:    "workspace-1",
+					AccessToken:    "access-1",
+					RefreshToken:   "refresh-1",
+					IDToken:        "id-1",
+					ProxyUsed:      "http://proxy.internal:8080",
+					Status:         "active",
+					Source:         "register",
+					ExtraData:      map[string]any{"device_id": "device-1"},
 				},
 			}, nil
 		}),
 		WithAccountPersistence(upserter),
+		WithPreparationDependencies(executorPreparationDependencies()),
 	)
 
 	result, err := executor.Execute(context.Background(), jobs.Job{
@@ -51,9 +53,6 @@ func TestExecutorPersistsAccountPayloadAndStripsInternalResult(t *testing.T) {
 		t.Fatalf("unexpected execute error: %v", err)
 	}
 
-	if _, exists := result[runnerAccountPersistenceResultKey]; exists {
-		t.Fatalf("expected internal persistence payload to be stripped from result, got %#v", result)
-	}
 	if result["email"] != "alice@example.com" || result["success"] != true {
 		t.Fatalf("expected user-facing result to stay intact, got %#v", result)
 	}
@@ -84,13 +83,14 @@ func TestExecutorSkipsAccountPersistenceWhenPayloadMissing(t *testing.T) {
 	upserter := &fakeAccountUpserter{}
 	executor := NewExecutor(
 		&executorAdmissionLogSink{},
-		admissionTestRunner(func(_ context.Context, _ RunnerRequest, _ func(level string, message string) error) (map[string]any, error) {
-			return map[string]any{
+		admissionTestRunner(func(_ context.Context, _ RunnerRequest, _ func(level string, message string) error) (RunnerOutput, error) {
+			return RunnerOutput{Result: map[string]any{
 				"email":   "bob@example.com",
 				"success": true,
-			}, nil
+			}}, nil
 		}),
 		WithAccountPersistence(upserter),
+		WithPreparationDependencies(executorPreparationDependencies()),
 	)
 
 	result, err := executor.Execute(context.Background(), jobs.Job{
@@ -126,26 +126,29 @@ func TestExecutorTriggersAutoUploadAfterPersistedAccountSaved(t *testing.T) {
 	dispatcher := &fakeAutoUploadDispatcher{}
 	executor := NewExecutor(
 		&executorAdmissionLogSink{},
-		admissionTestRunner(func(_ context.Context, _ RunnerRequest, _ func(level string, message string) error) (map[string]any, error) {
-			return map[string]any{
-				"email":   "alice@example.com",
-				"success": true,
-				runnerAccountPersistenceResultKey: map[string]any{
-					"email":            "alice@example.com",
-					"email_service":    "outlook",
-					"access_token":     "raw-access",
-					"refresh_token":    "raw-refresh",
-					"session_token":    "raw-session",
-					"client_id":        "raw-client",
-					"account_id":       "raw-account",
-					"workspace_id":     "raw-workspace",
-					"id_token":         "raw-id-token",
-					"email_service_id": "42",
+		admissionTestRunner(func(_ context.Context, _ RunnerRequest, _ func(level string, message string) error) (RunnerOutput, error) {
+			return RunnerOutput{
+				Result: map[string]any{
+					"email":   "alice@example.com",
+					"success": true,
+				},
+				AccountPersistence: &accounts.UpsertAccountRequest{
+					Email:          "alice@example.com",
+					EmailService:   "outlook",
+					AccessToken:    "raw-access",
+					RefreshToken:   "raw-refresh",
+					SessionToken:   "raw-session",
+					ClientID:       "raw-client",
+					AccountID:      "raw-account",
+					WorkspaceID:    "raw-workspace",
+					IDToken:        "raw-id-token",
+					EmailServiceID: "42",
 				},
 			}, nil
 		}),
 		WithAccountPersistence(upserter),
 		WithAutoUploadDispatcher(dispatcher),
+		WithPreparationDependencies(executorPreparationDependencies()),
 	)
 
 	_, err := executor.Execute(context.Background(), jobs.Job{
@@ -210,19 +213,22 @@ func TestExecutorPersistsAutoUploadWritebackWhenDispatcherReturnsSuccessState(t 
 	}
 	executor := NewExecutor(
 		&executorAdmissionLogSink{},
-		admissionTestRunner(func(_ context.Context, _ RunnerRequest, _ func(level string, message string) error) (map[string]any, error) {
-			return map[string]any{
-				"email":   "alice@example.com",
-				"success": true,
-				runnerAccountPersistenceResultKey: map[string]any{
-					"email":         "alice@example.com",
-					"email_service": "outlook",
-					"access_token":  "persisted-access",
+		admissionTestRunner(func(_ context.Context, _ RunnerRequest, _ func(level string, message string) error) (RunnerOutput, error) {
+			return RunnerOutput{
+				Result: map[string]any{
+					"email":   "alice@example.com",
+					"success": true,
+				},
+				AccountPersistence: &accounts.UpsertAccountRequest{
+					Email:        "alice@example.com",
+					EmailService: "outlook",
+					AccessToken:  "persisted-access",
 				},
 			}, nil
 		}),
 		WithAccountPersistence(upserter),
 		WithAutoUploadDispatcher(dispatcher),
+		WithPreparationDependencies(executorPreparationDependencies()),
 	)
 
 	_, err := executor.Execute(context.Background(), jobs.Job{
@@ -257,14 +263,15 @@ func TestExecutorSkipsAutoUploadWhenPersistencePayloadMissing(t *testing.T) {
 	dispatcher := &fakeAutoUploadDispatcher{}
 	executor := NewExecutor(
 		&executorAdmissionLogSink{},
-		admissionTestRunner(func(_ context.Context, _ RunnerRequest, _ func(level string, message string) error) (map[string]any, error) {
-			return map[string]any{
+		admissionTestRunner(func(_ context.Context, _ RunnerRequest, _ func(level string, message string) error) (RunnerOutput, error) {
+			return RunnerOutput{Result: map[string]any{
 				"email":   "bob@example.com",
 				"success": true,
-			}, nil
+			}}, nil
 		}),
 		WithAccountPersistence(upserter),
 		WithAutoUploadDispatcher(dispatcher),
+		WithPreparationDependencies(executorPreparationDependencies()),
 	)
 
 	_, err := executor.Execute(context.Background(), jobs.Job{
@@ -285,19 +292,22 @@ func TestExecutorDoesNotTriggerAutoUploadWhenAccountPersistenceFails(t *testing.
 	dispatcher := &fakeAutoUploadDispatcher{}
 	executor := NewExecutor(
 		&executorAdmissionLogSink{},
-		admissionTestRunner(func(_ context.Context, _ RunnerRequest, _ func(level string, message string) error) (map[string]any, error) {
-			return map[string]any{
-				"email":   "carol@example.com",
-				"success": true,
-				runnerAccountPersistenceResultKey: map[string]any{
-					"email":         "carol@example.com",
-					"email_service": "outlook",
-					"access_token":  "access-3",
+		admissionTestRunner(func(_ context.Context, _ RunnerRequest, _ func(level string, message string) error) (RunnerOutput, error) {
+			return RunnerOutput{
+				Result: map[string]any{
+					"email":   "carol@example.com",
+					"success": true,
+				},
+				AccountPersistence: &accounts.UpsertAccountRequest{
+					Email:        "carol@example.com",
+					EmailService: "outlook",
+					AccessToken:  "access-3",
 				},
 			}, nil
 		}),
 		WithAccountPersistence(upserter),
 		WithAutoUploadDispatcher(dispatcher),
+		WithPreparationDependencies(executorPreparationDependencies()),
 	)
 
 	_, err := executor.Execute(context.Background(), jobs.Job{
@@ -310,6 +320,53 @@ func TestExecutorDoesNotTriggerAutoUploadWhenAccountPersistenceFails(t *testing.
 	}
 	if len(dispatcher.requests) != 0 {
 		t.Fatalf("expected no auto upload dispatch when persistence fails, got %#v", dispatcher.requests)
+	}
+}
+
+func TestExecutorPersistsAccountPayloadEvenWhenRunnerReturnsTypedError(t *testing.T) {
+	upserter := &fakeAccountUpserter{}
+	executor := NewExecutor(
+		&executorAdmissionLogSink{},
+		admissionTestRunner(func(_ context.Context, _ RunnerRequest, _ func(level string, message string) error) (RunnerOutput, error) {
+			return RunnerOutput{}, &RunnerError{
+				Err: errors.New("token completion blocked"),
+				Output: RunnerOutput{
+					AccountPersistence: &accounts.UpsertAccountRequest{
+						Email:        "cooldown@example.com",
+						EmailService: "tempmail",
+						Status:       "token_pending",
+						Source:       "login",
+						RefreshToken: "",
+						AccessToken:  "",
+						AccountID:    "account-cooldown",
+						WorkspaceID:  "workspace-cooldown",
+						ExtraData: map[string]any{
+							"refresh_token_cooldown_until": "2026-04-05T10:07:00Z",
+							"token_completion_attempts": []map[string]any{
+								{"state": "failed"},
+							},
+						},
+					},
+				},
+			}
+		}),
+		WithAccountPersistence(upserter),
+		WithPreparationDependencies(executorPreparationDependencies()),
+	)
+
+	_, err := executor.Execute(context.Background(), jobs.Job{
+		JobID:   "job-persist-on-error",
+		JobType: JobTypeSingle,
+		Payload: []byte(`{"email_service_type":"tempmail"}`),
+	})
+	if err == nil {
+		t.Fatal("expected runner error")
+	}
+	if len(upserter.requests) != 1 {
+		t.Fatalf("expected one persistence write even on runner error, got %#v", upserter.requests)
+	}
+	if upserter.requests[0].Email != "cooldown@example.com" || upserter.requests[0].Status != "token_pending" {
+		t.Fatalf("unexpected persisted request on runner error: %+v", upserter.requests[0])
 	}
 }
 

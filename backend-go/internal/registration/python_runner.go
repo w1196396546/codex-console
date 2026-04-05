@@ -12,11 +12,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
 )
 
 type PythonRunnerOptions struct {
-	PythonExecutable string
-	RepoRoot         string
+	PythonExecutable        string
+	RepoRoot                string
+	ResolvePythonExecutable func() (string, error)
 }
 
 type PythonRunner struct {
@@ -41,16 +44,32 @@ type pythonRunnerEvent struct {
 	ErrorMessage       string         `json:"error_message"`
 }
 
+type pythonRunnerLaunchSpec struct {
+	command string
+	args    []string
+	dir     string
+	env     []string
+	input   pythonRunnerInput
+}
+
 const registrationRepoRootEnvVar = "REGISTRATION_REPO_ROOT"
 const pythonRunnerControlPathEnvVar = "CODEX_CONSOLE_RUNNER_CONTROL_PATH"
+const pythonRunnerScriptEnvVar = "CODEX_CONSOLE_RUNNER_SCRIPT"
 const pythonRunnerControlPollInterval = 50 * time.Millisecond
 const pythonRunnerControlCancelGracePeriod = 200 * time.Millisecond
+const pythonRunnerControlPipePulseInterval = 50 * time.Millisecond
+const registrationRunnerErrorPrefix = "registration runner"
+const pythonRunnerBootstrap = "import os; exec(compile(os.environ[%q], '<codex-console-registration-runner>', 'exec'))"
 
 func NewPythonRunner(options PythonRunnerOptions) (*PythonRunner, error) {
 	pythonExecutable := strings.TrimSpace(options.PythonExecutable)
 	if pythonExecutable == "" {
+		resolveExecutable := options.ResolvePythonExecutable
+		if resolveExecutable == nil {
+			resolveExecutable = resolvePythonExecutable
+		}
 		var err error
-		pythonExecutable, err = resolvePythonExecutable()
+		pythonExecutable, err = resolveExecutable()
 		if err != nil {
 			return nil, err
 		}
@@ -71,28 +90,23 @@ func NewPythonRunner(options PythonRunnerOptions) (*PythonRunner, error) {
 	}, nil
 }
 
-func (r *PythonRunner) Run(ctx context.Context, req RunnerRequest, logf func(level string, message string) error) (map[string]any, error) {
+func (r *PythonRunner) Run(ctx context.Context, req RunnerRequest, logf func(level string, message string) error) (RunnerOutput, error) {
 	if r == nil {
-		return nil, errors.New("python runner is required")
+		return RunnerOutput{}, errors.New(registrationRunnerErrorPrefix + " is required")
 	}
 	if logf == nil {
 		logf = func(string, string) error { return nil }
 	}
 
-	scriptPath, err := r.writeScriptFile()
-	if err != nil {
-		return nil, err
-	}
-	defer os.Remove(scriptPath)
-
 	processCtx := ctx
 	cancelProcess := func() {}
+	var err error
 
 	var controlFile *pythonRunnerControlFile
 	if req.control != nil {
 		controlFile, err = newPythonRunnerControlFile(runnerControlStateRunning)
 		if err != nil {
-			return nil, err
+			return RunnerOutput{}, err
 		}
 		defer controlFile.close()
 
@@ -100,27 +114,30 @@ func (r *PythonRunner) Run(ctx context.Context, req RunnerRequest, logf func(lev
 		defer cancelProcess()
 	}
 
-	cmd := exec.CommandContext(processCtx, r.pythonExecutable, scriptPath)
-	cmd.Dir = r.repoRoot
-	if controlFile != nil {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%s", pythonRunnerControlPathEnvVar, controlFile.path))
+	launchSpec, err := r.buildLaunchSpec(req, controlFile)
+	if err != nil {
+		return RunnerOutput{}, err
 	}
+
+	cmd := exec.CommandContext(processCtx, launchSpec.command, launchSpec.args...)
+	cmd.Dir = launchSpec.dir
+	cmd.Env = append(os.Environ(), launchSpec.env...)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, fmt.Errorf("open python runner stdin: %w", err)
+		return RunnerOutput{}, fmt.Errorf("open %s stdin: %w", registrationRunnerErrorPrefix, err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("open python runner stdout: %w", err)
+		return RunnerOutput{}, fmt.Errorf("open %s stdout: %w", registrationRunnerErrorPrefix, err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return nil, fmt.Errorf("open python runner stderr: %w", err)
+		return RunnerOutput{}, fmt.Errorf("open %s stderr: %w", registrationRunnerErrorPrefix, err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start python runner: %w", err)
+		return RunnerOutput{}, fmt.Errorf("start %s: %w", registrationRunnerErrorPrefix, err)
 	}
 
 	var (
@@ -157,7 +174,7 @@ func (r *PythonRunner) Run(ctx context.Context, req RunnerRequest, logf func(lev
 			for {
 				nextState, err := req.control(ctx)
 				if err != nil {
-					setCallbackErr(fmt.Errorf("observe python runner control: %w", err))
+					setCallbackErr(fmt.Errorf("observe %s control: %w", registrationRunnerErrorPrefix, err))
 					cancelProcess()
 					return
 				}
@@ -166,7 +183,7 @@ func (r *PythonRunner) Run(ctx context.Context, req RunnerRequest, logf func(lev
 				}
 				if nextState != state {
 					if err := controlFile.write(nextState); err != nil {
-						setCallbackErr(fmt.Errorf("write python runner control: %w", err))
+						setCallbackErr(fmt.Errorf("write %s control: %w", registrationRunnerErrorPrefix, err))
 						cancelProcess()
 						return
 					}
@@ -239,18 +256,13 @@ func (r *PythonRunner) Run(ctx context.Context, req RunnerRequest, logf func(lev
 		stderrErrCh <- scanner.Err()
 	}()
 
-	encodeErr := json.NewEncoder(stdin).Encode(pythonRunnerInput{
-		TaskUUID:             req.TaskUUID,
-		StartRequest:         req.StartRequest,
-		Plan:                 req.Plan,
-		GoPersistenceEnabled: req.GoPersistenceEnabled,
-	})
+	encodeErr := json.NewEncoder(stdin).Encode(launchSpec.input)
 	_ = stdin.Close()
 	if encodeErr != nil {
 		_ = cmd.Process.Kill()
 		<-stdoutErrCh
 		<-stderrErrCh
-		return nil, fmt.Errorf("encode python runner payload: %w", encodeErr)
+		return RunnerOutput{}, fmt.Errorf("encode %s payload: %w", registrationRunnerErrorPrefix, encodeErr)
 	}
 
 	waitErr := cmd.Wait()
@@ -259,58 +271,178 @@ func (r *PythonRunner) Run(ctx context.Context, req RunnerRequest, logf func(lev
 	stderrErr := <-stderrErrCh
 
 	if stdoutErr != nil {
-		return nil, fmt.Errorf("read python runner stdout: %w", stdoutErr)
+		return RunnerOutput{}, fmt.Errorf("read %s stdout: %w", registrationRunnerErrorPrefix, stdoutErr)
 	}
 	if stderrErr != nil {
-		return nil, fmt.Errorf("read python runner stderr: %w", stderrErr)
+		return RunnerOutput{}, fmt.Errorf("read %s stderr: %w", registrationRunnerErrorPrefix, stderrErr)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
 	if callbackErr != nil {
-		return nil, callbackErr
+		return RunnerOutput{}, callbackErr
 	}
 	if finalEvent == nil {
 		if waitErr != nil {
-			return nil, fmt.Errorf("python runner failed: %w", waitErr)
+			return RunnerOutput{}, fmt.Errorf("%s failed: %w", registrationRunnerErrorPrefix, waitErr)
 		}
-		return nil, errors.New("python runner did not return a result")
+		return RunnerOutput{}, errors.New(registrationRunnerErrorPrefix + " did not return a result")
 	}
 	if finalEvent.Type == "fatal" {
-		return nil, pythonRunnerEventError(finalEvent, waitErr, "python runner failed")
+		return RunnerOutput{}, pythonRunnerEventError(finalEvent, waitErr, registrationRunnerErrorPrefix+" failed")
 	}
 	if !finalEvent.Success {
-		return nil, pythonRunnerEventError(finalEvent, waitErr, "registration failed")
+		return RunnerOutput{}, pythonRunnerEventError(finalEvent, waitErr, "registration failed")
 	}
 	if finalEvent.Result == nil {
-		return nil, errors.New("python runner returned empty result")
-	}
-	if len(finalEvent.AccountPersistence) > 0 {
-		finalEvent.Result[runnerAccountPersistenceResultKey] = finalEvent.AccountPersistence
+		return RunnerOutput{}, errors.New(registrationRunnerErrorPrefix + " returned empty result")
 	}
 
-	return finalEvent.Result, nil
+	output := RunnerOutput{Result: finalEvent.Result}
+	if len(finalEvent.AccountPersistence) > 0 {
+		req, err := decodeAccountPersistenceRequest(finalEvent.AccountPersistence)
+		if err != nil {
+			return RunnerOutput{}, fmt.Errorf("decode runner account persistence payload: %w", err)
+		}
+		output.AccountPersistence = req
+	}
+
+	return output, nil
+}
+
+func decodeAccountPersistenceRequest(raw map[string]any) (*accounts.UpsertAccountRequest, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	payload, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	var req accounts.UpsertAccountRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+func (r *PythonRunner) buildLaunchSpec(req RunnerRequest, controlFile *pythonRunnerControlFile) (pythonRunnerLaunchSpec, error) {
+	if r == nil {
+		return pythonRunnerLaunchSpec{}, errors.New(registrationRunnerErrorPrefix + " is required")
+	}
+
+	pythonExecutable := strings.TrimSpace(r.pythonExecutable)
+	if pythonExecutable == "" {
+		return pythonRunnerLaunchSpec{}, errors.New(registrationRunnerErrorPrefix + " executable is required")
+	}
+
+	repoRoot := strings.TrimSpace(r.repoRoot)
+	if repoRoot == "" {
+		return pythonRunnerLaunchSpec{}, errors.New(registrationRunnerErrorPrefix + " repo root is required")
+	}
+
+	validatedRepoRoot, err := validateRepoRoot(repoRoot)
+	if err != nil {
+		return pythonRunnerLaunchSpec{}, fmt.Errorf("validate %s repo root: %w", registrationRunnerErrorPrefix, err)
+	}
+
+	launchSpec := pythonRunnerLaunchSpec{
+		command: pythonExecutable,
+		args:    []string{"-c", fmt.Sprintf(pythonRunnerBootstrap, pythonRunnerScriptEnvVar)},
+		dir:     validatedRepoRoot,
+		env: []string{
+			fmt.Sprintf("%s=%s", pythonRunnerScriptEnvVar, pythonRunnerScript),
+		},
+		input: pythonRunnerInput{
+			TaskUUID:             req.TaskUUID,
+			StartRequest:         req.StartRequest,
+			Plan:                 req.Plan,
+			GoPersistenceEnabled: req.GoPersistenceEnabled,
+		},
+	}
+	if controlFile != nil && strings.TrimSpace(controlFile.path) != "" {
+		launchSpec.env = append(launchSpec.env, fmt.Sprintf("%s=%s", pythonRunnerControlPathEnvVar, controlFile.path))
+	}
+
+	return launchSpec, nil
 }
 
 type pythonRunnerControlFile struct {
-	path string
+	path    string
+	writeFn func(runnerControlState) error
+	closeFn func()
 }
 
 func newPythonRunnerControlFile(initial runnerControlState) (*pythonRunnerControlFile, error) {
+	if controlPipe, err := newPythonRunnerNamedPipeControlFile(initial); err == nil {
+		return controlPipe, nil
+	}
+
+	return newPythonRunnerStateControlFile(initial)
+}
+
+func newPythonRunnerNamedPipeControlFile(initial runnerControlState) (*pythonRunnerControlFile, error) {
+	file, err := os.CreateTemp("", "codex-console-registration-control-*.pipe")
+	if err != nil {
+		return nil, fmt.Errorf("create %s control pipe path: %w", registrationRunnerErrorPrefix, err)
+	}
+
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return nil, fmt.Errorf("close %s control pipe path: %w", registrationRunnerErrorPrefix, err)
+	}
+	if err := os.Remove(path); err != nil {
+		return nil, fmt.Errorf("prepare %s control pipe path: %w", registrationRunnerErrorPrefix, err)
+	}
+
+	if err := exec.Command("mkfifo", path).Run(); err != nil {
+		return nil, fmt.Errorf("create %s control pipe: %w", registrationRunnerErrorPrefix, err)
+	}
+
+	controlPipe := &pythonRunnerNamedPipeControl{
+		path:   path,
+		state:  initial,
+		stopCh: make(chan struct{}),
+		doneCh: make(chan struct{}),
+		pokeCh: make(chan struct{}, 1),
+	}
+	go controlPipe.serve()
+	controlPipe.signal()
+
+	return &pythonRunnerControlFile{
+		path:    path,
+		writeFn: controlPipe.write,
+		closeFn: controlPipe.close,
+	}, nil
+}
+
+func newPythonRunnerStateControlFile(initial runnerControlState) (*pythonRunnerControlFile, error) {
 	file, err := os.CreateTemp("", "codex-console-registration-control-*.state")
 	if err != nil {
-		return nil, fmt.Errorf("create python runner control file: %w", err)
+		return nil, fmt.Errorf("create %s control file: %w", registrationRunnerErrorPrefix, err)
 	}
 
 	controlFile := &pythonRunnerControlFile{path: file.Name()}
 	if _, err := file.WriteString(string(initial)); err != nil {
 		_ = file.Close()
 		controlFile.close()
-		return nil, fmt.Errorf("write python runner control file: %w", err)
+		return nil, fmt.Errorf("write %s control file: %w", registrationRunnerErrorPrefix, err)
 	}
 	if err := file.Close(); err != nil {
 		controlFile.close()
-		return nil, fmt.Errorf("close python runner control file: %w", err)
+		return nil, fmt.Errorf("close %s control file: %w", registrationRunnerErrorPrefix, err)
+	}
+
+	controlFile.writeFn = func(state runnerControlState) error {
+		return os.WriteFile(controlFile.path, []byte(state), 0o600)
+	}
+	controlFile.closeFn = func() {
+		if strings.TrimSpace(controlFile.path) == "" {
+			return
+		}
+		_ = os.Remove(controlFile.path)
 	}
 
 	return controlFile, nil
@@ -320,20 +452,120 @@ func (f *pythonRunnerControlFile) write(state runnerControlState) error {
 	if f == nil {
 		return nil
 	}
-	return os.WriteFile(f.path, []byte(state), 0o600)
+	if f.writeFn == nil {
+		return nil
+	}
+	return f.writeFn(state)
 }
 
 func (f *pythonRunnerControlFile) close() {
 	if f == nil || strings.TrimSpace(f.path) == "" {
 		return
 	}
-	_ = os.Remove(f.path)
+	if f.closeFn != nil {
+		f.closeFn()
+	}
+}
+
+type pythonRunnerNamedPipeControl struct {
+	path     string
+	mu       sync.RWMutex
+	state    runnerControlState
+	stopOnce sync.Once
+	stopCh   chan struct{}
+	doneCh   chan struct{}
+	pokeCh   chan struct{}
+}
+
+func (p *pythonRunnerNamedPipeControl) write(state runnerControlState) error {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	p.state = state
+	p.mu.Unlock()
+	p.signal()
+	return nil
+}
+
+func (p *pythonRunnerNamedPipeControl) currentState() runnerControlState {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.state
+}
+
+func (p *pythonRunnerNamedPipeControl) signal() {
+	if p == nil {
+		return
+	}
+	select {
+	case p.pokeCh <- struct{}{}:
+	default:
+	}
+}
+
+func (p *pythonRunnerNamedPipeControl) serve() {
+	defer close(p.doneCh)
+
+	ticker := time.NewTicker(pythonRunnerControlPipePulseInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.stopCh:
+			return
+		case <-p.pokeCh:
+		case <-ticker.C:
+		}
+
+		file, err := os.OpenFile(p.path, os.O_WRONLY, 0)
+		if err != nil {
+			select {
+			case <-p.stopCh:
+				return
+			default:
+				continue
+			}
+		}
+
+		_, writeErr := file.WriteString(string(p.currentState()))
+		closeErr := file.Close()
+		if writeErr != nil || closeErr != nil {
+			select {
+			case <-p.stopCh:
+				return
+			default:
+			}
+		}
+
+		select {
+		case <-p.stopCh:
+			return
+		default:
+		}
+	}
+}
+
+func (p *pythonRunnerNamedPipeControl) close() {
+	if p == nil {
+		return
+	}
+
+	p.stopOnce.Do(func() {
+		close(p.stopCh)
+		unblock, err := os.OpenFile(p.path, os.O_RDWR, 0)
+		if err == nil {
+			_ = unblock.Close()
+		}
+		<-p.doneCh
+		_ = os.Remove(p.path)
+	})
 }
 
 func pythonRunnerEventError(event *pythonRunnerEvent, waitErr error, fallback string) error {
 	if event == nil {
 		if waitErr != nil {
-			return fmt.Errorf("python runner failed: %w", waitErr)
+			return fmt.Errorf("%s failed: %w", registrationRunnerErrorPrefix, waitErr)
 		}
 		return errors.New(fallback)
 	}
@@ -346,24 +578,20 @@ func pythonRunnerEventError(event *pythonRunnerEvent, waitErr error, fallback st
 		message = fallback
 	}
 	if waitErr != nil {
-		return fmt.Errorf("%s (process exit: %w)", message, waitErr)
+		message = fmt.Sprintf("%s (process exit: %v)", message, waitErr)
 	}
-	return errors.New(message)
-}
 
-func (r *PythonRunner) writeScriptFile() (string, error) {
-	file, err := os.CreateTemp("", "codex-console-registration-runner-*.py")
-	if err != nil {
-		return "", fmt.Errorf("create python runner script: %w", err)
+	err := error(errors.New(message))
+	if event != nil && len(event.AccountPersistence) > 0 {
+		req, decodeErr := decodeAccountPersistenceRequest(event.AccountPersistence)
+		if decodeErr == nil && req != nil && strings.TrimSpace(req.Email) != "" {
+			return &RunnerError{
+				Output: RunnerOutput{AccountPersistence: req},
+				Err:    err,
+			}
+		}
 	}
-	if _, err := file.WriteString(pythonRunnerScript); err != nil {
-		file.Close()
-		return "", fmt.Errorf("write python runner script: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return "", fmt.Errorf("close python runner script: %w", err)
-	}
-	return file.Name(), nil
+	return err
 }
 
 func resolvePythonExecutable() (string, error) {

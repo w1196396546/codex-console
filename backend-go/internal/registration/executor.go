@@ -12,7 +12,6 @@ import (
 )
 
 const JobTypeSingle = "registration_single"
-const runnerAccountPersistenceResultKey = "__registration_account_persistence"
 
 type runnerControlState string
 
@@ -32,8 +31,32 @@ type RunnerRequest struct {
 	control              runnerControlFunc
 }
 
+type RunnerOutput struct {
+	Result             map[string]any
+	AccountPersistence *accounts.UpsertAccountRequest
+}
+
+type RunnerError struct {
+	Output RunnerOutput
+	Err    error
+}
+
+func (e *RunnerError) Error() string {
+	if e == nil || e.Err == nil {
+		return ""
+	}
+	return e.Err.Error()
+}
+
+func (e *RunnerError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 type Runner interface {
-	Run(ctx context.Context, req RunnerRequest, logf func(level string, message string) error) (map[string]any, error)
+	Run(ctx context.Context, req RunnerRequest, logf func(level string, message string) error) (RunnerOutput, error)
 }
 
 type logAppender interface {
@@ -157,7 +180,7 @@ func (e *Executor) Execute(ctx context.Context, job jobs.Job) (map[string]any, e
 		return nil, fmt.Errorf("prepare registration flow: %w", err)
 	}
 
-	result, err := e.runner.Run(ctx, RunnerRequest{
+	output, err := e.runner.Run(ctx, RunnerRequest{
 		TaskUUID:             job.JobID,
 		StartRequest:         prepared.Request,
 		Plan:                 prepared.Plan,
@@ -165,17 +188,21 @@ func (e *Executor) Execute(ctx context.Context, job jobs.Job) (map[string]any, e
 		control:              e.runnerControl(job.JobID),
 	}, logf)
 	if err != nil {
+		if output := runnerErrorOutput(err); output != nil && e.accountPersistence != nil {
+			if req := output.AccountPersistence; req != nil && strings.TrimSpace(req.Email) != "" {
+				if _, persistErr := e.accountPersistence.UpsertAccount(ctx, *req); persistErr != nil {
+					return nil, fmt.Errorf("persist account via go account service after runner error: %w", persistErr)
+				}
+			}
+		}
 		return nil, fmt.Errorf("run registration flow: %w", err)
 	}
+	result := output.Result
 	if result == nil {
 		return nil, errors.New("registration runner returned empty result")
 	}
-	persistenceReq, hasPersistence, err := extractAccountPersistenceRequest(result)
-	if err != nil {
-		return nil, fmt.Errorf("decode runner account persistence payload: %w", err)
-	}
-	if hasPersistence && e.accountPersistence != nil {
-		savedAccount, err := e.accountPersistence.UpsertAccount(ctx, persistenceReq)
+	if output.AccountPersistence != nil && e.accountPersistence != nil {
+		savedAccount, err := e.accountPersistence.UpsertAccount(ctx, *output.AccountPersistence)
 		if err != nil {
 			return nil, fmt.Errorf("persist account via go account service: %w", err)
 		}
@@ -196,6 +223,17 @@ func (e *Executor) Execute(ctx context.Context, job jobs.Job) (map[string]any, e
 	}
 
 	return result, nil
+}
+
+func runnerErrorOutput(err error) *RunnerOutput {
+	if err == nil {
+		return nil
+	}
+	var runnerErr *RunnerError
+	if !errors.As(err, &runnerErr) || runnerErr == nil {
+		return nil
+	}
+	return &runnerErr.Output
 }
 
 func (e *Executor) runnerControl(jobID string) runnerControlFunc {
@@ -227,32 +265,4 @@ func (e *Executor) runnerControl(jobID string) runnerControlFunc {
 			return runnerControlStateRunning, nil
 		}
 	}
-}
-
-func extractAccountPersistenceRequest(result map[string]any) (accounts.UpsertAccountRequest, bool, error) {
-	if result == nil {
-		return accounts.UpsertAccountRequest{}, false, nil
-	}
-
-	raw, ok := result[runnerAccountPersistenceResultKey]
-	if !ok {
-		return accounts.UpsertAccountRequest{}, false, nil
-	}
-	delete(result, runnerAccountPersistenceResultKey)
-
-	if raw == nil {
-		return accounts.UpsertAccountRequest{}, false, nil
-	}
-
-	payload, err := json.Marshal(raw)
-	if err != nil {
-		return accounts.UpsertAccountRequest{}, false, err
-	}
-
-	var req accounts.UpsertAccountRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
-		return accounts.UpsertAccountRequest{}, false, err
-	}
-
-	return req, true, nil
 }

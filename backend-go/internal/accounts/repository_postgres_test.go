@@ -138,6 +138,152 @@ func TestPostgresRepositoryUpsertAccountUsesOnConflictAndSerializesExtraData(t *
 	}
 }
 
+func TestPostgresRepositoryCompareAndSwapTokenCompletionRuntimeUsesRuntimeConditions(t *testing.T) {
+	registeredAt := time.Date(2026, 4, 5, 10, 0, 0, 0, time.UTC)
+	createdAt := registeredAt.Add(-time.Hour)
+	updatedAt := registeredAt.Add(time.Minute)
+	db := &fakeAccountsDB{
+		row: fakeAccountsRow{
+			values: []any{
+				9,
+				"user@example.com",
+				"",
+				"",
+				"",
+				"",
+				"",
+				"",
+				"",
+				"",
+				"",
+				"",
+				"",
+				"",
+				false,
+				(*time.Time)(nil),
+				false,
+				(*time.Time)(nil),
+				(*time.Time)(nil),
+				(*time.Time)(nil),
+				`{"token_completion_attempts":[{"email":"user@example.com","state":"running"}],"refresh_token_cooldown_until":""}`,
+				"token_pending",
+				"login",
+				"",
+				(*time.Time)(nil),
+				&registeredAt,
+				&createdAt,
+				&updatedAt,
+			},
+		},
+	}
+	repo := newPostgresRepository(db)
+
+	account, swapped, err := repo.CompareAndSwapTokenCompletionRuntime(
+		context.Background(),
+		"user@example.com",
+		map[string]any{
+			"token_completion_attempts": []map[string]any{
+				{
+					"email":       "user@example.com",
+					"state":       "blocked",
+					"lease_token": "lease-old",
+				},
+			},
+			"refresh_token_cooldown_until": "2026-04-05T09:55:00Z",
+		},
+		map[string]any{
+			"token_completion_attempts": []map[string]any{
+				{
+					"email":       "user@example.com",
+					"state":       "running",
+					"lease_token": "lease-new",
+				},
+			},
+			"refresh_token_cooldown_until": "",
+		},
+		Account{
+			Status: "token_pending",
+			Source: "login",
+		},
+	)
+	if err != nil {
+		t.Fatalf("unexpected compare-and-swap error: %v", err)
+	}
+	if !swapped {
+		t.Fatal("expected compare-and-swap to succeed")
+	}
+	if !strings.Contains(db.queryRowQuery, "extra_data = (COALESCE(extra_data, '{}'::jsonb) - 'token_completion_attempts' - 'refresh_token_cooldown_until') || $2::jsonb") {
+		t.Fatalf("expected compare-and-swap update query, got %q", db.queryRowQuery)
+	}
+	if !strings.Contains(db.queryRowQuery, "COALESCE(extra_data->'token_completion_attempts', 'null'::jsonb) = $3::jsonb") {
+		t.Fatalf("expected compare-and-swap attempts condition, got %q", db.queryRowQuery)
+	}
+	if !strings.Contains(db.queryRowQuery, "COALESCE(extra_data->>'refresh_token_cooldown_until', '') = $4") {
+		t.Fatalf("expected compare-and-swap cooldown condition, got %q", db.queryRowQuery)
+	}
+	if len(db.queryRowArgs) != 4 {
+		t.Fatalf("expected four compare-and-swap args, got %d", len(db.queryRowArgs))
+	}
+	if nextRuntimeJSON, ok := db.queryRowArgs[1].(string); !ok || !strings.Contains(nextRuntimeJSON, `"state":"running"`) || !strings.Contains(nextRuntimeJSON, `"lease_token":"lease-new"`) {
+		t.Fatalf("expected next runtime json arg, got %#v", db.queryRowArgs[1])
+	}
+	if currentAttemptsJSON, ok := db.queryRowArgs[2].(string); !ok || !strings.Contains(currentAttemptsJSON, `"state":"blocked"`) || !strings.Contains(currentAttemptsJSON, `"lease_token":"lease-old"`) {
+		t.Fatalf("expected current attempts json arg, got %#v", db.queryRowArgs[2])
+	}
+	if cooldown, ok := db.queryRowArgs[3].(string); !ok || cooldown != "2026-04-05T09:55:00Z" {
+		t.Fatalf("expected cooldown compare arg, got %#v", db.queryRowArgs[3])
+	}
+	if account.Status != "token_pending" || account.Source != "login" {
+		t.Fatalf("expected compare-and-swap account to round-trip, got %+v", account)
+	}
+}
+
+func TestPostgresRepositoryCompareAndSwapTokenCompletionRuntimeReturnsFalseOnFenceConflict(t *testing.T) {
+	db := &fakeAccountsDB{
+		row: fakeAccountsRow{err: pgx.ErrNoRows},
+	}
+	repo := newPostgresRepository(db)
+
+	account, swapped, err := repo.CompareAndSwapTokenCompletionRuntime(
+		context.Background(),
+		"user@example.com",
+		map[string]any{
+			"token_completion_attempts": []map[string]any{
+				{
+					"email":       "user@example.com",
+					"state":       "running",
+					"lease_token": "lease-stale",
+				},
+			},
+		},
+		map[string]any{
+			"token_completion_attempts": []map[string]any{
+				{
+					"email":       "user@example.com",
+					"state":       "completed",
+					"lease_token": "lease-stale",
+				},
+			},
+		},
+		Account{
+			Status: "token_pending",
+			Source: "login",
+		},
+	)
+	if err != nil {
+		t.Fatalf("unexpected compare-and-swap error: %v", err)
+	}
+	if swapped {
+		t.Fatalf("expected compare-and-swap conflict, got account %+v", account)
+	}
+	if account.Email != "" || len(account.ExtraData) != 0 || account.Status != "" || account.Source != "" {
+		t.Fatalf("expected empty account on fence conflict, got %+v", account)
+	}
+	if !strings.Contains(db.queryRowQuery, "COALESCE(extra_data->'token_completion_attempts', 'null'::jsonb) = $3::jsonb") {
+		t.Fatalf("expected compare-and-swap fence condition, got %q", db.queryRowQuery)
+	}
+}
+
 type fakeAccountsDB struct {
 	queryRowQuery string
 	queryRowArgs  []any

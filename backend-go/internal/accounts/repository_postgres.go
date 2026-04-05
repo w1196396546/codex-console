@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -253,6 +254,131 @@ func (r *PostgresRepository) UpsertAccount(ctx context.Context, account Account)
 	return saved, nil
 }
 
+func (r *PostgresRepository) CompareAndSwapTokenCompletionRuntime(
+	ctx context.Context,
+	email string,
+	currentExtraData map[string]any,
+	nextExtraData map[string]any,
+	defaults Account,
+) (Account, bool, error) {
+	normalizedEmail := strings.TrimSpace(email)
+	if normalizedEmail == "" {
+		return Account{}, false, ErrAccountEmailRequired
+	}
+
+	currentAttemptsJSON, err := marshalTokenCompletionCASValue(currentExtraData["token_completion_attempts"])
+	if err != nil {
+		return Account{}, false, fmt.Errorf("marshal current token completion attempts: %w", err)
+	}
+	nextRuntimeJSON, err := marshalExtraData(filterTokenCompletionRuntimeExtraData(nextExtraData))
+	if err != nil {
+		return Account{}, false, fmt.Errorf("marshal next token completion runtime extra_data: %w", err)
+	}
+	currentCooldown := strings.TrimSpace(fmt.Sprintf("%v", currentExtraData["refresh_token_cooldown_until"]))
+
+	insertAccount := defaults
+	insertAccount.Email = normalizedEmail
+	insertExtraData := filterTokenCompletionRuntimeExtraData(nextExtraData)
+	insertExtraDataJSON, err := marshalExtraData(insertExtraData)
+	if err != nil {
+		return Account{}, false, fmt.Errorf("marshal insert token completion runtime extra_data: %w", err)
+	}
+
+	if tokenCompletionRuntimeExtraDataEmpty(currentExtraData) {
+		saved, err := scanAccount(r.db.QueryRow(ctx, `
+			INSERT INTO accounts (
+				email,
+				extra_data,
+				status,
+				source
+			) VALUES ($1, $2, $3, $4)
+			ON CONFLICT (email) DO NOTHING
+			RETURNING
+				id,
+				email,
+				COALESCE(password, ''),
+				COALESCE(client_id, ''),
+				COALESCE(session_token, ''),
+				COALESCE(email_service, ''),
+				COALESCE(email_service_id, ''),
+				COALESCE(account_id, ''),
+				COALESCE(workspace_id, ''),
+				COALESCE(access_token, ''),
+				COALESCE(refresh_token, ''),
+				COALESCE(id_token, ''),
+				COALESCE(cookies, ''),
+				COALESCE(proxy_used, ''),
+				COALESCE(cpa_uploaded, FALSE),
+				cpa_uploaded_at,
+				COALESCE(sub2api_uploaded, FALSE),
+				sub2api_uploaded_at,
+				last_refresh,
+				expires_at,
+				COALESCE(extra_data::text, '{}'),
+				COALESCE(status, ''),
+				COALESCE(source, ''),
+				COALESCE(subscription_type, ''),
+				subscription_at,
+				registered_at,
+				created_at,
+				updated_at
+		`, insertAccount.Email, insertExtraDataJSON, insertAccount.Status, insertAccount.Source))
+		if err == nil {
+			return saved, true, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return Account{}, false, fmt.Errorf("insert token completion runtime state: %w", err)
+		}
+	}
+
+	saved, err := scanAccount(r.db.QueryRow(ctx, `
+		UPDATE accounts
+		SET
+			extra_data = (COALESCE(extra_data, '{}'::jsonb) - 'token_completion_attempts' - 'refresh_token_cooldown_until') || $2::jsonb,
+			updated_at = NOW()
+		WHERE email = $1
+			AND COALESCE(extra_data->'token_completion_attempts', 'null'::jsonb) = $3::jsonb
+			AND COALESCE(extra_data->>'refresh_token_cooldown_until', '') = $4
+		RETURNING
+			id,
+			email,
+			COALESCE(password, ''),
+			COALESCE(client_id, ''),
+			COALESCE(session_token, ''),
+			COALESCE(email_service, ''),
+			COALESCE(email_service_id, ''),
+			COALESCE(account_id, ''),
+			COALESCE(workspace_id, ''),
+			COALESCE(access_token, ''),
+			COALESCE(refresh_token, ''),
+			COALESCE(id_token, ''),
+			COALESCE(cookies, ''),
+			COALESCE(proxy_used, ''),
+			COALESCE(cpa_uploaded, FALSE),
+			cpa_uploaded_at,
+			COALESCE(sub2api_uploaded, FALSE),
+			sub2api_uploaded_at,
+			last_refresh,
+			expires_at,
+			COALESCE(extra_data::text, '{}'),
+			COALESCE(status, ''),
+			COALESCE(source, ''),
+			COALESCE(subscription_type, ''),
+			subscription_at,
+			registered_at,
+			created_at,
+			updated_at
+	`, normalizedEmail, nextRuntimeJSON, currentAttemptsJSON, currentCooldown))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Account{}, false, nil
+		}
+		return Account{}, false, fmt.Errorf("compare and swap token completion runtime state: %w", err)
+	}
+
+	return saved, true, nil
+}
+
 func (r *PostgresRepository) countAccounts(ctx context.Context) (int, error) {
 	var total int
 	if err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM accounts`).Scan(&total); err != nil {
@@ -362,4 +488,34 @@ func parseExtraData(value string) (map[string]any, error) {
 	}
 
 	return payload, nil
+}
+
+func marshalTokenCompletionCASValue(value any) (string, error) {
+	if value == nil {
+		return "null", nil
+	}
+
+	bytes, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return string(bytes), nil
+}
+
+func filterTokenCompletionRuntimeExtraData(value map[string]any) map[string]any {
+	filtered := map[string]any{
+		"token_completion_attempts":    value["token_completion_attempts"],
+		"refresh_token_cooldown_until": strings.TrimSpace(fmt.Sprintf("%v", value["refresh_token_cooldown_until"])),
+	}
+	if filtered["refresh_token_cooldown_until"] == "" || filtered["refresh_token_cooldown_until"] == "<nil>" {
+		filtered["refresh_token_cooldown_until"] = ""
+	}
+	return filtered
+}
+
+func tokenCompletionRuntimeExtraDataEmpty(value map[string]any) bool {
+	if len(value) == 0 {
+		return true
+	}
+	return value["token_completion_attempts"] == nil && strings.TrimSpace(fmt.Sprintf("%v", value["refresh_token_cooldown_until"])) == ""
 }

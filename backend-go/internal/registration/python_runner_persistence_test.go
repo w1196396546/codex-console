@@ -2,6 +2,7 @@ package registration
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +22,7 @@ printf '%s\n' '{"type":"result","success":true,"result":{"status":"completed","e
 		repoRoot:         repoRoot,
 	}
 
-	result, err := runner.Run(context.Background(), RunnerRequest{
+	output, err := runner.Run(context.Background(), RunnerRequest{
 		TaskUUID: "task-persist",
 		StartRequest: StartRequest{
 			EmailServiceType: "outlook",
@@ -31,15 +32,44 @@ printf '%s\n' '{"type":"result","success":true,"result":{"status":"completed","e
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	payload, ok := result[runnerAccountPersistenceResultKey].(map[string]any)
-	if !ok {
-		t.Fatalf("expected internal account persistence payload, got %#v", result[runnerAccountPersistenceResultKey])
+	if output.AccountPersistence == nil {
+		t.Fatal("expected account persistence request")
 	}
-	if payload["email"] != "alice@example.com" || payload["access_token"] != "access-1" {
-		t.Fatalf("unexpected internal persistence payload: %#v", payload)
+	if output.AccountPersistence.Email != "alice@example.com" || output.AccountPersistence.AccessToken != "access-1" {
+		t.Fatalf("unexpected account persistence request: %+v", output.AccountPersistence)
 	}
-	if result["email"] != "alice@example.com" || result["status"] != "completed" {
-		t.Fatalf("expected user-facing result to stay intact, got %#v", result)
+	if output.Result["email"] != "alice@example.com" || output.Result["status"] != "completed" {
+		t.Fatalf("expected user-facing result to stay intact, got %#v", output.Result)
+	}
+}
+
+func TestPythonRunnerRunDoesNotLeakAccountPersistenceIntoUserResult(t *testing.T) {
+	repoRoot := createTestRepoRoot(t)
+	pythonExecutable := createFakePythonExecutable(t, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"result","success":true,"result":{"status":"completed","email":"alice@example.com"},"account_persistence":{"email":"alice@example.com","email_service":"outlook","access_token":"access-1"}}'
+`)
+
+	runner := &PythonRunner{
+		pythonExecutable: pythonExecutable,
+		repoRoot:         repoRoot,
+	}
+
+	output, err := runner.Run(context.Background(), RunnerRequest{
+		TaskUUID: "task-no-leak",
+		StartRequest: StartRequest{
+			EmailServiceType: "outlook",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if output.AccountPersistence == nil {
+		t.Fatal("expected account persistence to be returned separately")
+	}
+	if output.Result["email"] != "alice@example.com" || output.Result["status"] != "completed" {
+		t.Fatalf("expected user-facing result to stay intact, got %#v", output.Result)
 	}
 }
 
@@ -60,7 +90,7 @@ func TestPythonRunnerRunSkipsPythonPersistenceAndUploadsWhenGoPersistenceEnabled
 		repoRoot:         repoRoot,
 	}
 
-	result, err := runner.Run(context.Background(), RunnerRequest{
+	output, err := runner.Run(context.Background(), RunnerRequest{
 		TaskUUID:             "task-go-persistence",
 		GoPersistenceEnabled: true,
 		StartRequest: StartRequest{
@@ -86,15 +116,14 @@ func TestPythonRunnerRunSkipsPythonPersistenceAndUploadsWhenGoPersistenceEnabled
 		t.Fatalf("expected python optional uploads to be skipped, stat err=%v", err)
 	}
 
-	payload, ok := result[runnerAccountPersistenceResultKey].(map[string]any)
-	if !ok {
-		t.Fatalf("expected internal account persistence payload, got %#v", result[runnerAccountPersistenceResultKey])
+	if output.AccountPersistence == nil {
+		t.Fatal("expected account persistence request")
 	}
-	if payload["email"] != "alice@example.com" || payload["access_token"] != "bridge-access-token" {
-		t.Fatalf("unexpected internal persistence payload: %#v", payload)
+	if output.AccountPersistence.Email != "alice@example.com" || output.AccountPersistence.AccessToken != "runner-access-token" {
+		t.Fatalf("unexpected account persistence request: %+v", output.AccountPersistence)
 	}
-	if result["email"] != "alice@example.com" || result["status"] != "completed" {
-		t.Fatalf("expected user-facing result to stay intact, got %#v", result)
+	if output.Result["email"] != "alice@example.com" || output.Result["status"] != "completed" {
+		t.Fatalf("expected user-facing result to stay intact, got %#v", output.Result)
 	}
 }
 
@@ -115,7 +144,7 @@ func TestPythonRunnerRunKeepsPythonPersistenceAndUploadsWhenGoPersistenceDisable
 		repoRoot:         repoRoot,
 	}
 
-	result, err := runner.Run(context.Background(), RunnerRequest{
+	output, err := runner.Run(context.Background(), RunnerRequest{
 		TaskUUID:             "task-python-persistence",
 		GoPersistenceEnabled: false,
 		StartRequest: StartRequest{
@@ -137,15 +166,14 @@ func TestPythonRunnerRunKeepsPythonPersistenceAndUploadsWhenGoPersistenceDisable
 	assertFileContains(t, saveMarker, "saved")
 	assertFileContains(t, uploadMarker, "uploaded")
 
-	payload, ok := result[runnerAccountPersistenceResultKey].(map[string]any)
-	if !ok {
-		t.Fatalf("expected internal account persistence payload, got %#v", result[runnerAccountPersistenceResultKey])
+	if output.AccountPersistence == nil {
+		t.Fatal("expected account persistence request")
 	}
-	if payload["email"] != "alice@example.com" || payload["access_token"] != "bridge-access-token" {
-		t.Fatalf("unexpected internal persistence payload: %#v", payload)
+	if output.AccountPersistence.Email != "alice@example.com" || output.AccountPersistence.AccessToken != "runner-access-token" {
+		t.Fatalf("unexpected account persistence request: %+v", output.AccountPersistence)
 	}
-	if result["email"] != "alice@example.com" || result["status"] != "completed" {
-		t.Fatalf("expected user-facing result to stay intact, got %#v", result)
+	if output.Result["email"] != "alice@example.com" || output.Result["status"] != "completed" {
+		t.Fatalf("expected user-facing result to stay intact, got %#v", output.Result)
 	}
 }
 
@@ -161,7 +189,7 @@ func TestPythonRunnerRunIncludesOptionalAccountPersistenceFields(t *testing.T) {
 		repoRoot:         repoRoot,
 	}
 
-	result, err := runner.Run(context.Background(), RunnerRequest{
+	output, err := runner.Run(context.Background(), RunnerRequest{
 		TaskUUID:             "task-optional-persist",
 		GoPersistenceEnabled: true,
 		StartRequest: StartRequest{
@@ -179,21 +207,52 @@ func TestPythonRunnerRunIncludesOptionalAccountPersistenceFields(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	payload, ok := result[runnerAccountPersistenceResultKey].(map[string]any)
-	if !ok {
-		t.Fatalf("expected internal account persistence payload, got %#v", result[runnerAccountPersistenceResultKey])
+	if output.AccountPersistence == nil {
+		t.Fatal("expected account persistence request")
 	}
-	if payload["last_refresh"] != "2026-04-04T08:00:00Z" {
-		t.Fatalf("expected last_refresh in persistence payload, got %#v", payload)
+	if output.AccountPersistence.LastRefresh == nil || output.AccountPersistence.LastRefresh.Format(time.RFC3339) != "2026-04-04T08:00:00Z" {
+		t.Fatalf("expected last_refresh in persistence request, got %+v", output.AccountPersistence)
 	}
-	if payload["expires_at"] != "2026-04-04T09:30:00Z" {
-		t.Fatalf("expected expires_at in persistence payload, got %#v", payload)
+	if output.AccountPersistence.ExpiresAt == nil || output.AccountPersistence.ExpiresAt.Format(time.RFC3339) != "2026-04-04T09:30:00Z" {
+		t.Fatalf("expected expires_at in persistence request, got %+v", output.AccountPersistence)
 	}
-	if payload["subscription_type"] != "team" {
-		t.Fatalf("expected subscription_type in persistence payload, got %#v", payload)
+	if output.AccountPersistence.SubscriptionType != "team" {
+		t.Fatalf("expected subscription_type in persistence request, got %+v", output.AccountPersistence)
 	}
-	if payload["subscription_at"] != "2026-04-04T10:00:00Z" {
-		t.Fatalf("expected subscription_at in persistence payload, got %#v", payload)
+	if output.AccountPersistence.SubscriptionAt == nil || output.AccountPersistence.SubscriptionAt.Format(time.RFC3339) != "2026-04-04T10:00:00Z" {
+		t.Fatalf("expected subscription_at in persistence request, got %+v", output.AccountPersistence)
+	}
+}
+
+func TestPythonRunnerRunFatalErrorCarriesAccountPersistenceOutput(t *testing.T) {
+	repoRoot := createTestRepoRoot(t)
+	pythonExecutable := createFakePythonExecutable(t, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"fatal","success":false,"error_message":"token completion blocked","account_persistence":{"email":"alice@example.com","email_service":"tempmail","status":"token_pending"}}'
+exit 1
+`)
+
+	runner := &PythonRunner{
+		pythonExecutable: pythonExecutable,
+		repoRoot:         repoRoot,
+	}
+
+	_, err := runner.Run(context.Background(), RunnerRequest{
+		TaskUUID: "task-fatal-persistence",
+		StartRequest: StartRequest{
+			EmailServiceType: "tempmail",
+		},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected fatal error")
+	}
+
+	var runnerErr *RunnerError
+	if !errors.As(err, &runnerErr) || runnerErr == nil {
+		t.Fatalf("expected RunnerError carrying persistence output, got %T %v", err, err)
+	}
+	if runnerErr.Output.AccountPersistence == nil || runnerErr.Output.AccountPersistence.Email != "alice@example.com" {
+		t.Fatalf("expected fatal error to carry account persistence, got %+v", runnerErr.Output.AccountPersistence)
 	}
 }
 
@@ -232,7 +291,7 @@ class Result:
         self.password = "secret"
         self.account_id = "account-1"
         self.workspace_id = "workspace-1"
-        self.access_token = "bridge-access-token"
+        self.access_token = "runner-access-token"
         self.refresh_token = "refresh-1"
         self.id_token = "id-token-1"
         self.session_token = "session-token-1"
@@ -389,24 +448,20 @@ def get_tm_service_by_id(db, service_id):
 	return repoRoot
 }
 
-func TestExtractAccountPersistenceRequestPreservesOptionalAccountFields(t *testing.T) {
-	result := map[string]any{
-		runnerAccountPersistenceResultKey: map[string]any{
-			"email":             "alice@example.com",
-			"email_service":     "outlook",
-			"last_refresh":      "2026-04-04T08:00:00Z",
-			"expires_at":        "2026-04-04T09:30:00Z",
-			"subscription_type": "team",
-			"subscription_at":   "2026-04-04T10:00:00Z",
-		},
-	}
-
-	req, ok, err := extractAccountPersistenceRequest(result)
+func TestDecodeAccountPersistenceRequestPreservesOptionalAccountFields(t *testing.T) {
+	req, err := decodeAccountPersistenceRequest(map[string]any{
+		"email":             "alice@example.com",
+		"email_service":     "outlook",
+		"last_refresh":      "2026-04-04T08:00:00Z",
+		"expires_at":        "2026-04-04T09:30:00Z",
+		"subscription_type": "team",
+		"subscription_at":   "2026-04-04T10:00:00Z",
+	})
 	if err != nil {
-		t.Fatalf("unexpected extract error: %v", err)
+		t.Fatalf("unexpected decode error: %v", err)
 	}
-	if !ok {
-		t.Fatal("expected persistence payload to be extracted")
+	if req == nil {
+		t.Fatal("expected persistence payload to be decoded")
 	}
 	lastRefresh := time.Date(2026, 4, 4, 8, 0, 0, 0, time.UTC)
 	expiresAt := time.Date(2026, 4, 4, 9, 30, 0, 0, time.UTC)

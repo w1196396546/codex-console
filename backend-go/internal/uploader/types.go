@@ -15,15 +15,17 @@ const (
 )
 
 var (
-	ErrUploadKindInvalid             = errors.New("uploader: invalid upload kind")
-	ErrUploadAccountEmailMissing     = errors.New("uploader: account email is required")
-	ErrUploadAccessTokenMissing      = errors.New("uploader: access token is required")
-	ErrUploadAccountsEmpty           = errors.New("uploader: at least one upload account is required")
-	ErrUploadServiceBaseURLEmpty     = errors.New("uploader: service base url is required")
-	ErrUploadCredentialMissing       = errors.New("uploader: service credential is required")
-	ErrConfigRepositoryNotConfigured = errors.New("uploader: config repository is not configured")
-	ErrServiceConfigNotFound         = errors.New("uploader: service config not found")
-	ErrSub2APITargetTypeInvalid      = errors.New("uploader: invalid sub2api target type")
+	ErrUploadKindInvalid               = errors.New("uploader: invalid upload kind")
+	ErrUploadAccountEmailMissing       = errors.New("uploader: account email is required")
+	ErrUploadAccessTokenMissing        = errors.New("uploader: access token is required")
+	ErrUploadAccountsEmpty             = errors.New("uploader: at least one upload account is required")
+	ErrUploadServiceBaseURLEmpty       = errors.New("uploader: service base url is required")
+	ErrUploadCredentialMissing         = errors.New("uploader: service credential is required")
+	ErrConfigRepositoryNotConfigured   = errors.New("uploader: config repository is not configured")
+	ErrUploadAccountStoreNotConfigured = errors.New("uploader: upload account store is not configured")
+	ErrServiceConfigNotFound           = errors.New("uploader: service config not found")
+	ErrUploadServiceUnavailable        = errors.New("uploader: upload service is unavailable")
+	ErrSub2APITargetTypeInvalid        = errors.New("uploader: invalid sub2api target type")
 )
 
 type UploadKind string
@@ -163,6 +165,69 @@ type TMServiceResponse struct {
 type DeleteServiceResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
+}
+
+type ConnectionTestResult struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+type CPAConnectionTestRequest struct {
+	APIURL   string `json:"api_url"`
+	APIToken string `json:"api_token"`
+}
+
+type Sub2APIConnectionTestRequest struct {
+	APIURL string `json:"api_url"`
+	APIKey string `json:"api_key"`
+}
+
+type TMConnectionTestRequest struct {
+	APIURL string `json:"api_url"`
+	APIKey string `json:"api_key"`
+}
+
+type UploadAccountStore interface {
+	ListUploadAccounts(ctx context.Context, ids []int) ([]UploadAccount, error)
+	MarkSub2APIUploaded(ctx context.Context, ids []int, uploadedAt time.Time) error
+}
+
+type Sub2APIUploadRequest struct {
+	AccountIDs  []int `json:"account_ids"`
+	ServiceID   *int  `json:"service_id,omitempty"`
+	Concurrency int   `json:"concurrency"`
+	Priority    int   `json:"priority"`
+}
+
+func (r Sub2APIUploadRequest) Normalized() Sub2APIUploadRequest {
+	normalized := r
+	normalized.AccountIDs = append([]int(nil), normalized.AccountIDs...)
+	if normalized.Concurrency <= 0 {
+		normalized.Concurrency = DefaultSub2APIConcurrency
+	}
+	if normalized.Priority <= 0 {
+		normalized.Priority = DefaultSub2APIPriority
+	}
+	if normalized.ServiceID != nil {
+		value := *normalized.ServiceID
+		normalized.ServiceID = &value
+	}
+	return normalized
+}
+
+type Sub2APIUploadDetail struct {
+	ID      int     `json:"id"`
+	Email   *string `json:"email"`
+	Success bool    `json:"success"`
+	Message string  `json:"message,omitempty"`
+	Error   string  `json:"error,omitempty"`
+}
+
+type Sub2APIUploadResult struct {
+	SuccessCount int                   `json:"success_count"`
+	FailedCount  int                   `json:"failed_count"`
+	SkippedCount int                   `json:"skipped_count"`
+	Details      []Sub2APIUploadDetail `json:"details"`
 }
 
 type CreateCPAServiceRequest struct {

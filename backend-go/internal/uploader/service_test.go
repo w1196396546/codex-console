@@ -295,14 +295,14 @@ func TestUploadServiceUploadSub2APIUsesSenderAndWritesBackCompatibleDetails(t *t
 	if len(result.Details) != 3 {
 		t.Fatalf("expected 3 upload details, got %+v", result.Details)
 	}
-	if result.Details[0].ID != 1 || !result.Details[0].Success || result.Details[0].Message != "成功上传 1 个账号" {
-		t.Fatalf("unexpected success detail: %+v", result.Details[0])
+	if result.Details[0].ID != 2 || result.Details[0].Error != "缺少 access_token" {
+		t.Fatalf("unexpected skipped detail: %+v", result.Details[0])
 	}
-	if result.Details[1].ID != 2 || result.Details[1].Error != "缺少 access_token" {
-		t.Fatalf("unexpected skipped detail: %+v", result.Details[1])
+	if result.Details[1].ID != 999 || result.Details[1].Email != nil || result.Details[1].Error != "账号不存在" {
+		t.Fatalf("unexpected missing-account detail: %+v", result.Details[1])
 	}
-	if result.Details[2].ID != 999 || result.Details[2].Email != nil || result.Details[2].Error != "账号不存在" {
-		t.Fatalf("unexpected missing-account detail: %+v", result.Details[2])
+	if result.Details[2].ID != 1 || !result.Details[2].Success || result.Details[2].Message != "成功上传 1 个账号" {
+		t.Fatalf("unexpected success detail: %+v", result.Details[2])
 	}
 	if len(sender.requests) != 1 {
 		t.Fatalf("expected one sender request, got %#v", sender.requests)

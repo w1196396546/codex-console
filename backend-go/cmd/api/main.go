@@ -67,10 +67,14 @@ func main() {
 
 	if err := http.ListenAndServe(
 		deps.Config.HTTPAddr,
-		internalhttp.NewRouter(jobService, registrationService, batchService, availableServices, statsService, outlookService, accountsService, settingsService, emailServicesService, uploaderService, logsService, taskSocketHandler, batchSocketHandler),
+		newAPIHandler(jobService, registrationService, batchService, availableServices, statsService, outlookService, accountsService, settingsService, emailServicesService, uploaderService, logsService, taskSocketHandler, batchSocketHandler),
 	); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func newAPIHandler(jobService *jobs.Service, dependencies ...any) http.Handler {
+	return internalhttp.NewRouter(jobService, dependencies...)
 }
 
 func newAPIUploaderService(repository uploader.AdminRepository, accountStore uploader.UploadAccountStore, opts ...uploader.ServiceOption) *uploader.Service {

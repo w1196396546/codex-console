@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: verifying
-stopped_at: Completed 02-04-PLAN.md
-last_updated: "2026-04-05T10:55:15.600Z"
+status: planning
+stopped_at: Phase 2 complete; Phase 3 is ready for planning
+last_updated: "2026-04-05T11:11:13Z"
 last_activity: 2026-04-05
 progress:
   total_phases: 5
   completed_phases: 2
-  total_plans: 7
+  total_plans: 15
   completed_plans: 7
-  percent: 100
+  percent: 47
 ---
 
 # Project State
@@ -21,22 +21,22 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-05)
 
 **Core value:** The Go backend can take over the current Codex Console backend responsibilities without forcing existing clients, persisted data, or critical registration, payment, and team workflows to change behavior.
-**Current focus:** Phase 02 — Native Registration Runtime
+**Current focus:** Management APIs
 
 ## Current Position
 
-Phase: 02 (Native Registration Runtime) — VERIFYING
-Plan: 4 of 4
-Status: Phase complete — ready for verification
-Last activity: 2026-04-05
+Phase: 3 of 5 (Management APIs)
+Plan: 0 of 3 in current phase
+Status: Ready to plan
+Last activity: 2026-04-05 - Phase 2 completed; Phase 3 ready for planning
 
-Progress: [██████████] 100%
+Progress: [█████░░░░░] 47%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 7
+- Total plans completed: 11
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -87,9 +87,10 @@ None yet.
 
 - Python and Go backend capabilities are still split across registration, management, payment, and team domains.
 - Current templates/static JS already encode route expectations, so parity drift will block cutover.
+- Phase 2 staging validation is deferred: real single/batch/outlook native registration, live pause/resume/cancel websocket timing, and live CPA/Sub2API/TM side effects still need external-environment verification before final cutover.
 
 ## Session Continuity
 
-Last session: 2026-04-05T10:55:15.597Z
-Stopped at: Completed 02-04-PLAN.md
+Last session: 2026-04-05T11:11:13Z
+Stopped at: Phase 2 completed; ready to plan Phase 3
 Resume file: None

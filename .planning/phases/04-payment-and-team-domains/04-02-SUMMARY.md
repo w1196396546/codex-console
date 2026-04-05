@@ -22,7 +22,7 @@ tech-stack:
     - read-model service and accepted-task TaskService split compatibility shaping from async execution/persistence ownership
 key-files:
   created:
-    - backend-go/db/migrations/0007_init_team_domains.sql
+    - backend-go/db/migrations/0008_init_team_domains.sql
     - backend-go/internal/team/repository.go
     - backend-go/internal/team/repository_postgres.go
     - backend-go/internal/team/service.go
@@ -37,7 +37,7 @@ key-files:
 key-decisions:
   - "将 shared jobs 的 JobID 直接作为 team task_uuid，避免为 Team 引入第二套 websocket 通道或任务标识。"
   - "把 Team slice 切成 read/membership service 与 accepted-task TaskService，两者都由 team package 拥有，handler 只做 decode 和 detail 错误映射。"
-  - "在不覆盖当前 workspace 已占用 migration 序号的前提下，将计划中的 team migration 实际落为 0007_init_team_domains.sql。"
+  - "在不覆盖当前 workspace 已占用 migration 序号的前提下，将 Team migration 顺延为 0008_init_team_domains.sql。"
 patterns-established:
   - "Team task readback 先读 team_tasks/team_task_items 持久化结果，再叠加 shared jobs 的当前 status/logs。"
   - "Invite/discovery/sync execution is exposed through an injected team TaskExecutor seam while Go admission, scope dedupe, result persistence, and handler contracts stay team-owned."
@@ -71,7 +71,7 @@ Each task was committed atomically:
 2. **Task 2: 实现 Team accepted-task 编排与未挂载 compatibility handlers** - `7d2f31e` (`feat`)
 
 ## Files Created/Modified
-- `backend-go/db/migrations/0007_init_team_domains.sql` - Adds PostgreSQL tables and indexes for `teams`, `team_memberships`, `team_tasks`, and `team_task_items`.
+- `backend-go/db/migrations/0008_init_team_domains.sql` - Adds PostgreSQL tables and indexes for `teams`, `team_memberships`, `team_tasks`, and `team_task_items`.
 - `backend-go/internal/team/types.go` - Defines team records, compatibility response shapes, and accepted-task execution contracts.
 - `backend-go/internal/team/repository.go` - Declares repository interfaces and not-found semantics for read models and task persistence.
 - `backend-go/internal/team/repository_postgres.go` - Implements PostgreSQL reads/writes for team domain entities, active-scope lookup, and task/item persistence.
@@ -96,8 +96,8 @@ Each task was committed atomically:
 **1. [Rule 3 - Blocking issue] Adjusted the Team migration filename to avoid an occupied migration sequence**
 - **Found during:** Task 1 (定义 Team 持久化、read model 与 membership action 语义)
 - **Issue:** The plan targeted `0005_init_team_domains.sql`, but the current workspace already had `0005` and `0006` migration numbers occupied by unrelated backend-go work, so reusing `0005` would create a conflicting goose version.
-- **Fix:** Created `backend-go/db/migrations/0007_init_team_domains.sql` and pointed the migration coverage at that file while keeping the Team schema content in 04-02 scope.
-- **Files modified:** `backend-go/db/migrations/0007_init_team_domains.sql`, `backend-go/internal/team/repository_postgres_test.go`
+- **Fix:** Renamed the Team migration to `backend-go/db/migrations/0008_init_team_domains.sql` and pointed the migration coverage at that file while keeping the Team schema content in 04-02 scope.
+- **Files modified:** `backend-go/db/migrations/0008_init_team_domains.sql`, `backend-go/internal/team/repository_postgres_test.go`
 - **Verification:** `cd backend-go && go test ./internal/team -run 'Test(Service|Repository|Membership|TeamTask|Accepted|Invite|Discovery|Sync).*' -v`
 - **Committed in:** `f64ce09`, `7d2f31e`
 
@@ -127,7 +127,7 @@ None - no external service configuration required.
 ## Self-Check: PASSED
 
 - Found `.planning/phases/04-payment-and-team-domains/04-02-SUMMARY.md`
-- Found `backend-go/db/migrations/0007_init_team_domains.sql`
+- Found `backend-go/db/migrations/0008_init_team_domains.sql`
 - Found `backend-go/internal/team/service.go`
 - Found `backend-go/internal/team/tasks.go`
 - Found `backend-go/internal/team/http/handlers.go`

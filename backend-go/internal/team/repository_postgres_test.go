@@ -7,7 +7,7 @@ import (
 )
 
 func TestRepositoryMigrationIncludesTeamCompatibilitySchema(t *testing.T) {
-	sqlBytes, err := os.ReadFile("../../db/migrations/0007_init_team_domains.sql")
+	sqlBytes, err := os.ReadFile("../../db/migrations/0008_init_team_domains.sql")
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
 	}

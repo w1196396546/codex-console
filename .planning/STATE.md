@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 03-05-PLAN.md
-last_updated: "2026-04-05T13:25:59.121Z"
+stopped_at: Completed 03-02-PLAN.md
+last_updated: "2026-04-05T13:34:45.104Z"
 last_activity: 2026-04-05
 progress:
   total_phases: 5
   completed_phases: 2
   total_plans: 13
-  completed_plans: 8
-  percent: 62
+  completed_plans: 11
+  percent: 85
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-05)
 ## Current Position
 
 Phase: 03 (Management APIs) — EXECUTING
-Plan: 2 of 6
+Plan: 5 of 6
 Status: Ready to execute
 Last activity: 2026-04-05
 
@@ -57,6 +57,9 @@ Progress: [█████░░░░░] 47%
 | Phase 02 P03 | 16m | 2 tasks | 8 files |
 | Phase 02 P04 | 6min | 2 tasks | 5 files |
 | Phase 03-management-apis P05 | 907 | 2 tasks | 8 files |
+| Phase 03 P04 | 16m | 2 tasks | 7 files |
+| Phase 03 P03 | 15m | 2 tasks | 8 files |
+| Phase 03-management-apis P02 | 16m | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -81,6 +84,15 @@ Recent decisions affecting current work:
 - [Phase 02]: 当 HTTP 先消费掉 batch service 的一次性 `cancelling` 窗口时，由 websocket 投影层补发 `cancelling`，避免 Outlook 批量直接跳到 `cancelled`。
 - [Phase 03-management-apis]: 日志管理独立落到 app_logs slice，明确不复用 job_logs。
 - [Phase 03-management-apis]: 列表响应只暴露 logs 页面当前消费字段，错误保持 JSON detail 语义。
+- [Phase 03]: 在 uploader 包内扩展通用 AdminRepository 和兼容 DTO，避免另起 upload-admin 包。
+- [Phase 03]: 连接测试和 Sub2API 直传动作放在 uploader service 内，并复用既有 sender/client 工具，不让 handler 直接拼外部 HTTP。
+- [Phase 03]: Sub2API 直传仅对成功账号写回 sub2api_uploaded，同时保持 Python 的 success/failed/skipped/detail 结果形状。
+- [Phase 03]: Email-services list/detail responses keep filtered config while /full remains the only secret-bearing endpoint.
+- [Phase 03]: 03-03 consumes tempmail/yyds settings from the shared settings table and leaves /api/settings/tempmail ownership to 03-02.
+- [Phase 03]: Email-services connectivity tests stay Go-owned by probing native mail providers instead of falling back to Python.
+- [Phase 03-management-apis]: Settings admin now reuses Python db_key names and metadata instead of introducing an env-only model.
+- [Phase 03-management-apis]: Tempmail remains owned by 03-02 because /email-services depends directly on /api/settings/tempmail.
+- [Phase 03-management-apis]: Database admin keeps /api/settings/database* paths on Go via PostgreSQL logical backup/import/cleanup behavior.
 
 ### Pending Todos
 
@@ -94,6 +106,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-05T13:25:59.119Z
-Stopped at: Completed 03-05-PLAN.md
+Last session: 2026-04-05T13:34:45.101Z
+Stopped at: Completed 03-02-PLAN.md
 Resume file: None

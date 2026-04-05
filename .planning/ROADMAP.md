@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Compatibility Baseline** - Freeze the migration contract, parity matrix, and shared data/runtime rules. (completed 2026-04-05)
 - [x] **Phase 2: Native Registration Runtime** - Remove Python from the registration critical path while preserving task behavior. (completed 2026-04-05)
-- [ ] **Phase 3: Management APIs** - Move current admin and management domains to Go behind the existing UI.
+- [x] **Phase 3: Management APIs** - Move current admin and management domains to Go behind the existing UI. (completed 2026-04-05)
 - [ ] **Phase 4: Payment and Team Domains** - Migrate the remaining Python-only product workflows with compatible runtime semantics.
 - [ ] **Phase 5: Cutover and Decommission** - Switch production backend ownership to Go and retire Python responsibilities safely.
 
@@ -119,6 +119,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 |-------|----------------|--------|-----------|
 | 1. Compatibility Baseline | 3/3 | Complete    | 2026-04-05 |
 | 2. Native Registration Runtime | 4/4 | Complete    | 2026-04-05 |
-| 3. Management APIs | 8/8 | Ready for verification | - |
+| 3. Management APIs | 8/8 | Complete    | 2026-04-05 |
 | 4. Payment and Team Domains | 0/3 | Not started | - |
 | 5. Cutover and Decommission | 0/2 | Not started | - |

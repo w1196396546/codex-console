@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 02-02-PLAN.md
-last_updated: "2026-04-05T10:41:33.726Z"
+stopped_at: Completed 02-03-PLAN.md
+last_updated: "2026-04-05T10:50:32.623Z"
 last_activity: 2026-04-05
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 7
-  completed_plans: 5
-  percent: 71
+  completed_plans: 6
+  percent: 86
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-05)
 ## Current Position
 
 Phase: 02 (Native Registration Runtime) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-04-05
 
@@ -53,6 +53,7 @@ Progress: [██░░░░░░░░] 20%
 
 | Phase 02 P01 | 10m | 2 tasks | 14 files |
 | Phase 02 P02 | 15m | 1 tasks | 13 files |
+| Phase 02 P03 | 16m | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -69,6 +70,9 @@ Recent decisions affecting current work:
 - [Phase 02]: Password login, workspace continuation, and add-phone recovery remain inside native auth helpers to keep Python off the normal registration path.
 - [Phase 02]: Reuse jobs.Service as the durable registration task list/delete source instead of introducing a second runtime store.
 - [Phase 02]: Project batch and outlook cancelling as a two-step HTTP/polling transition while leaving websocket-specific files for 02-04.
+- [Phase 02]: Runner account persistence now crosses the executor boundary via RunnerOutput and RunnerError instead of leaking through result payload fields.
+- [Phase 02]: Typed runner failures still persist compatible partial account state through Go when account persistence data is present.
+- [Phase 02]: Token-completion runtime metadata is updated with Postgres compare-and-swap semantics so later writes do not clobber stronger state.
 
 ### Pending Todos
 
@@ -78,10 +82,9 @@ None yet.
 
 - Python and Go backend capabilities are still split across registration, management, payment, and team domains.
 - Current templates/static JS already encode route expectations, so parity drift will block cutover.
-- Task 1 official backend-go/internal/registration package verification is currently blocked by out-of-scope dirty 02-02 tests in batch_service_test.go and outlook_service_test.go expecting progress fields outside 02-01 scope.
 
 ## Session Continuity
 
-Last session: 2026-04-05T10:41:33.723Z
-Stopped at: Completed 02-02-PLAN.md
+Last session: 2026-04-05T10:50:32.621Z
+Stopped at: Completed 02-03-PLAN.md
 Resume file: None

@@ -52,7 +52,7 @@ Plans:
 Plans:
 - [x] 02-01: Close native registration preparation and worker critical-path parity
 - [x] 02-02: Complete task, batch, Outlook, and polling runtime-semantics compatibility
-- [ ] 02-03: Finalize Go-owned account persistence and auto-upload side effects
+- [x] 02-03: Finalize Go-owned account persistence and auto-upload side effects
 - [ ] 02-04: Align task and batch websocket runtime semantics
 
 ### Phase 3: Management APIs
@@ -113,7 +113,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Compatibility Baseline | 3/3 | Complete    | 2026-04-05 |
-| 2. Native Registration Runtime | 1/4 | In Progress|  |
+| 2. Native Registration Runtime | 3/4 | In Progress|  |
 | 3. Management APIs | 0/3 | Not started | - |
 | 4. Payment and Team Domains | 0/3 | Not started | - |
 | 5. Cutover and Decommission | 0/2 | Not started | - |

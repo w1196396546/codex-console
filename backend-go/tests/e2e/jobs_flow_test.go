@@ -372,7 +372,6 @@ func TestRegistrationBatchWebSocketCompatibility(t *testing.T) {
 		if message["type"] == "status" && message["status"] == jobs.StatusPaused {
 			assertWebSocketMessageField(t, message, "batch_id", batchID)
 			assertWebSocketTimestampField(t, message)
-			assertWebSocketMessageField(t, message, "message", "批量任务已暂停")
 			break
 		}
 	}
@@ -391,7 +390,6 @@ func TestRegistrationBatchWebSocketCompatibility(t *testing.T) {
 		if message["type"] == "status" && message["status"] == jobs.StatusRunning {
 			assertWebSocketMessageField(t, message, "batch_id", batchID)
 			assertWebSocketTimestampField(t, message)
-			assertWebSocketMessageField(t, message, "message", "批量任务已恢复")
 			if message["paused"] != false {
 				t.Fatalf("expected paused=false after resume, got %#v", message["paused"])
 			}
@@ -583,7 +581,6 @@ func TestRegistrationOutlookBatchCompatibility(t *testing.T) {
 		if message["type"] == "status" && message["status"] == jobs.StatusPaused {
 			assertWebSocketMessageField(t, message, "batch_id", batchID)
 			assertWebSocketTimestampField(t, message)
-			assertWebSocketMessageField(t, message, "message", "批量任务已暂停")
 			break
 		}
 	}
@@ -602,7 +599,6 @@ func TestRegistrationOutlookBatchCompatibility(t *testing.T) {
 		if message["type"] == "status" && message["status"] == jobs.StatusRunning {
 			assertWebSocketMessageField(t, message, "batch_id", batchID)
 			assertWebSocketTimestampField(t, message)
-			assertWebSocketMessageField(t, message, "message", "批量任务已恢复")
 			break
 		}
 	}

@@ -10,6 +10,12 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+const (
+	batchPausedMessage     = "批量任务已暂停"
+	batchResumedMessage    = "批量任务已恢复"
+	batchCancellingMessage = "取消请求已提交，正在让整队缓缓靠边停车"
+)
+
 type batchTaskService interface {
 	GetBatch(ctx context.Context, batchID string, logOffset int) (registration.BatchStatusResponse, error)
 	PauseBatch(ctx context.Context, batchID string) (registration.BatchControlResponse, error)
@@ -84,11 +90,11 @@ func (h *BatchHandler) sendSnapshot(
 		return err
 	}
 
-	if err := socket.writeJSON(batchStatusMessage(resp)); err != nil {
+	if err := socket.writeJSON(batchStatusMessage(resp, resp.LogOffset, "")); err != nil {
 		return err
 	}
-	for _, log := range resp.Logs {
-		if err := socket.writeJSON(batchLogMessage(batchID, log)); err != nil {
+	for index, log := range resp.Logs {
+		if err := socket.writeJSON(batchLogMessage(batchID, log, resp.LogOffset+index)); err != nil {
 			return err
 		}
 	}
@@ -122,11 +128,11 @@ func (h *BatchHandler) readLoop(
 				return err
 			}
 		case "pause":
-			if err := h.writeBatchStatusUpdate(ctx, socket, state, batchID, h.batches.PauseBatch); err != nil {
+			if err := h.writeBatchStatusUpdate(ctx, socket, state, batchID, h.batches.PauseBatch, batchPausedMessage); err != nil {
 				return err
 			}
 		case "resume":
-			if err := h.writeBatchStatusUpdate(ctx, socket, state, batchID, h.batches.ResumeBatch); err != nil {
+			if err := h.writeBatchStatusUpdate(ctx, socket, state, batchID, h.batches.ResumeBatch, batchResumedMessage); err != nil {
 				return err
 			}
 		case "cancel":
@@ -142,8 +148,8 @@ func (h *BatchHandler) readLoop(
 				state.syncMu.Unlock()
 				return err
 			}
-			for _, log := range resp.Logs {
-				if err := socket.writeJSON(batchLogMessage(batchID, log)); err != nil {
+			for index, log := range resp.Logs {
+				if err := socket.writeJSON(batchLogMessage(batchID, log, resp.LogOffset+index)); err != nil {
 					state.syncMu.Unlock()
 					return err
 				}
@@ -152,7 +158,7 @@ func (h *BatchHandler) readLoop(
 			resp.Status = "cancelling"
 			resp.Cancelled = true
 			resp.Finished = false
-			if err := socket.writeJSON(batchStatusMessage(resp)); err != nil {
+			if err := socket.writeJSON(batchStatusMessage(resp, resp.LogNextOffset, batchCancellingMessage)); err != nil {
 				state.syncMu.Unlock()
 				return err
 			}
@@ -168,6 +174,7 @@ func (h *BatchHandler) writeBatchStatusUpdate(
 	state *batchSocketState,
 	batchID string,
 	update func(context.Context, string) (registration.BatchControlResponse, error),
+	message string,
 ) error {
 	state.syncMu.Lock()
 	defer state.syncMu.Unlock()
@@ -181,12 +188,12 @@ func (h *BatchHandler) writeBatchStatusUpdate(
 	if err != nil {
 		return err
 	}
-	for _, log := range resp.Logs {
-		if err := socket.writeJSON(batchLogMessage(batchID, log)); err != nil {
+	for index, log := range resp.Logs {
+		if err := socket.writeJSON(batchLogMessage(batchID, log, resp.LogOffset+index)); err != nil {
 			return err
 		}
 	}
-	if err := socket.writeJSON(batchStatusMessage(resp)); err != nil {
+	if err := socket.writeJSON(batchStatusMessage(resp, resp.LogNextOffset, message)); err != nil {
 		return err
 	}
 
@@ -216,16 +223,29 @@ func (h *BatchHandler) pollLoop(
 				return err
 			}
 
-			for _, log := range resp.Logs {
-				if err := socket.writeJSON(batchLogMessage(batchID, log)); err != nil {
+			for index, log := range resp.Logs {
+				if err := socket.writeJSON(batchLogMessage(batchID, log, resp.LogOffset+index)); err != nil {
 					state.syncMu.Unlock()
 					return err
 				}
 			}
 
+			if shouldProjectBatchCancelling(lastSnapshot, resp) {
+				projected := resp
+				projected.Status = "cancelling"
+				projected.Finished = false
+				if err := socket.writeJSON(batchStatusMessage(projected, resp.LogNextOffset, "")); err != nil {
+					state.syncMu.Unlock()
+					return err
+				}
+				state.set(batchSnapshotFromResponse(projected), resp.LogNextOffset)
+				state.syncMu.Unlock()
+				continue
+			}
+
 			nextSnapshot := batchSnapshotFromResponse(resp)
 			if nextSnapshot != lastSnapshot {
-				if err := socket.writeJSON(batchStatusMessage(resp)); err != nil {
+				if err := socket.writeJSON(batchStatusMessage(resp, resp.LogNextOffset, "")); err != nil {
 					state.syncMu.Unlock()
 					return err
 				}
@@ -281,25 +301,46 @@ func batchSnapshotFromResponse(resp registration.BatchStatusResponse) batchSnaps
 	}
 }
 
-func batchStatusMessage(resp registration.BatchStatusResponse) map[string]any {
-	return map[string]any{
-		"type":      "status",
-		"batch_id":  resp.BatchID,
-		"status":    resp.Status,
-		"total":     resp.Total,
-		"completed": resp.Completed,
-		"success":   resp.Success,
-		"failed":    resp.Failed,
-		"paused":    resp.Paused,
-		"cancelled": resp.Cancelled,
-		"finished":  resp.Finished,
+func shouldProjectBatchCancelling(lastSnapshot batchSnapshot, resp registration.BatchStatusResponse) bool {
+	if lastSnapshot.Status == "cancelling" || lastSnapshot.Status == resp.Status {
+		return false
 	}
+	return resp.Status == "cancelled" && resp.Cancelled && resp.Finished
 }
 
-func batchLogMessage(batchID string, message string) map[string]any {
+func batchStatusMessage(resp registration.BatchStatusResponse, logOffset int, message string) map[string]any {
+	payload := map[string]any{
+		"type":            "status",
+		"batch_id":        resp.BatchID,
+		"status":          resp.Status,
+		"total":           resp.Total,
+		"completed":       resp.Completed,
+		"success":         resp.Success,
+		"failed":          resp.Failed,
+		"skipped":         resp.Skipped,
+		"current_index":   resp.CurrentIndex,
+		"paused":          resp.Paused,
+		"cancelled":       resp.Cancelled,
+		"finished":        resp.Finished,
+		"log_base_index":  resp.LogBaseIndex,
+		"log_offset":      logOffset,
+		"log_next_offset": resp.LogNextOffset,
+		"progress":        resp.Progress,
+		"timestamp":       time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if message != "" {
+		payload["message"] = message
+	}
+	return payload
+}
+
+func batchLogMessage(batchID string, message string, logOffset int) map[string]any {
 	return map[string]any{
-		"type":     "log",
-		"batch_id": batchID,
-		"message":  message,
+		"type":            "log",
+		"batch_id":        batchID,
+		"message":         message,
+		"log_offset":      logOffset,
+		"log_next_offset": logOffset + 1,
+		"timestamp":       time.Now().UTC().Format(time.RFC3339Nano),
 	}
 }

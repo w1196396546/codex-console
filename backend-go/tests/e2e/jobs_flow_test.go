@@ -346,6 +346,11 @@ func TestRegistrationBatchWebSocketCompatibility(t *testing.T) {
 	if initialStatus["total"] != float64(2) {
 		t.Fatalf("expected total=2, got %#v", initialStatus["total"])
 	}
+	assertWebSocketTimestampField(t, initialStatus)
+	assertWebSocketNumberField(t, initialStatus, "skipped", 0)
+	assertWebSocketNumberField(t, initialStatus, "current_index", 0)
+	assertWebSocketNumberField(t, initialStatus, "log_offset", 0)
+	assertWebSocketNumberField(t, initialStatus, "log_next_offset", 0)
 
 	if err := conn.conn.WriteJSON(map[string]any{"type": "ping"}); err != nil {
 		t.Fatalf("write batch ping websocket message: %v", err)
@@ -366,6 +371,8 @@ func TestRegistrationBatchWebSocketCompatibility(t *testing.T) {
 		message := conn.readJSON(t)
 		if message["type"] == "status" && message["status"] == jobs.StatusPaused {
 			assertWebSocketMessageField(t, message, "batch_id", batchID)
+			assertWebSocketTimestampField(t, message)
+			assertWebSocketMessageField(t, message, "message", "批量任务已暂停")
 			break
 		}
 	}
@@ -383,6 +390,8 @@ func TestRegistrationBatchWebSocketCompatibility(t *testing.T) {
 		message := conn.readJSON(t)
 		if message["type"] == "status" && message["status"] == jobs.StatusRunning {
 			assertWebSocketMessageField(t, message, "batch_id", batchID)
+			assertWebSocketTimestampField(t, message)
+			assertWebSocketMessageField(t, message, "message", "批量任务已恢复")
 			if message["paused"] != false {
 				t.Fatalf("expected paused=false after resume, got %#v", message["paused"])
 			}
@@ -411,9 +420,14 @@ func TestRegistrationBatchWebSocketCompatibility(t *testing.T) {
 			if message["completed"] == float64(1) {
 				sawProgressStatus = true
 				assertWebSocketMessageField(t, message, "status", jobs.StatusRunning)
+				assertWebSocketTimestampField(t, message)
+				assertWebSocketNumberField(t, message, "current_index", 1)
+				assertWebSocketNumberField(t, message, "skipped", 0)
 			}
 		case "log":
 			if _, ok := message["message"].(string); ok {
+				assertWebSocketTimestampField(t, message)
+				assertWebSocketMonotonicOffset(t, message)
 				sawLog = true
 			}
 		}
@@ -431,11 +445,19 @@ func TestRegistrationBatchWebSocketCompatibility(t *testing.T) {
 	assertWebSocketMessageField(t, cancelling, "type", "status")
 	assertWebSocketMessageField(t, cancelling, "batch_id", batchID)
 	assertWebSocketMessageField(t, cancelling, "status", "cancelling")
+	assertWebSocketTimestampField(t, cancelling)
+	assertWebSocketMessageField(t, cancelling, "message", "取消请求已提交，正在让整队缓缓靠边停车")
 	if cancelling["total"] != float64(2) {
 		t.Fatalf("expected cancelling total=2, got %#v", cancelling["total"])
 	}
 	if cancelling["completed"] != float64(2) {
 		t.Fatalf("expected cancelling completed=2, got %#v", cancelling["completed"])
+	}
+	if cancelling["current_index"] != float64(2) {
+		t.Fatalf("expected cancelling current_index=2, got %#v", cancelling["current_index"])
+	}
+	if cancelling["skipped"] != float64(0) {
+		t.Fatalf("expected cancelling skipped=0, got %#v", cancelling["skipped"])
 	}
 	if cancelling["finished"] != false {
 		t.Fatalf("expected cancelling finished=false, got %#v", cancelling["finished"])
@@ -450,6 +472,13 @@ func TestRegistrationBatchWebSocketCompatibility(t *testing.T) {
 		message := conn.readJSON(t)
 		if message["type"] == "status" && message["status"] == jobs.StatusCancelled {
 			assertWebSocketMessageField(t, message, "batch_id", batchID)
+			assertWebSocketTimestampField(t, message)
+			if message["current_index"] != float64(2) {
+				t.Fatalf("expected current_index=2, got %#v", message["current_index"])
+			}
+			if message["skipped"] != float64(0) {
+				t.Fatalf("expected skipped=0, got %#v", message["skipped"])
+			}
 			if message["finished"] != true {
 				t.Fatalf("expected finished=true, got %#v", message["finished"])
 			}
@@ -533,6 +562,9 @@ func TestRegistrationOutlookBatchCompatibility(t *testing.T) {
 	if initialStatus["total"] != float64(2) {
 		t.Fatalf("expected websocket total=2, got %#v", initialStatus["total"])
 	}
+	assertWebSocketTimestampField(t, initialStatus)
+	assertWebSocketNumberField(t, initialStatus, "skipped", 0)
+	assertWebSocketNumberField(t, initialStatus, "current_index", 0)
 
 	initial := getOutlookBatchThroughCompatAPI(t, server.URL, batchID, 0)
 	assertRegistrationOutlookBatchCompatFields(t, initial, batchID, jobs.StatusRunning, 2, 0, 0, 0, 0, 0, 0, false, false, false)
@@ -550,6 +582,8 @@ func TestRegistrationOutlookBatchCompatibility(t *testing.T) {
 		message := conn.readJSON(t)
 		if message["type"] == "status" && message["status"] == jobs.StatusPaused {
 			assertWebSocketMessageField(t, message, "batch_id", batchID)
+			assertWebSocketTimestampField(t, message)
+			assertWebSocketMessageField(t, message, "message", "批量任务已暂停")
 			break
 		}
 	}
@@ -567,6 +601,8 @@ func TestRegistrationOutlookBatchCompatibility(t *testing.T) {
 		message := conn.readJSON(t)
 		if message["type"] == "status" && message["status"] == jobs.StatusRunning {
 			assertWebSocketMessageField(t, message, "batch_id", batchID)
+			assertWebSocketTimestampField(t, message)
+			assertWebSocketMessageField(t, message, "message", "批量任务已恢复")
 			break
 		}
 	}
@@ -591,9 +627,14 @@ func TestRegistrationOutlookBatchCompatibility(t *testing.T) {
 			if message["completed"] == float64(1) {
 				sawProgressStatus = true
 				assertWebSocketMessageField(t, message, "status", jobs.StatusRunning)
+				assertWebSocketTimestampField(t, message)
+				assertWebSocketNumberField(t, message, "current_index", 1)
+				assertWebSocketNumberField(t, message, "skipped", 0)
 			}
 		case "log":
 			if _, ok := message["message"].(string); ok {
+				assertWebSocketTimestampField(t, message)
+				assertWebSocketMonotonicOffset(t, message)
 				sawLog = true
 			}
 		}
@@ -612,14 +653,28 @@ func TestRegistrationOutlookBatchCompatibility(t *testing.T) {
 	assertRegistrationOutlookBatchCompatFields(t, cancelling, batchID, "cancelling", 2, 2, 1, 0, 0, 2, 0, false, true, false)
 
 	cancelDeadline := time.Now().Add(3 * time.Second)
+	sawCancellingFrame := false
 	for {
 		if time.Now().After(cancelDeadline) {
-			t.Fatal("expected final cancelled outlook batch websocket status")
+			t.Fatal("expected cancelling and final cancelled outlook batch websocket status")
 		}
 
 		message := conn.readJSON(t)
+		if message["type"] == "status" && message["status"] == "cancelling" {
+			sawCancellingFrame = true
+			assertWebSocketTimestampField(t, message)
+			assertWebSocketNumberField(t, message, "current_index", 2)
+			assertWebSocketNumberField(t, message, "skipped", 0)
+			continue
+		}
 		if message["type"] == "status" && message["status"] == jobs.StatusCancelled {
+			if !sawCancellingFrame {
+				t.Fatal("expected websocket cancelling frame before final cancelled outlook batch status")
+			}
 			assertWebSocketMessageField(t, message, "batch_id", batchID)
+			assertWebSocketTimestampField(t, message)
+			assertWebSocketNumberField(t, message, "current_index", 2)
+			assertWebSocketNumberField(t, message, "skipped", 0)
 			if message["finished"] != true {
 				t.Fatalf("expected finished=true, got %#v", message["finished"])
 			}

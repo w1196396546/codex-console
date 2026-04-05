@@ -6,11 +6,19 @@ import (
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
 	accountshttp "github.com/dou-jiang/codex-console/backend-go/internal/accounts/http"
+	"github.com/dou-jiang/codex-console/backend-go/internal/emailservices"
+	emailserviceshttp "github.com/dou-jiang/codex-console/backend-go/internal/emailservices/http"
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
 	jobshttp "github.com/dou-jiang/codex-console/backend-go/internal/jobs/http"
+	"github.com/dou-jiang/codex-console/backend-go/internal/logs"
+	logshttp "github.com/dou-jiang/codex-console/backend-go/internal/logs/http"
 	"github.com/dou-jiang/codex-console/backend-go/internal/registration"
 	registrationhttp "github.com/dou-jiang/codex-console/backend-go/internal/registration/http"
 	registrationws "github.com/dou-jiang/codex-console/backend-go/internal/registration/ws"
+	"github.com/dou-jiang/codex-console/backend-go/internal/settings"
+	settingshttp "github.com/dou-jiang/codex-console/backend-go/internal/settings/http"
+	"github.com/dou-jiang/codex-console/backend-go/internal/uploader"
+	uploaderhttp "github.com/dou-jiang/codex-console/backend-go/internal/uploader/http"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -47,6 +55,10 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 	var registrationStatsService registrationStatsRouteService
 	var outlookService outlookRouteService
 	var accountsService accountsRouteService
+	var settingsService *settings.Service
+	var emailServicesService *emailservices.Service
+	var uploaderService *uploader.Service
+	var logsService *logs.Service
 	var taskSocketHandler taskSocketRouteHandler
 	var batchSocketHandler batchSocketRouteHandler
 	for _, dependency := range dependencies {
@@ -75,6 +87,22 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 			if accountsService == nil {
 				accountsService = value
 			}
+		case *settings.Service:
+			if settingsService == nil {
+				settingsService = value
+			}
+		case *emailservices.Service:
+			if emailServicesService == nil {
+				emailServicesService = value
+			}
+		case *uploader.Service:
+			if uploaderService == nil {
+				uploaderService = value
+			}
+		case *logs.Service:
+			if logsService == nil {
+				logsService = value
+			}
 		case taskSocketRouteHandler:
 			if taskSocketHandler == nil {
 				taskSocketHandler = value
@@ -86,7 +114,7 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 		}
 	}
 
-	return newRouter(jobService, registrationService, batchService, availableServices, registrationStatsService, outlookService, accountsService, taskSocketHandler, batchSocketHandler)
+	return newRouter(jobService, registrationService, batchService, availableServices, registrationStatsService, outlookService, accountsService, settingsService, emailServicesService, uploaderService, logsService, taskSocketHandler, batchSocketHandler)
 }
 
 func NewRouterWithTaskSocket(
@@ -94,7 +122,7 @@ func NewRouterWithTaskSocket(
 	registrationService *registration.Service,
 	taskSocketHandler taskSocketRouteHandler,
 ) *chi.Mux {
-	return newRouter(jobService, registrationService, nil, nil, nil, nil, nil, taskSocketHandler, nil)
+	return newRouter(jobService, registrationService, nil, nil, nil, nil, nil, nil, nil, nil, nil, taskSocketHandler, nil)
 }
 
 func newRouter(
@@ -105,6 +133,10 @@ func newRouter(
 	registrationStatsService registrationStatsRouteService,
 	outlookService outlookRouteService,
 	accountsService accountsRouteService,
+	settingsService *settings.Service,
+	emailServicesService *emailservices.Service,
+	uploaderService *uploader.Service,
+	logsService *logs.Service,
 	taskSocketHandler taskSocketRouteHandler,
 	batchSocketHandler batchSocketRouteHandler,
 ) *chi.Mux {
@@ -115,6 +147,18 @@ func newRouter(
 	})
 	if accountsService != nil {
 		accountshttp.NewHandler(accountsService).RegisterRoutes(r)
+	}
+	if settingsService != nil {
+		settingshttp.NewHandler(settingsService).RegisterRoutes(r)
+	}
+	if emailServicesService != nil {
+		emailserviceshttp.NewHandler(emailServicesService).RegisterRoutes(r)
+	}
+	if uploaderService != nil {
+		uploaderhttp.NewHandler(uploaderService).RegisterRoutes(r)
+	}
+	if logsService != nil {
+		logshttp.NewHandler(logsService).RegisterRoutes(r)
 	}
 	if jobService != nil {
 		jobshttp.NewHandler(jobService).RegisterRoutes(r)

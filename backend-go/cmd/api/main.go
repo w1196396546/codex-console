@@ -8,12 +8,16 @@ import (
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
 	"github.com/dou-jiang/codex-console/backend-go/internal/config"
+	"github.com/dou-jiang/codex-console/backend-go/internal/emailservices"
 	internalhttp "github.com/dou-jiang/codex-console/backend-go/internal/http"
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
+	"github.com/dou-jiang/codex-console/backend-go/internal/logs"
 	postgresplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/postgres"
 	redisplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/redis"
 	"github.com/dou-jiang/codex-console/backend-go/internal/registration"
 	registrationws "github.com/dou-jiang/codex-console/backend-go/internal/registration/ws"
+	"github.com/dou-jiang/codex-console/backend-go/internal/settings"
+	"github.com/dou-jiang/codex-console/backend-go/internal/uploader"
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgxpool"
 	redisv9 "github.com/redis/go-redis/v9"
@@ -48,15 +52,22 @@ func main() {
 		registration.NewOutlookPostgresRepository(deps.Postgres),
 		batchService,
 	)
-	accountsService := accounts.NewService(
-		accounts.NewPostgresRepository(deps.Postgres),
-	)
+	accountsRepository := accounts.NewPostgresRepository(deps.Postgres)
+	accountsService := accounts.NewService(accountsRepository)
+	settingsRepository := settings.NewPostgresRepository(deps.Postgres)
+	settingsService := settings.NewService(settings.ServiceDependencies{
+		Repository:    settingsRepository,
+		DatabaseAdmin: settings.NewPostgresDatabaseAdmin(deps.Postgres, deps.Config.DatabaseURL, ""),
+	})
+	emailServicesService := emailservices.NewService(emailservices.NewPostgresRepository(deps.Postgres), nil)
+	uploaderService := uploader.NewService(uploader.NewPostgresConfigRepository(deps.Postgres))
+	logsService := logs.NewService(logs.NewPostgresRepository(deps.Postgres))
 	taskSocketHandler := registrationws.NewHandler(jobService)
 	batchSocketHandler := registrationws.NewBatchHandler(batchService)
 
 	if err := http.ListenAndServe(
 		deps.Config.HTTPAddr,
-		internalhttp.NewRouter(jobService, registrationService, batchService, availableServices, statsService, outlookService, accountsService, taskSocketHandler, batchSocketHandler),
+		internalhttp.NewRouter(jobService, registrationService, batchService, availableServices, statsService, outlookService, accountsService, settingsService, emailServicesService, uploaderService, logsService, taskSocketHandler, batchSocketHandler),
 	); err != nil {
 		log.Fatal(err)
 	}

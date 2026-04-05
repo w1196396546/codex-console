@@ -102,10 +102,10 @@ func TestServiceSyncBindCardSubscriptionPreservesPaidStateOnLowConfidenceFree(t 
 		accountRepo,
 		WithSubscriptionChecker(fakeSubscriptionCheckerFunc(func(context.Context, accounts.Account, string, bool) (SubscriptionCheckDetail, error) {
 			return SubscriptionCheckDetail{
-				Status:      "free",
-				Source:      "chatgpt_web",
-				Confidence:  "low",
-				Note:        "still propagating",
+				Status:         "free",
+				Source:         "chatgpt_web",
+				Confidence:     "low",
+				Note:           "still propagating",
 				RefreshedToken: false,
 			}, nil
 		})),
@@ -150,10 +150,10 @@ func TestServiceSyncBindCardSubscriptionClearsOnHighConfidenceFree(t *testing.T)
 		accountRepo,
 		WithSubscriptionChecker(fakeSubscriptionCheckerFunc(func(context.Context, accounts.Account, string, bool) (SubscriptionCheckDetail, error) {
 			return SubscriptionCheckDetail{
-				Status:      "free",
-				Source:      "chatgpt_web",
-				Confidence:  "high",
-				Note:        "",
+				Status:         "free",
+				Source:         "chatgpt_web",
+				Confidence:     "high",
+				Note:           "",
 				RefreshedToken: true,
 			}, nil
 		})),
@@ -231,9 +231,9 @@ func TestBindCardServiceAutoBindThirdPartyUsesAdapterSeamAndStatusFlow(t *testin
 	}
 	autoBinder := &fakeAutoBinder{
 		thirdPartyResult: AutoBindResult{
-			PaidConfirmed: true,
+			PaidConfirmed:  true,
 			NeedUserAction: true,
-			ThirdParty: map[string]any{"assessment": map[string]any{"state": "pending"}},
+			ThirdParty:     map[string]any{"assessment": map[string]any{"state": "pending"}},
 		},
 	}
 	service := NewService(

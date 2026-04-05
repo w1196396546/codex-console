@@ -98,8 +98,8 @@ func TestRepositoryBindCardTaskCreateAndGetRoundTripsCompatibilityFields(t *test
 	if !strings.Contains(db.queryLog[0], "INSERT INTO bind_card_tasks") {
 		t.Fatalf("expected create query to insert bind_card_tasks, got %q", db.queryLog[0])
 	}
-	if len(db.argsLog[0]) != 16 {
-		t.Fatalf("expected 16 insert args, got %#v", db.argsLog[0])
+	if len(db.argsLog[0]) != 18 {
+		t.Fatalf("expected 18 insert args, got %#v", db.argsLog[0])
 	}
 
 	got, err := repo.GetBindCardTask(context.Background(), 17)
@@ -123,18 +123,18 @@ func TestRepositoryBindCardTaskListAppliesFiltersAndPagination(t *testing.T) {
 		queryResult: &fakePaymentRows{
 			rows: [][]any{
 				bindCardTaskRowValues(BindCardTask{
-					ID:            18,
-					AccountID:     9,
-					AccountEmail:  "alpha@example.com",
-					PlanType:      "plus",
-					Country:       "US",
-					Currency:      "USD",
-					CheckoutURL:   "https://pay.example/checkout/cs_list_1",
-					CheckoutSource:"openai_checkout",
-					BindMode:      "semi_auto",
-					Status:        StatusOpened,
-					CreatedAt:     now,
-					UpdatedAt:     now,
+					ID:             18,
+					AccountID:      9,
+					AccountEmail:   "alpha@example.com",
+					PlanType:       "plus",
+					Country:        "US",
+					Currency:       "USD",
+					CheckoutURL:    "https://pay.example/checkout/cs_list_1",
+					CheckoutSource: "openai_checkout",
+					BindMode:       "semi_auto",
+					Status:         StatusOpened,
+					CreatedAt:      now,
+					UpdatedAt:      now,
 				}),
 			},
 		},
@@ -227,8 +227,8 @@ type fakePaymentDB struct {
 	execTag     pgconn.CommandTag
 	execErr     error
 
-	queryLog []string
-	argsLog  [][]any
+	queryLog  []string
+	argsLog   [][]any
 	execQuery string
 	execArgs  []any
 }
@@ -301,8 +301,20 @@ func (r fakePaymentRow) Scan(dest ...any) error {
 				*target = nil
 				continue
 			}
-			v := value.(time.Time)
-			*target = &v
+			switch typed := value.(type) {
+			case time.Time:
+				v := typed
+				*target = &v
+			case *time.Time:
+				if typed == nil {
+					*target = nil
+					continue
+				}
+				v := *typed
+				*target = &v
+			default:
+				panic("unsupported time pointer value")
+			}
 		case *time.Time:
 			*target = r.values[idx].(time.Time)
 		default:
@@ -317,9 +329,9 @@ type fakePaymentRows struct {
 	idx  int
 }
 
-func (r *fakePaymentRows) Close() {}
-func (r *fakePaymentRows) Err() error { return nil }
-func (r *fakePaymentRows) CommandTag() pgconn.CommandTag { return pgconn.NewCommandTag("SELECT 1") }
+func (r *fakePaymentRows) Close()                                       {}
+func (r *fakePaymentRows) Err() error                                   { return nil }
+func (r *fakePaymentRows) CommandTag() pgconn.CommandTag                { return pgconn.NewCommandTag("SELECT 1") }
 func (r *fakePaymentRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
 func (r *fakePaymentRows) Next() bool {
 	if r.idx >= len(r.rows) {
@@ -333,8 +345,8 @@ func (r *fakePaymentRows) Scan(dest ...any) error {
 	return row.Scan(dest...)
 }
 func (r *fakePaymentRows) Values() ([]any, error) { return nil, nil }
-func (r *fakePaymentRows) RawValues() [][]byte { return nil }
-func (r *fakePaymentRows) Conn() *pgx.Conn { return nil }
+func (r *fakePaymentRows) RawValues() [][]byte    { return nil }
+func (r *fakePaymentRows) Conn() *pgx.Conn        { return nil }
 
 func bindCardTaskRowValues(task BindCardTask) []any {
 	return []any{

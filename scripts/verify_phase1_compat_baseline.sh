@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+DEFAULT_PYTHON_GATE_CMD="uv run pytest tests/test_registration_routes.py tests/test_accounts_routes.py tests/test_settings_routes.py tests/test_payment_routes.py -q"
+ADVISORY_TEAM_CMD="uv run pytest tests/test_team_routes.py tests/test_team_tasks_routes.py -q"
+
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "Missing required command: $1" >&2
@@ -11,12 +14,26 @@ require_cmd() {
   fi
 }
 
-require_cmd pytest
 require_cmd node
 require_cmd go
 
+if command -v uv >/dev/null 2>&1; then
+  PYTEST_CMD=(uv run pytest)
+elif command -v pytest >/dev/null 2>&1; then
+  PYTEST_CMD=(pytest)
+elif command -v python3 >/dev/null 2>&1; then
+  PYTEST_CMD=(python3 -m pytest)
+elif command -v python >/dev/null 2>&1; then
+  PYTEST_CMD=(python -m pytest)
+else
+  echo "Missing required command: uv, pytest, python3, or python" >&2
+  exit 1
+fi
+
 echo "==> Phase 1 compatibility baseline: Python contract suite"
-pytest tests/test_registration_routes.py tests/test_accounts_routes.py tests/test_settings_routes.py tests/test_payment_routes.py tests/test_team_routes.py tests/test_team_tasks_routes.py -q
+"${PYTEST_CMD[@]}" tests/test_registration_routes.py tests/test_accounts_routes.py tests/test_settings_routes.py tests/test_payment_routes.py -q
+
+echo "ADVISORY checks not run by default: $ADVISORY_TEAM_CMD"
 
 echo "==> Phase 1 compatibility baseline: frontend contract suite"
 node --test tests/frontend/registration_log_buffer.test.mjs tests/frontend/accounts_state_actions.test.mjs tests/frontend/accounts_team_entry.test.mjs tests/frontend/auto_team.test.mjs

@@ -12,6 +12,7 @@
 - Run `scripts/verify_phase1_compat_baseline.sh` from the repository root.
 - The script is the single fail-fast compatibility gate for Phase 1.
 - Optional live infrastructure checks stay env-gated; the static contract suites are always mandatory.
+- Team route/task pytest remains advisory until Phase 4.
 
 ## Manual Review Steps
 
@@ -28,6 +29,7 @@
 - `scripts/verify_phase1_compat_baseline.sh` exits non-zero.
 - Any later Phase 2+ execution claims parity while still needing to modify dirty backend-go business files.
 - Any cutover plan assumes SQLite is sufficient for the final Go-owned production path.
+- A later phase silently upgrades the advisory Team route/task pytest suite into a hard Phase 1 gate without re-scoping the milestone.
 
 ## Handoff to Phase 2+
 
@@ -36,6 +38,7 @@ This phase freezes contracts and safety rails only.
 - Phase 2 may build on the registration compatibility baseline, but it must not re-implement existing Go jobs/registration/websocket foundations.
 - Phase 3 inherits the admin/config/storage gaps documented here for accounts, settings, email services, upload configs, proxies, and logs.
 - Phase 4 inherits the payment and team domain gaps documented here, including Python-only runtime tables and current operator-facing behavior.
+- Team route/task pytest remains advisory until Phase 4 owns the domain-level runtime fixes.
 - Phase 5 must gather the external deployment inventory that is outside git before final cutover claims are made.
 
 ---

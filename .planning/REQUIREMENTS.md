@@ -28,7 +28,7 @@
 
 ### Domain Flows
 
-- [ ] **PAY-01**: Operators can run payment, bind-card, and subscription-sync workflows through Go-owned APIs with current task and session semantics.
+- [x] **PAY-01**: Operators can run payment, bind-card, and subscription-sync workflows through Go-owned APIs with current task and session semantics.
 - [ ] **TEAM-01**: Operators can run team discovery, sync, invite, membership, and team-task workflows through Go-owned APIs with current behavior.
 
 ### Cutover
@@ -73,7 +73,7 @@
 | MGMT-01 | Phase 3 | Complete |
 | MGMT-02 | Phase 3 | Complete |
 | CUT-01 | Phase 3 | Complete |
-| PAY-01 | Phase 4 | Pending |
+| PAY-01 | Phase 4 | Complete |
 | TEAM-01 | Phase 4 | Pending |
 | CUT-02 | Phase 5 | Pending |
 

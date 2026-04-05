@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: planning
-stopped_at: Phase 3 complete; Phase 4 is ready for planning
-last_updated: "2026-04-05T14:47:44Z"
+status: executing
+stopped_at: Completed 04-01-PLAN.md
+last_updated: "2026-04-05T15:52:51.841Z"
 last_activity: 2026-04-05
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 20
-  completed_plans: 15
-  percent: 75
+  total_plans: 18
+  completed_plans: 16
+  percent: 89
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-05)
 
 **Core value:** The Go backend can take over the current Codex Console backend responsibilities without forcing existing clients, persisted data, or critical registration, payment, and team workflows to change behavior.
-**Current focus:** Payment and Team Domains
+**Current focus:** Phase 04 — Payment and Team Domains
 
 ## Current Position
 
-Phase: 4 of 5 (Payment and Team Domains)
-Plan: 0 of 3 in current phase
-Status: Ready to plan
-Last activity: 2026-04-05 - Phase 3 completed; Phase 4 ready for planning
+Phase: 04 (Payment and Team Domains) — EXECUTING
+Plan: 2 of 3
+Status: Ready to execute
+Last activity: 2026-04-05
 
 Progress: [███████░░░] 75%
 
@@ -65,6 +65,7 @@ Progress: [███████░░░] 75%
 | Phase 03-management-apis P06 | 637 | 2 tasks | 5 files |
 | Phase 03-management-apis P08 | 496 | 2 tasks | 4 files |
 | Phase 03-management-apis P07 | 297 | 2 tasks | 3 files |
+| Phase 04 P01 | 1192 | 2 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -106,6 +107,9 @@ Recent decisions affecting current work:
 - [Phase 03]: cmd/api exposes small uploader/router wiring helpers so bootstrap-level tests can hit the mounted Sub2API upload path without widening router ownership.
 - [Phase 03-management-apis]: Overview refresh now fetches remote me/wham/codex usage inside the accounts slice before persisting codex_overview.
 - [Phase 03-management-apis]: Refresh results count success only when hourly and weekly quota both resolve away from unknown; otherwise they return failed details with operator-readable errors.
+- [Phase 04]: Payment slice stays a bind_card_tasks-backed state machine and does not move onto jobs/websocket semantics in 04-01.
+- [Phase 04]: Payment session_token, cookies, and subscription writeback continue to use the shared accounts truth source.
+- [Phase 04]: High-risk payment operations are isolated behind explicit adapter seams rather than Python route fallbacks in handlers.
 
 ### Pending Todos
 
@@ -120,6 +124,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-05T14:47:44Z
-Stopped at: Phase 3 completed; ready to plan Phase 4
+Last session: 2026-04-05T15:52:51.839Z
+Stopped at: Completed 04-01-PLAN.md
 Resume file: None

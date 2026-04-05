@@ -480,19 +480,19 @@ func TestServiceOverviewRefreshFailsWhenQuotaRemainsUnknown(t *testing.T) {
 }
 
 type fakeRepository struct {
-	foundAccount    Account
-	found           bool
-	findErr         error
-	accountByID     Account
-	accountByIDErr  error
+	foundAccount     Account
+	found            bool
+	findErr          error
+	accountByID      Account
+	accountByIDErr   error
 	currentAccountID *int
-	listReq         ListAccountsRequest
-	listedAccounts  []Account
-	listedTotal     int
-	upsertedAccount Account
-	upsertErr       error
-	lookedUpEmail   string
-	savedAccount    Account
+	listReq          ListAccountsRequest
+	listedAccounts   []Account
+	listedTotal      int
+	upsertedAccount  Account
+	upsertErr        error
+	lookedUpEmail    string
+	savedAccount     Account
 }
 
 func (f *fakeRepository) ListAccounts(_ context.Context, req ListAccountsRequest) ([]Account, int, error) {

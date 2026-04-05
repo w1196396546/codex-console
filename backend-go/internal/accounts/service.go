@@ -7,6 +7,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -21,6 +22,30 @@ import (
 )
 
 var sessionTokenChunkPattern = regexp.MustCompile(`(?:^|;\s*)__Secure-next-auth\.session-token\.(\d+)=([^;]+)`)
+
+type overviewEndpoint struct {
+	name     string
+	url      string
+	required bool
+}
+
+var overviewUsageEndpoints = []overviewEndpoint{
+	{name: "me", url: "https://chatgpt.com/backend-api/me", required: true},
+	{name: "wham_usage", url: "https://chatgpt.com/backend-api/wham/usage", required: true},
+	{name: "codex_usage", url: "https://chatgpt.com/backend-api/codex/usage", required: false},
+}
+
+type overviewHTTPError struct {
+	statusCode int
+	message    string
+}
+
+func (e *overviewHTTPError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.message
+}
 
 type Repository interface {
 	ListAccounts(ctx context.Context, req ListAccountsRequest) ([]Account, int, error)
@@ -681,17 +706,27 @@ func (s *Service) RefreshOverview(ctx context.Context, req OverviewRefreshReques
 			resp.Details = append(resp.Details, detail)
 			continue
 		}
-		if account.ExtraData == nil {
-			account.ExtraData = map[string]any{}
+		accountProxy := firstNonEmpty(strings.TrimSpace(account.ProxyUsed), strings.TrimSpace(req.Proxy))
+		overview, updated := s.refreshAccountOverview(ctx, &account, req.Force, accountProxy)
+		if updated {
+			if _, err := s.repository.UpsertAccount(ctx, buildUpsertAccount(account)); err != nil {
+				detail.Success = false
+				detail.Error = sanitizeOverviewError(err, account)
+				resp.FailedCount++
+				resp.Details = append(resp.Details, detail)
+				continue
+			}
 		}
-		account.ExtraData[OverviewExtraDataKey] = fallbackOverview(account)
-		if _, err := s.repository.UpsertAccount(ctx, buildUpsertAccount(account)); err != nil {
+		if overviewRefreshFailed(overview) {
 			detail.Success = false
-			detail.Error = err.Error()
+			detail.Error = firstNonEmpty(
+				strings.TrimSpace(extractStringMapValue(overview, "error")),
+				"未获取到配额数据",
+			)
 			resp.FailedCount++
 		} else {
 			detail.Success = true
-			detail.PlanType = normalizePlanType(account.SubscriptionType)
+			detail.PlanType = normalizePlanType(firstNonEmpty(extractStringMapValue(overview, "plan_type"), account.SubscriptionType))
 			resp.SuccessCount++
 		}
 		resp.Details = append(resp.Details, detail)
@@ -859,15 +894,669 @@ func fallbackOverview(account Account) map[string]any {
 	}
 }
 
+func fallbackOverviewWithError(account Account, errorMessage string, stale bool) map[string]any {
+	overview := fallbackOverview(account)
+	if strings.TrimSpace(errorMessage) != "" {
+		overview["error"] = strings.TrimSpace(errorMessage)
+	}
+	overview["stale"] = stale
+	return overview
+}
+
+func staleOverviewFromCache(cached map[string]any, errorMessage string) map[string]any {
+	stale := cloneExtraData(cached)
+	if stale == nil {
+		stale = map[string]any{}
+	}
+	stale["stale"] = true
+	if strings.TrimSpace(errorMessage) != "" {
+		stale["error"] = strings.TrimSpace(errorMessage)
+	}
+	return stale
+}
+
+func overviewRefreshFailed(overview map[string]any) bool {
+	return extractStringMapValue(extractQuotaSnapshot(overview, "hourly_quota"), "status") == "unknown" &&
+		extractStringMapValue(extractQuotaSnapshot(overview, "weekly_quota"), "status") == "unknown"
+}
+
+func (s *Service) refreshAccountOverview(ctx context.Context, account *Account, forceRefresh bool, proxy string) (map[string]any, bool) {
+	if account == nil {
+		return map[string]any{}, false
+	}
+	extraData := cloneExtraData(account.ExtraData)
+	cached, _ := extraData[OverviewExtraDataKey].(map[string]any)
+	cacheStale := isOverviewCacheStale(cached, s.nowUTC())
+
+	if strings.TrimSpace(account.AccessToken) == "" {
+		if len(cached) > 0 {
+			return staleOverviewFromCache(cached, "missing_access_token"), false
+		}
+		return fallbackOverviewWithError(*account, "missing_access_token", true), false
+	}
+
+	if !forceRefresh && len(cached) > 0 && !cacheStale {
+		return cloneExtraData(cached), false
+	}
+
+	overview, err := s.fetchCodexOverview(ctx, *account, proxy)
+	if err != nil {
+		errorMessage := sanitizeOverviewError(err, *account)
+		if len(cached) > 0 {
+			return staleOverviewFromCache(cached, errorMessage), false
+		}
+		return fallbackOverviewWithError(*account, errorMessage, true), false
+	}
+
+	if len(cached) > 0 && !forceRefresh {
+		for _, key := range []string{"hourly_quota", "weekly_quota", "code_review_quota"} {
+			if extractStringMapValue(extractQuotaSnapshot(overview, key), "status") == "unknown" &&
+				extractStringMapValue(extractQuotaSnapshot(cached, key), "status") == "ok" {
+				overview[key] = cloneExtraData(extractQuotaSnapshot(cached, key))
+			}
+		}
+	}
+
+	s.syncOverviewSubscription(account, overview)
+	if extraData == nil {
+		extraData = map[string]any{}
+	}
+	extraData[OverviewExtraDataKey] = cloneExtraData(overview)
+	account.ExtraData = extraData
+	return overview, true
+}
+
+func (s *Service) fetchCodexOverview(ctx context.Context, account Account, proxy string) (map[string]any, error) {
+	headers := buildOverviewHeaders(account)
+	payloads := make(map[string]map[string]any, len(overviewUsageEndpoints))
+	errorsList := make([]string, 0, len(overviewUsageEndpoints))
+
+	for _, endpoint := range overviewUsageEndpoints {
+		payload, err := s.requestOverviewJSON(ctx, endpoint.url, headers, proxy)
+		if err != nil {
+			status := overviewErrorStatus(err)
+			if !endpoint.required && (status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusNotFound) {
+				continue
+			}
+			errorsList = append(errorsList, fmt.Sprintf("%s: %s", endpoint.name, sanitizeOverviewError(err, account)))
+			continue
+		}
+		payloads[endpoint.name] = payload
+	}
+
+	if len(payloads) == 0 {
+		return nil, fmt.Errorf("所有概览接口请求失败")
+	}
+
+	if len(errorsList) > 3 {
+		errorsList = errorsList[:3]
+	}
+	planType, planSource := detectOverviewPlan(account, payloads)
+	return map[string]any{
+		"plan_type":         planType,
+		"plan_source":       planSource,
+		"hourly_quota":      extractOverviewQuota("hourly", payloads),
+		"weekly_quota":      extractOverviewQuota("weekly", payloads),
+		"code_review_quota": extractOverviewCodeReviewQuota(payloads),
+		"sources":           overviewPayloadSources(payloads),
+		"fetched_at":        s.nowUTC().Format(time.RFC3339),
+		"errors":            errorsList,
+	}, nil
+}
+
+func (s *Service) requestOverviewJSON(ctx context.Context, rawURL string, headers map[string]string, proxy string) (map[string]any, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range headers {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		req.Header.Set(key, value)
+	}
+
+	doer := s.resolveOverviewDoer(proxy)
+	resp, err := doer.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized && strings.Contains(strings.ToLower(string(body)), "deactivated") {
+		return nil, &overviewHTTPError{
+			statusCode: resp.StatusCode,
+			message:    "account_deactivated",
+		}
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, &overviewHTTPError{
+			statusCode: resp.StatusCode,
+			message:    fmt.Sprintf("HTTP %d", resp.StatusCode),
+		}
+	}
+
+	var payload map[string]any
+	if len(bytes.TrimSpace(body)) == 0 {
+		return map[string]any{}, nil
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	return payload, nil
+}
+
+func (s *Service) resolveOverviewDoer(proxy string) uploader.HTTPDoer {
+	if s != nil && s.httpDoer != nil {
+		return s.httpDoer
+	}
+	if strings.TrimSpace(proxy) != "" {
+		return newHTTPClient(proxy)
+	}
+	return http.DefaultClient
+}
+
+func buildOverviewHeaders(account Account) map[string]string {
+	headers := map[string]string{
+		"Authorization": "Bearer " + strings.TrimSpace(account.AccessToken),
+		"Content-Type":  "application/json",
+	}
+	if accountID := firstNonEmpty(strings.TrimSpace(account.AccountID), strings.TrimSpace(account.WorkspaceID)); accountID != "" {
+		headers["ChatGPT-Account-Id"] = accountID
+	}
+	if strings.TrimSpace(account.Cookies) != "" {
+		headers["cookie"] = strings.TrimSpace(account.Cookies)
+		if oaiDID := extractCookieValue(account.Cookies, "oai-did"); oaiDID != "" {
+			headers["oai-device-id"] = oaiDID
+		}
+	}
+	return headers
+}
+
+func isOverviewCacheStale(cached map[string]any, now time.Time) bool {
+	if len(cached) == 0 {
+		return true
+	}
+	fetchedAt := parseTimeString(extractStringMapValue(cached, "fetched_at"))
+	if fetchedAt == nil {
+		return true
+	}
+	return now.UTC().Sub(fetchedAt.UTC()) > OverviewCacheTTLSeconds*time.Second
+}
+
+func (s *Service) syncOverviewSubscription(account *Account, overview map[string]any) {
+	if account == nil {
+		return
+	}
+	planSource := extractStringMapValue(overview, "plan_source")
+	trusted := []string{"me.", "wham_usage.", "codex_usage.", "id_token.", "access_token."}
+	isTrusted := false
+	for _, prefix := range trusted {
+		if strings.HasPrefix(planSource, prefix) {
+			isTrusted = true
+			break
+		}
+	}
+	if !isTrusted {
+		return
+	}
+	current := normalizeSubscriptionType(account.SubscriptionType)
+	detected := normalizeSubscriptionType(extractStringMapValue(overview, "plan_type"))
+	if detected != "" && current != detected {
+		account.SubscriptionType = detected
+		now := s.nowUTC()
+		account.SubscriptionAt = &now
+	}
+}
+
+func sanitizeOverviewError(err error, account Account) string {
+	message := strings.TrimSpace(err.Error())
+	replacements := []string{
+		strings.TrimSpace(account.AccessToken),
+		strings.TrimSpace(account.RefreshToken),
+		strings.TrimSpace(account.SessionToken),
+		strings.TrimSpace(account.IDToken),
+		strings.TrimSpace(account.Cookies),
+	}
+	for _, secret := range replacements {
+		if secret == "" {
+			continue
+		}
+		message = strings.ReplaceAll(message, secret, "[redacted]")
+	}
+	return firstNonEmpty(message, "未获取到配额数据")
+}
+
+func overviewErrorStatus(err error) int {
+	if httpErr, ok := err.(*overviewHTTPError); ok && httpErr != nil {
+		return httpErr.statusCode
+	}
+	return 0
+}
+
+func overviewPayloadSources(payloads map[string]map[string]any) []string {
+	sources := make([]string, 0, len(payloads))
+	for key := range payloads {
+		sources = append(sources, key)
+	}
+	sort.Strings(sources)
+	return sources
+}
+
+func extractOverviewQuota(window string, payloads map[string]map[string]any) map[string]any {
+	if strict := extractOverviewQuotaFromRateLimit(window, payloads); len(strict) > 0 {
+		return strict
+	}
+	return UnknownQuotaSnapshot()
+}
+
+func extractOverviewQuotaFromRateLimit(window string, payloads map[string]map[string]any) map[string]any {
+	for _, sourceName := range []string{"wham_usage", "codex_usage"} {
+		payload := payloads[sourceName]
+		if len(payload) == 0 {
+			continue
+		}
+		for sourcePath, rateLimit := range iterOverviewRateLimitCandidates(payload) {
+			selectedKey, selectedPayload, ok := selectOverviewRateLimitWindow(rateLimit, window)
+			if !ok {
+				continue
+			}
+			parsed := extractOverviewQuotaFromWindow(selectedPayload)
+			if len(parsed) == 0 {
+				continue
+			}
+			parsed["source"] = fmt.Sprintf("%s.%s.%s", sourceName, sourcePath, selectedKey)
+			return parsed
+		}
+
+		topLevel := map[string]any{
+			"primary_window":   payload["primary_window"],
+			"secondary_window": payload["secondary_window"],
+		}
+		selectedKey, selectedPayload, ok := selectOverviewRateLimitWindow(topLevel, window)
+		if !ok {
+			continue
+		}
+		parsed := extractOverviewQuotaFromWindow(selectedPayload)
+		if len(parsed) == 0 {
+			continue
+		}
+		parsed["source"] = fmt.Sprintf("%s.%s", sourceName, selectedKey)
+		return parsed
+	}
+	return nil
+}
+
+func iterOverviewRateLimitCandidates(payload map[string]any) map[string]map[string]any {
+	candidates := map[string]map[string]any{}
+	if rateLimit, ok := payload["rate_limit"].(map[string]any); ok {
+		candidates["rate_limit"] = rateLimit
+	}
+	for _, parentKey := range []string{"usage", "data", "quota", "limits", "codex"} {
+		parent, ok := payload[parentKey].(map[string]any)
+		if !ok {
+			continue
+		}
+		rateLimit, ok := parent["rate_limit"].(map[string]any)
+		if ok {
+			candidates[parentKey+".rate_limit"] = rateLimit
+		}
+	}
+	return candidates
+}
+
+func selectOverviewRateLimitWindow(rateLimit map[string]any, targetWindow string) (string, map[string]any, bool) {
+	type candidate struct {
+		key       string
+		payload   map[string]any
+		inferred  string
+		confident bool
+	}
+	candidates := make([]candidate, 0, 2)
+	for _, key := range []string{"primary_window", "secondary_window"} {
+		raw, ok := rateLimit[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		inferred, confident := inferOverviewWindowType(raw, key)
+		candidates = append(candidates, candidate{key: key, payload: raw, inferred: inferred, confident: confident})
+	}
+	for _, item := range candidates {
+		if item.confident && item.inferred == targetWindow {
+			return item.key, item.payload, true
+		}
+	}
+	for _, item := range candidates {
+		if item.inferred == targetWindow {
+			return item.key, item.payload, true
+		}
+	}
+	fallbackKey := "primary_window"
+	if targetWindow == "weekly" {
+		fallbackKey = "secondary_window"
+	}
+	for _, item := range candidates {
+		if item.key == fallbackKey {
+			return item.key, item.payload, true
+		}
+	}
+	return "", nil, false
+}
+
+func inferOverviewWindowType(windowPayload map[string]any, windowKey string) (string, bool) {
+	seconds := overviewFloatValue(windowPayload["limit_window_seconds"])
+	if seconds == nil {
+		seconds = overviewFloatValue(windowPayload["window_seconds"])
+	}
+	if seconds != nil && *seconds > 0 {
+		if *seconds >= 5*24*60*60 {
+			return "weekly", true
+		}
+		if *seconds <= 12*60*60 {
+			return "hourly", true
+		}
+	}
+	if windowKey == "primary_window" {
+		return "hourly", false
+	}
+	return "weekly", false
+}
+
+func extractOverviewQuotaFromWindow(windowPayload map[string]any) map[string]any {
+	if len(windowPayload) == 0 {
+		return nil
+	}
+	usedPercent := overviewFloatValue(windowPayload["used_percent"])
+	remainingPercent := overviewFloatValue(windowPayload["remaining_percent"])
+	if usedPercent != nil && *usedPercent >= 0 && *usedPercent <= 1 {
+		value := *usedPercent * 100
+		usedPercent = &value
+	}
+	if remainingPercent != nil && *remainingPercent >= 0 && *remainingPercent <= 1 {
+		value := *remainingPercent * 100
+		remainingPercent = &value
+	}
+	if remainingPercent == nil && usedPercent != nil {
+		value := 100 - *usedPercent
+		remainingPercent = &value
+	}
+	total := firstOverviewFloat(windowPayload, "total", "limit", "max", "capacity")
+	used := overviewFloatValue(windowPayload["used"])
+	remaining := overviewFloatValue(windowPayload["remaining"])
+	if total != nil && remaining == nil && remainingPercent != nil {
+		value := *total * (*remainingPercent / 100)
+		remaining = &value
+	}
+	if total != nil && used == nil && remaining != nil {
+		value := maxFloat(*total-*remaining, 0)
+		used = &value
+	}
+	if total != nil && remaining == nil && used != nil {
+		value := maxFloat(*total-*used, 0)
+		remaining = &value
+	}
+
+	resetAt := firstOverviewTime(windowPayload, "resets_at", "reset_at", "next_reset_at", "next_reset")
+	resetIn := firstOverviewFloat(windowPayload, "resets_in_seconds", "remaining_seconds", "seconds_to_reset", "reset_in")
+	if resetIn == nil && resetAt != nil {
+		value := maxFloat(resetAt.Sub(time.Now().UTC()).Seconds(), 0)
+		resetIn = &value
+	}
+	if resetAt == nil && resetIn != nil {
+		value := time.Now().UTC().Add(time.Duration(int(*resetIn)) * time.Second)
+		resetAt = &value
+	}
+	if total == nil && used == nil && remaining == nil && remainingPercent == nil && resetAt == nil && resetIn == nil {
+		return nil
+	}
+	if remainingPercent == nil && total != nil && *total > 0 && remaining != nil {
+		value := maxFloat(minFloat((*remaining / *total)*100, 100), 0)
+		remainingPercent = &value
+	}
+
+	return map[string]any{
+		"used":          overviewIntValue(used),
+		"total":         overviewIntValue(total),
+		"remaining":     overviewIntValue(remaining),
+		"percentage":    overviewRounded(remainingPercent),
+		"reset_at":      formatTime(resetAt),
+		"reset_in_text": formatOverviewDuration(resetIn),
+		"status":        "ok",
+	}
+}
+
+func extractOverviewCodeReviewQuota(payloads map[string]map[string]any) map[string]any {
+	payload := payloads["wham_usage"]
+	if len(payload) == 0 {
+		return UnknownQuotaSnapshot()
+	}
+	reviewRateLimit, ok := payload["code_review_rate_limit"].(map[string]any)
+	if !ok {
+		return UnknownQuotaSnapshot()
+	}
+	for _, key := range []string{"primary_window", "secondary_window"} {
+		window, _ := reviewRateLimit[key].(map[string]any)
+		if parsed := extractOverviewQuotaFromWindow(window); len(parsed) > 0 {
+			return parsed
+		}
+	}
+	return UnknownQuotaSnapshot()
+}
+
+func detectOverviewPlan(account Account, payloads map[string]map[string]any) (string, string) {
+	if detected, ok := detectOverviewPlanFromMe(payloads["me"]); ok {
+		return detected, "me.plan"
+	}
+	for _, sourceName := range []string{"wham_usage", "codex_usage"} {
+		if detected, ok := detectOverviewPlanFromPayload(payloads[sourceName]); ok {
+			return detected, sourceName + ".plan"
+		}
+	}
+	if normalized := normalizePlanType(account.SubscriptionType); normalized != "" {
+		return normalized, firstNonEmpty(mapPlanSource(account.SubscriptionType), "default")
+	}
+	return "Basic", "default"
+}
+
+func detectOverviewPlanFromMe(payload map[string]any) (string, bool) {
+	if len(payload) == 0 {
+		return "", false
+	}
+	for _, candidate := range overviewPlanCandidates(payload) {
+		normalized := normalizePlanType(candidate)
+		if normalized != "" {
+			return normalized, true
+		}
+	}
+	if accountBlock, ok := payload["account"].(map[string]any); ok {
+		for _, candidate := range overviewPlanCandidates(accountBlock) {
+			normalized := normalizePlanType(candidate)
+			if normalized != "" {
+				return normalized, true
+			}
+		}
+	}
+	if subscriptionBlock, ok := payload["subscription"].(map[string]any); ok {
+		for _, candidate := range overviewPlanCandidates(subscriptionBlock) {
+			normalized := normalizePlanType(candidate)
+			if normalized != "" {
+				return normalized, true
+			}
+		}
+	}
+	for _, key := range []string{"has_paid_subscription", "has_active_subscription", "is_paid", "is_subscribed"} {
+		if value, ok := payload[key].(bool); ok && value {
+			return "Plus", true
+		}
+	}
+	return "", false
+}
+
+func detectOverviewPlanFromPayload(payload map[string]any) (string, bool) {
+	if len(payload) == 0 {
+		return "", false
+	}
+	for _, candidate := range overviewPlanCandidates(payload) {
+		normalized := normalizePlanType(candidate)
+		if normalized != "" {
+			return normalized, true
+		}
+	}
+	return "", false
+}
+
+func overviewPlanCandidates(payload map[string]any) []string {
+	candidates := make([]string, 0, 8)
+	for _, key := range []string{"plan_type", "plan", "subscription_plan", "account_plan", "subscription_tier", "chatgpt_plan_type", "tier", "planType", "product"} {
+		if value := stringValue(payload[key]); value != "" {
+			candidates = append(candidates, value)
+		}
+	}
+	return candidates
+}
+
+func firstOverviewFloat(payload map[string]any, keys ...string) *float64 {
+	for _, key := range keys {
+		if value := overviewFloatValue(payload[key]); value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func firstOverviewTime(payload map[string]any, keys ...string) *time.Time {
+	for _, key := range keys {
+		if value := parseTimeString(stringValue(payload[key])); value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func overviewFloatValue(value any) *float64 {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case float64:
+		return &typed
+	case float32:
+		result := float64(typed)
+		return &result
+	case int:
+		result := float64(typed)
+		return &result
+	case int64:
+		result := float64(typed)
+		return &result
+	case int32:
+		result := float64(typed)
+		return &result
+	case json.Number:
+		result, err := typed.Float64()
+		if err != nil {
+			return nil
+		}
+		return &result
+	case string:
+		text := strings.TrimSpace(typed)
+		if text == "" {
+			return nil
+		}
+		result, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return nil
+		}
+		return &result
+	default:
+		return nil
+	}
+}
+
+func overviewIntValue(value *float64) any {
+	if value == nil {
+		return nil
+	}
+	return int(*value)
+}
+
+func overviewRounded(value *float64) any {
+	if value == nil {
+		return nil
+	}
+	return mathRound(*value, 2)
+}
+
+func formatOverviewDuration(seconds *float64) string {
+	if seconds == nil {
+		return "-"
+	}
+	remaining := int(maxFloat(*seconds, 0))
+	if remaining < 60 {
+		return "1分钟"
+	}
+	minutes := remaining / 60
+	days := minutes / 1440
+	hours := (minutes % 1440) / 60
+	mins := minutes % 60
+	if days > 0 {
+		return fmt.Sprintf("%d天%d小时", days, hours)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%d小时%d分钟", hours, mins)
+	}
+	return fmt.Sprintf("%d分钟", maxInt(mins, 1))
+}
+
+func mathRound(value float64, precision int) float64 {
+	scale := mathPow10(precision)
+	return float64(int(value*scale+0.5)) / scale
+}
+
+func mathPow10(power int) float64 {
+	result := 1.0
+	for i := 0; i < power; i++ {
+		result *= 10
+	}
+	return result
+}
+
+func maxFloat(left float64, right float64) float64 {
+	if left > right {
+		return left
+	}
+	return right
+}
+
+func minFloat(left float64, right float64) float64 {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+func maxInt(left int, right int) int {
+	if left > right {
+		return left
+	}
+	return right
+}
+
 func buildTeamRelationCompatibility(account Account) ([]string, map[string]any, int) {
 	if normalizeSubscriptionType(account.SubscriptionType) != "team" {
 		return []string{}, nil, 0
 	}
 	return []string{"owner"}, map[string]any{
-		"owner_count":      1,
-		"member_count":     0,
-		"has_owner_role":   true,
-		"has_member_role":  false,
+		"owner_count":     1,
+		"member_count":    0,
+		"has_owner_role":  true,
+		"has_member_role": false,
 	}, 1
 }
 
@@ -962,7 +1651,7 @@ func extractQuotaSnapshot(overview map[string]any, key string) map[string]any {
 }
 
 func extractStringMapValue(data map[string]any, key string) string {
-	return strings.TrimSpace(fmt.Sprintf("%v", data[key]))
+	return stringValue(data[key])
 }
 
 func extractBoolMapValue(data map[string]any, key string) bool {
@@ -1421,7 +2110,7 @@ func (s *Service) batchUpload(ctx context.Context, kind uploader.UploadKind, sel
 	results, err := sender.Send(ctx, uploader.SendRequest{
 		Service:  serviceConfig,
 		Accounts: uploadAccounts,
-		Sub2API: uploader.Sub2APIBatchOptions{Concurrency: concurrency, Priority: priority},
+		Sub2API:  uploader.Sub2APIBatchOptions{Concurrency: concurrency, Priority: priority},
 	})
 	if err != nil {
 		return BatchUploadResponse{}, err
@@ -1468,7 +2157,7 @@ func (s *Service) singleUpload(ctx context.Context, kind uploader.UploadKind, ac
 	results, err := sender.Send(ctx, uploader.SendRequest{
 		Service:  serviceConfig,
 		Accounts: []uploader.UploadAccount{toUploadAccount(account)},
-		Sub2API: uploader.Sub2APIBatchOptions{Concurrency: concurrency, Priority: priority},
+		Sub2API:  uploader.Sub2APIBatchOptions{Concurrency: concurrency, Priority: priority},
 	})
 	if err != nil {
 		return ActionResponse{}, err
@@ -1752,10 +2441,10 @@ func refreshWithSessionToken(ctx context.Context, sessionToken string, proxy str
 func refreshWithOAuthToken(ctx context.Context, refreshToken string, clientID string, proxy string) (string, string, *time.Time, error) {
 	client := newHTTPClient(proxy)
 	form := url.Values{
-		"client_id":    []string{clientID},
-		"grant_type":   []string{"refresh_token"},
+		"client_id":     []string{clientID},
+		"grant_type":    []string{"refresh_token"},
 		"refresh_token": []string{refreshToken},
-		"redirect_uri": []string{defaultOpenAIRedirectURI},
+		"redirect_uri":  []string{defaultOpenAIRedirectURI},
 	}
 	body := strings.NewReader(form.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://auth.openai.com/oauth/token", body)

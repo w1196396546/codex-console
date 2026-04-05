@@ -1,0 +1,4520 @@
+{
+  "generated_at": "2026-04-05T17:10:00+08:00",
+  "routes": [
+    {
+      "route_id": "registration:GET:/api/registration/available-services",
+      "path": "/api/registration/available-services",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "get_available_email_services",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "GET /api/registration/available-services",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:POST:/api/registration/batch",
+      "path": "/api/registration/batch",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "start_batch_registration",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "POST /api/registration/batch",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:GET:/api/registration/batch/{batch_id}",
+      "path": "/api/registration/batch/{batch_id}",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "get_batch_status",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "GET /api/registration/batch/{batchID}",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:POST:/api/registration/batch/{batch_id}/cancel",
+      "path": "/api/registration/batch/{batch_id}/cancel",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "cancel_batch",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "POST /api/registration/batch/{batchID}/cancel",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:POST:/api/registration/batch/{batch_id}/pause",
+      "path": "/api/registration/batch/{batch_id}/pause",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "pause_batch",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "POST /api/registration/batch/{batchID}/pause",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:POST:/api/registration/batch/{batch_id}/resume",
+      "path": "/api/registration/batch/{batch_id}/resume",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "resume_batch",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "POST /api/registration/batch/{batchID}/resume",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:GET:/api/registration/outlook-accounts",
+      "path": "/api/registration/outlook-accounts",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "get_outlook_accounts_for_registration",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "GET /api/registration/outlook-accounts",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:POST:/api/registration/outlook-batch",
+      "path": "/api/registration/outlook-batch",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "start_outlook_batch_registration",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "POST /api/registration/outlook-batch",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:GET:/api/registration/outlook-batch/{batch_id}",
+      "path": "/api/registration/outlook-batch/{batch_id}",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "get_outlook_batch_status",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "GET /api/registration/outlook-batch/{batchID}",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:POST:/api/registration/outlook-batch/{batch_id}/cancel",
+      "path": "/api/registration/outlook-batch/{batch_id}/cancel",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "cancel_outlook_batch",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "POST /api/registration/outlook-batch/{batchID}/cancel",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:POST:/api/registration/outlook-batch/{batch_id}/pause",
+      "path": "/api/registration/outlook-batch/{batch_id}/pause",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "pause_outlook_batch",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "POST /api/registration/outlook-batch/{batchID}/pause",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:POST:/api/registration/outlook-batch/{batch_id}/resume",
+      "path": "/api/registration/outlook-batch/{batch_id}/resume",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "resume_outlook_batch",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "POST /api/registration/outlook-batch/{batchID}/resume",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:POST:/api/registration/start",
+      "path": "/api/registration/start",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "start_registration",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "POST /api/registration/start",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:GET:/api/registration/stats",
+      "path": "/api/registration/stats",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "get_registration_stats",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "GET /api/registration/stats",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:GET:/api/registration/tasks",
+      "path": "/api/registration/tasks",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "list_tasks",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "Go registration compatibility family exists under /api/registration and /api/ws",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:DELETE:/api/registration/tasks/{task_uuid}",
+      "path": "/api/registration/tasks/{task_uuid}",
+      "method": "DELETE",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "delete_task",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "Go registration compatibility family exists under /api/registration and /api/ws",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:GET:/api/registration/tasks/{task_uuid}",
+      "path": "/api/registration/tasks/{task_uuid}",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "get_task",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "GET /api/registration/tasks/{taskUUID}",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:POST:/api/registration/tasks/{task_uuid}/cancel",
+      "path": "/api/registration/tasks/{task_uuid}/cancel",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "cancel_task",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "POST /api/registration/tasks/{taskUUID}/cancel",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:GET:/api/registration/tasks/{task_uuid}/logs",
+      "path": "/api/registration/tasks/{task_uuid}/logs",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "get_task_logs",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "GET /api/registration/tasks/{taskUUID}/logs",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:POST:/api/registration/tasks/{task_uuid}/pause",
+      "path": "/api/registration/tasks/{task_uuid}/pause",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "pause_task",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "POST /api/registration/tasks/{taskUUID}/pause",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:POST:/api/registration/tasks/{task_uuid}/resume",
+      "path": "/api/registration/tasks/{task_uuid}/resume",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/registration.py",
+      "python_handler": "resume_task",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "POST /api/registration/tasks/{taskUUID}/resume",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:WS:/api/ws/batch/{batch_id}",
+      "path": "/api/ws/batch/{batch_id}",
+      "method": "WS",
+      "transport": "websocket",
+      "python_module": "src/web/routes/websocket.py",
+      "python_handler": "batch_websocket",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "WS /api/ws/batch/{batch_id}",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "registration:WS:/api/ws/task/{task_uuid}",
+      "path": "/api/ws/task/{task_uuid}",
+      "method": "WS",
+      "transport": "websocket",
+      "python_module": "src/web/routes/websocket.py",
+      "python_handler": "task_websocket",
+      "client_consumers": [
+        "templates/index.html",
+        "static/js/app.js",
+        "static/js/outlook_account_selector.js",
+        "static/js/registration_log_buffer.js"
+      ],
+      "go_surface": "WS /api/ws/task/{task_uuid}",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Shared compatibility slice in Go; keep Python behavior as oracle but no Phase 1 reimplementation of existing Go registration/task/websocket baseline.",
+      "domain": "registration"
+    },
+    {
+      "route_id": "accounts:GET:/api/accounts",
+      "path": "/api/accounts",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "list_accounts",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": "GET /api/accounts",
+      "ownership_status": "shared-compat",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts",
+      "path": "/api/accounts",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "create_manual_account",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/batch-delete",
+      "path": "/api/accounts/batch-delete",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "batch_delete_accounts",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/batch-refresh",
+      "path": "/api/accounts/batch-refresh",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "batch_refresh_tokens",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/batch-update",
+      "path": "/api/accounts/batch-update",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "batch_update_accounts",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/batch-upload-cpa",
+      "path": "/api/accounts/batch-upload-cpa",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "batch_upload_accounts_to_cpa",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/batch-upload-sub2api",
+      "path": "/api/accounts/batch-upload-sub2api",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "batch_upload_accounts_to_sub2api",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/batch-upload-tm",
+      "path": "/api/accounts/batch-upload-tm",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "batch_upload_accounts_to_tm",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/batch-validate",
+      "path": "/api/accounts/batch-validate",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "batch_validate_tokens",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:GET:/api/accounts/current",
+      "path": "/api/accounts/current",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "get_current_account",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/export/codex",
+      "path": "/api/accounts/export/codex",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "export_accounts_codex",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/export/cpa",
+      "path": "/api/accounts/export/cpa",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "export_accounts_cpa",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/export/csv",
+      "path": "/api/accounts/export/csv",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "export_accounts_csv",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/export/json",
+      "path": "/api/accounts/export/json",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "export_accounts_json",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/export/sub2api",
+      "path": "/api/accounts/export/sub2api",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "export_accounts_sub2api",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/import",
+      "path": "/api/accounts/import",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "import_accounts",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:GET:/api/accounts/overview/cards",
+      "path": "/api/accounts/overview/cards",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "list_accounts_overview_cards",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:GET:/api/accounts/overview/cards/addable",
+      "path": "/api/accounts/overview/cards/addable",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "list_accounts_overview_addable",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/overview/cards/remove",
+      "path": "/api/accounts/overview/cards/remove",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "remove_accounts_overview_cards",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:GET:/api/accounts/overview/cards/selectable",
+      "path": "/api/accounts/overview/cards/selectable",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "list_accounts_overview_selectable",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/overview/cards/{account_id}/attach",
+      "path": "/api/accounts/overview/cards/{account_id}/attach",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "attach_accounts_overview_card",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/overview/cards/{account_id}/restore",
+      "path": "/api/accounts/overview/cards/{account_id}/restore",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "restore_accounts_overview_card",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/overview/refresh",
+      "path": "/api/accounts/overview/refresh",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "refresh_accounts_overview",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:GET:/api/accounts/stats/overview",
+      "path": "/api/accounts/stats/overview",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "get_accounts_overview",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:GET:/api/accounts/stats/summary",
+      "path": "/api/accounts/stats/summary",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "get_accounts_stats",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:DELETE:/api/accounts/{account_id}",
+      "path": "/api/accounts/{account_id}",
+      "method": "DELETE",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "delete_account",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:GET:/api/accounts/{account_id}",
+      "path": "/api/accounts/{account_id}",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "get_account",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:PATCH:/api/accounts/{account_id}",
+      "path": "/api/accounts/{account_id}",
+      "method": "PATCH",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "update_account",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:GET:/api/accounts/{account_id}/cookies",
+      "path": "/api/accounts/{account_id}/cookies",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "get_account_cookies",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/{account_id}/inbox-code",
+      "path": "/api/accounts/{account_id}/inbox-code",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "get_account_inbox_code",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/{account_id}/refresh",
+      "path": "/api/accounts/{account_id}/refresh",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "refresh_account_token",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/{account_id}/switch",
+      "path": "/api/accounts/{account_id}/switch",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "switch_current_account",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:GET:/api/accounts/{account_id}/tokens",
+      "path": "/api/accounts/{account_id}/tokens",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "get_account_tokens",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/{account_id}/upload-cpa",
+      "path": "/api/accounts/{account_id}/upload-cpa",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "upload_account_to_cpa",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/{account_id}/upload-sub2api",
+      "path": "/api/accounts/{account_id}/upload-sub2api",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "upload_account_to_sub2api",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/{account_id}/upload-tm",
+      "path": "/api/accounts/{account_id}/upload-tm",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "upload_account_to_tm",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "accounts:POST:/api/accounts/{account_id}/validate",
+      "path": "/api/accounts/{account_id}/validate",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/accounts.py",
+      "python_handler": "validate_account_token",
+      "client_consumers": [
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/accounts_overview.html",
+        "static/js/accounts_overview.js",
+        "static/js/accounts_state_actions.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Only list endpoint exists in Go baseline; broader account management remains Python-owned.",
+      "domain": "accounts"
+    },
+    {
+      "route_id": "settings:GET:/api/settings",
+      "path": "/api/settings",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "get_all_settings",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:GET:/api/settings/database",
+      "path": "/api/settings/database",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "get_database_info",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/database/backup",
+      "path": "/api/settings/database/backup",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "backup_database",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/database/cleanup",
+      "path": "/api/settings/database/cleanup",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "cleanup_database",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/database/import",
+      "path": "/api/settings/database/import",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "import_database",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:GET:/api/settings/email-code",
+      "path": "/api/settings/email-code",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "get_email_code_settings",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/email-code",
+      "path": "/api/settings/email-code",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "update_email_code_settings",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:GET:/api/settings/logs",
+      "path": "/api/settings/logs",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "get_recent_logs",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:GET:/api/settings/outlook",
+      "path": "/api/settings/outlook",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "get_outlook_settings",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/outlook",
+      "path": "/api/settings/outlook",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "update_outlook_settings",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:GET:/api/settings/proxies",
+      "path": "/api/settings/proxies",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "get_proxies_list",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/proxies",
+      "path": "/api/settings/proxies",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "create_proxy_item",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/proxies/test-all",
+      "path": "/api/settings/proxies/test-all",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "test_all_proxies",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:DELETE:/api/settings/proxies/{proxy_id}",
+      "path": "/api/settings/proxies/{proxy_id}",
+      "method": "DELETE",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "delete_proxy_item",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:GET:/api/settings/proxies/{proxy_id}",
+      "path": "/api/settings/proxies/{proxy_id}",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "get_proxy_item",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:PATCH:/api/settings/proxies/{proxy_id}",
+      "path": "/api/settings/proxies/{proxy_id}",
+      "method": "PATCH",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "update_proxy_item",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/proxies/{proxy_id}/disable",
+      "path": "/api/settings/proxies/{proxy_id}/disable",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "disable_proxy",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/proxies/{proxy_id}/enable",
+      "path": "/api/settings/proxies/{proxy_id}/enable",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "enable_proxy",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/proxies/{proxy_id}/set-default",
+      "path": "/api/settings/proxies/{proxy_id}/set-default",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "set_proxy_default",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/proxies/{proxy_id}/test",
+      "path": "/api/settings/proxies/{proxy_id}/test",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "test_proxy_item",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:GET:/api/settings/proxy/dynamic",
+      "path": "/api/settings/proxy/dynamic",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "get_dynamic_proxy_settings",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/proxy/dynamic",
+      "path": "/api/settings/proxy/dynamic",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "update_dynamic_proxy_settings",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/proxy/dynamic/test",
+      "path": "/api/settings/proxy/dynamic/test",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "test_dynamic_proxy",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:GET:/api/settings/registration",
+      "path": "/api/settings/registration",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "get_registration_settings",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/registration",
+      "path": "/api/settings/registration",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "update_registration_settings",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:GET:/api/settings/team-manager",
+      "path": "/api/settings/team-manager",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "get_team_manager_settings",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/team-manager",
+      "path": "/api/settings/team-manager",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "update_team_manager_settings",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/team-manager/test",
+      "path": "/api/settings/team-manager/test",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "test_team_manager_connection",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:GET:/api/settings/tempmail",
+      "path": "/api/settings/tempmail",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "get_tempmail_settings",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/tempmail",
+      "path": "/api/settings/tempmail",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "update_tempmail_settings",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "settings:POST:/api/settings/webui",
+      "path": "/api/settings/webui",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/settings.py",
+      "python_handler": "update_webui_settings",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Settings/proxy/database/admin flows remain Python-owned.",
+      "domain": "settings"
+    },
+    {
+      "route_id": "email-services:GET:/api/email-services",
+      "path": "/api/email-services",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/email.py",
+      "python_handler": "list_email_services",
+      "client_consumers": [
+        "templates/email_services.html",
+        "static/js/email_services.js",
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Email service management remains Python-owned.",
+      "domain": "email-services"
+    },
+    {
+      "route_id": "email-services:POST:/api/email-services",
+      "path": "/api/email-services",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/email.py",
+      "python_handler": "create_email_service",
+      "client_consumers": [
+        "templates/email_services.html",
+        "static/js/email_services.js",
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Email service management remains Python-owned.",
+      "domain": "email-services"
+    },
+    {
+      "route_id": "email-services:DELETE:/api/email-services/outlook/batch",
+      "path": "/api/email-services/outlook/batch",
+      "method": "DELETE",
+      "transport": "http",
+      "python_module": "src/web/routes/email.py",
+      "python_handler": "batch_delete_outlook",
+      "client_consumers": [
+        "templates/email_services.html",
+        "static/js/email_services.js",
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Email service management remains Python-owned.",
+      "domain": "email-services"
+    },
+    {
+      "route_id": "email-services:POST:/api/email-services/outlook/batch-import",
+      "path": "/api/email-services/outlook/batch-import",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/email.py",
+      "python_handler": "batch_import_outlook",
+      "client_consumers": [
+        "templates/email_services.html",
+        "static/js/email_services.js",
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Email service management remains Python-owned.",
+      "domain": "email-services"
+    },
+    {
+      "route_id": "email-services:POST:/api/email-services/reorder",
+      "path": "/api/email-services/reorder",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/email.py",
+      "python_handler": "reorder_services",
+      "client_consumers": [
+        "templates/email_services.html",
+        "static/js/email_services.js",
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Email service management remains Python-owned.",
+      "domain": "email-services"
+    },
+    {
+      "route_id": "email-services:GET:/api/email-services/stats",
+      "path": "/api/email-services/stats",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/email.py",
+      "python_handler": "get_email_services_stats",
+      "client_consumers": [
+        "templates/email_services.html",
+        "static/js/email_services.js",
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Email service management remains Python-owned.",
+      "domain": "email-services"
+    },
+    {
+      "route_id": "email-services:POST:/api/email-services/test-tempmail",
+      "path": "/api/email-services/test-tempmail",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/email.py",
+      "python_handler": "test_tempmail_service",
+      "client_consumers": [
+        "templates/email_services.html",
+        "static/js/email_services.js",
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Email service management remains Python-owned.",
+      "domain": "email-services"
+    },
+    {
+      "route_id": "email-services:GET:/api/email-services/types",
+      "path": "/api/email-services/types",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/email.py",
+      "python_handler": "get_service_types",
+      "client_consumers": [
+        "templates/email_services.html",
+        "static/js/email_services.js",
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Email service management remains Python-owned.",
+      "domain": "email-services"
+    },
+    {
+      "route_id": "email-services:DELETE:/api/email-services/{service_id}",
+      "path": "/api/email-services/{service_id}",
+      "method": "DELETE",
+      "transport": "http",
+      "python_module": "src/web/routes/email.py",
+      "python_handler": "delete_email_service",
+      "client_consumers": [
+        "templates/email_services.html",
+        "static/js/email_services.js",
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Email service management remains Python-owned.",
+      "domain": "email-services"
+    },
+    {
+      "route_id": "email-services:GET:/api/email-services/{service_id}",
+      "path": "/api/email-services/{service_id}",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/email.py",
+      "python_handler": "get_email_service",
+      "client_consumers": [
+        "templates/email_services.html",
+        "static/js/email_services.js",
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Email service management remains Python-owned.",
+      "domain": "email-services"
+    },
+    {
+      "route_id": "email-services:PATCH:/api/email-services/{service_id}",
+      "path": "/api/email-services/{service_id}",
+      "method": "PATCH",
+      "transport": "http",
+      "python_module": "src/web/routes/email.py",
+      "python_handler": "update_email_service",
+      "client_consumers": [
+        "templates/email_services.html",
+        "static/js/email_services.js",
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Email service management remains Python-owned.",
+      "domain": "email-services"
+    },
+    {
+      "route_id": "email-services:POST:/api/email-services/{service_id}/disable",
+      "path": "/api/email-services/{service_id}/disable",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/email.py",
+      "python_handler": "disable_email_service",
+      "client_consumers": [
+        "templates/email_services.html",
+        "static/js/email_services.js",
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Email service management remains Python-owned.",
+      "domain": "email-services"
+    },
+    {
+      "route_id": "email-services:POST:/api/email-services/{service_id}/enable",
+      "path": "/api/email-services/{service_id}/enable",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/email.py",
+      "python_handler": "enable_email_service",
+      "client_consumers": [
+        "templates/email_services.html",
+        "static/js/email_services.js",
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Email service management remains Python-owned.",
+      "domain": "email-services"
+    },
+    {
+      "route_id": "email-services:GET:/api/email-services/{service_id}/full",
+      "path": "/api/email-services/{service_id}/full",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/email.py",
+      "python_handler": "get_email_service_full",
+      "client_consumers": [
+        "templates/email_services.html",
+        "static/js/email_services.js",
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Email service management remains Python-owned.",
+      "domain": "email-services"
+    },
+    {
+      "route_id": "email-services:POST:/api/email-services/{service_id}/test",
+      "path": "/api/email-services/{service_id}/test",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/email.py",
+      "python_handler": "test_email_service",
+      "client_consumers": [
+        "templates/email_services.html",
+        "static/js/email_services.js",
+        "templates/settings.html",
+        "static/js/settings.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Email service management remains Python-owned.",
+      "domain": "email-services"
+    },
+    {
+      "route_id": "cpa-services:GET:/api/cpa-services",
+      "path": "/api/cpa-services",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/cpa_services.py",
+      "python_handler": "list_cpa_services",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "cpa-services"
+    },
+    {
+      "route_id": "cpa-services:POST:/api/cpa-services",
+      "path": "/api/cpa-services",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/cpa_services.py",
+      "python_handler": "create_cpa_service",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "cpa-services"
+    },
+    {
+      "route_id": "cpa-services:POST:/api/cpa-services/test-connection",
+      "path": "/api/cpa-services/test-connection",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/cpa_services.py",
+      "python_handler": "test_cpa_connection_direct",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "cpa-services"
+    },
+    {
+      "route_id": "cpa-services:DELETE:/api/cpa-services/{service_id}",
+      "path": "/api/cpa-services/{service_id}",
+      "method": "DELETE",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/cpa_services.py",
+      "python_handler": "delete_cpa_service",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "cpa-services"
+    },
+    {
+      "route_id": "cpa-services:GET:/api/cpa-services/{service_id}",
+      "path": "/api/cpa-services/{service_id}",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/cpa_services.py",
+      "python_handler": "get_cpa_service",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "cpa-services"
+    },
+    {
+      "route_id": "cpa-services:PATCH:/api/cpa-services/{service_id}",
+      "path": "/api/cpa-services/{service_id}",
+      "method": "PATCH",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/cpa_services.py",
+      "python_handler": "update_cpa_service",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "cpa-services"
+    },
+    {
+      "route_id": "cpa-services:GET:/api/cpa-services/{service_id}/full",
+      "path": "/api/cpa-services/{service_id}/full",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/cpa_services.py",
+      "python_handler": "get_cpa_service_full",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "cpa-services"
+    },
+    {
+      "route_id": "cpa-services:POST:/api/cpa-services/{service_id}/test",
+      "path": "/api/cpa-services/{service_id}/test",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/cpa_services.py",
+      "python_handler": "test_cpa_service",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "cpa-services"
+    },
+    {
+      "route_id": "sub2api-services:GET:/api/sub2api-services",
+      "path": "/api/sub2api-services",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/sub2api_services.py",
+      "python_handler": "list_sub2api_services",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "sub2api-services"
+    },
+    {
+      "route_id": "sub2api-services:POST:/api/sub2api-services",
+      "path": "/api/sub2api-services",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/sub2api_services.py",
+      "python_handler": "create_sub2api_service",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "sub2api-services"
+    },
+    {
+      "route_id": "sub2api-services:POST:/api/sub2api-services/test-connection",
+      "path": "/api/sub2api-services/test-connection",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/sub2api_services.py",
+      "python_handler": "test_sub2api_connection_direct",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "sub2api-services"
+    },
+    {
+      "route_id": "sub2api-services:POST:/api/sub2api-services/upload",
+      "path": "/api/sub2api-services/upload",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/sub2api_services.py",
+      "python_handler": "upload_accounts_to_sub2api",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "sub2api-services"
+    },
+    {
+      "route_id": "sub2api-services:DELETE:/api/sub2api-services/{service_id}",
+      "path": "/api/sub2api-services/{service_id}",
+      "method": "DELETE",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/sub2api_services.py",
+      "python_handler": "delete_sub2api_service",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "sub2api-services"
+    },
+    {
+      "route_id": "sub2api-services:GET:/api/sub2api-services/{service_id}",
+      "path": "/api/sub2api-services/{service_id}",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/sub2api_services.py",
+      "python_handler": "get_sub2api_service",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "sub2api-services"
+    },
+    {
+      "route_id": "sub2api-services:PATCH:/api/sub2api-services/{service_id}",
+      "path": "/api/sub2api-services/{service_id}",
+      "method": "PATCH",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/sub2api_services.py",
+      "python_handler": "update_sub2api_service",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "sub2api-services"
+    },
+    {
+      "route_id": "sub2api-services:GET:/api/sub2api-services/{service_id}/full",
+      "path": "/api/sub2api-services/{service_id}/full",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/sub2api_services.py",
+      "python_handler": "get_sub2api_service_full",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "sub2api-services"
+    },
+    {
+      "route_id": "sub2api-services:POST:/api/sub2api-services/{service_id}/test",
+      "path": "/api/sub2api-services/{service_id}/test",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/sub2api_services.py",
+      "python_handler": "test_sub2api_service",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "sub2api-services"
+    },
+    {
+      "route_id": "tm-services:GET:/api/tm-services",
+      "path": "/api/tm-services",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/tm_services.py",
+      "python_handler": "list_tm_services",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "tm-services"
+    },
+    {
+      "route_id": "tm-services:POST:/api/tm-services",
+      "path": "/api/tm-services",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/tm_services.py",
+      "python_handler": "create_tm_service",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "tm-services"
+    },
+    {
+      "route_id": "tm-services:POST:/api/tm-services/test-connection",
+      "path": "/api/tm-services/test-connection",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/tm_services.py",
+      "python_handler": "test_tm_connection_direct",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "tm-services"
+    },
+    {
+      "route_id": "tm-services:DELETE:/api/tm-services/{service_id}",
+      "path": "/api/tm-services/{service_id}",
+      "method": "DELETE",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/tm_services.py",
+      "python_handler": "delete_tm_service",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "tm-services"
+    },
+    {
+      "route_id": "tm-services:GET:/api/tm-services/{service_id}",
+      "path": "/api/tm-services/{service_id}",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/tm_services.py",
+      "python_handler": "get_tm_service",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "tm-services"
+    },
+    {
+      "route_id": "tm-services:PATCH:/api/tm-services/{service_id}",
+      "path": "/api/tm-services/{service_id}",
+      "method": "PATCH",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/tm_services.py",
+      "python_handler": "update_tm_service",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "tm-services"
+    },
+    {
+      "route_id": "tm-services:POST:/api/tm-services/{service_id}/test",
+      "path": "/api/tm-services/{service_id}/test",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/upload/tm_services.py",
+      "python_handler": "test_tm_service",
+      "client_consumers": [
+        "templates/settings.html",
+        "static/js/settings.js",
+        "templates/accounts.html",
+        "static/js/accounts.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Upload service config management remains Python-owned even though Go uploader persistence exists.",
+      "domain": "tm-services"
+    },
+    {
+      "route_id": "payment:POST:/api/payment/accounts/batch-check-subscription",
+      "path": "/api/payment/accounts/batch-check-subscription",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/payment.py",
+      "python_handler": "batch_check_subscription",
+      "client_consumers": [
+        "templates/payment.html",
+        "static/js/payment.js",
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/card_pool.html"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Payment and bind-card flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "payment"
+    },
+    {
+      "route_id": "payment:POST:/api/payment/accounts/{account_id}/mark-subscription",
+      "path": "/api/payment/accounts/{account_id}/mark-subscription",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/payment.py",
+      "python_handler": "mark_subscription",
+      "client_consumers": [
+        "templates/payment.html",
+        "static/js/payment.js",
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/card_pool.html"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Payment and bind-card flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "payment"
+    },
+    {
+      "route_id": "payment:POST:/api/payment/accounts/{account_id}/session-bootstrap",
+      "path": "/api/payment/accounts/{account_id}/session-bootstrap",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/payment.py",
+      "python_handler": "bootstrap_account_session_token",
+      "client_consumers": [
+        "templates/payment.html",
+        "static/js/payment.js",
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/card_pool.html"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Payment and bind-card flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "payment"
+    },
+    {
+      "route_id": "payment:GET:/api/payment/accounts/{account_id}/session-diagnostic",
+      "path": "/api/payment/accounts/{account_id}/session-diagnostic",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/payment.py",
+      "python_handler": "get_account_session_diagnostic",
+      "client_consumers": [
+        "templates/payment.html",
+        "static/js/payment.js",
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/card_pool.html"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Payment and bind-card flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "payment"
+    },
+    {
+      "route_id": "payment:POST:/api/payment/accounts/{account_id}/session-token",
+      "path": "/api/payment/accounts/{account_id}/session-token",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/payment.py",
+      "python_handler": "save_account_session_token",
+      "client_consumers": [
+        "templates/payment.html",
+        "static/js/payment.js",
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/card_pool.html"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Payment and bind-card flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "payment"
+    },
+    {
+      "route_id": "payment:GET:/api/payment/bind-card/tasks",
+      "path": "/api/payment/bind-card/tasks",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/payment.py",
+      "python_handler": "list_bind_card_tasks",
+      "client_consumers": [
+        "templates/payment.html",
+        "static/js/payment.js",
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/card_pool.html"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Payment and bind-card flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "payment"
+    },
+    {
+      "route_id": "payment:POST:/api/payment/bind-card/tasks",
+      "path": "/api/payment/bind-card/tasks",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/payment.py",
+      "python_handler": "create_bind_card_task",
+      "client_consumers": [
+        "templates/payment.html",
+        "static/js/payment.js",
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/card_pool.html"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Payment and bind-card flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "payment"
+    },
+    {
+      "route_id": "payment:DELETE:/api/payment/bind-card/tasks/{task_id}",
+      "path": "/api/payment/bind-card/tasks/{task_id}",
+      "method": "DELETE",
+      "transport": "http",
+      "python_module": "src/web/routes/payment.py",
+      "python_handler": "delete_bind_card_task",
+      "client_consumers": [
+        "templates/payment.html",
+        "static/js/payment.js",
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/card_pool.html"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Payment and bind-card flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "payment"
+    },
+    {
+      "route_id": "payment:POST:/api/payment/bind-card/tasks/{task_id}/auto-bind-local",
+      "path": "/api/payment/bind-card/tasks/{task_id}/auto-bind-local",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/payment.py",
+      "python_handler": "auto_bind_bind_card_task_local",
+      "client_consumers": [
+        "templates/payment.html",
+        "static/js/payment.js",
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/card_pool.html"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Payment and bind-card flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "payment"
+    },
+    {
+      "route_id": "payment:POST:/api/payment/bind-card/tasks/{task_id}/auto-bind-third-party",
+      "path": "/api/payment/bind-card/tasks/{task_id}/auto-bind-third-party",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/payment.py",
+      "python_handler": "auto_bind_bind_card_task_third_party",
+      "client_consumers": [
+        "templates/payment.html",
+        "static/js/payment.js",
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/card_pool.html"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Payment and bind-card flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "payment"
+    },
+    {
+      "route_id": "payment:POST:/api/payment/bind-card/tasks/{task_id}/mark-user-action",
+      "path": "/api/payment/bind-card/tasks/{task_id}/mark-user-action",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/payment.py",
+      "python_handler": "mark_bind_card_task_user_action",
+      "client_consumers": [
+        "templates/payment.html",
+        "static/js/payment.js",
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/card_pool.html"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Payment and bind-card flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "payment"
+    },
+    {
+      "route_id": "payment:POST:/api/payment/bind-card/tasks/{task_id}/open",
+      "path": "/api/payment/bind-card/tasks/{task_id}/open",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/payment.py",
+      "python_handler": "open_bind_card_task",
+      "client_consumers": [
+        "templates/payment.html",
+        "static/js/payment.js",
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/card_pool.html"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Payment and bind-card flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "payment"
+    },
+    {
+      "route_id": "payment:POST:/api/payment/bind-card/tasks/{task_id}/sync-subscription",
+      "path": "/api/payment/bind-card/tasks/{task_id}/sync-subscription",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/payment.py",
+      "python_handler": "sync_bind_card_task_subscription",
+      "client_consumers": [
+        "templates/payment.html",
+        "static/js/payment.js",
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/card_pool.html"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Payment and bind-card flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "payment"
+    },
+    {
+      "route_id": "payment:POST:/api/payment/generate-link",
+      "path": "/api/payment/generate-link",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/payment.py",
+      "python_handler": "generate_payment_link",
+      "client_consumers": [
+        "templates/payment.html",
+        "static/js/payment.js",
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/card_pool.html"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Payment and bind-card flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "payment"
+    },
+    {
+      "route_id": "payment:POST:/api/payment/open-incognito",
+      "path": "/api/payment/open-incognito",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/payment.py",
+      "python_handler": "open_browser_incognito",
+      "client_consumers": [
+        "templates/payment.html",
+        "static/js/payment.js",
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/card_pool.html"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Payment and bind-card flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "payment"
+    },
+    {
+      "route_id": "payment:GET:/api/payment/random-billing",
+      "path": "/api/payment/random-billing",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/payment.py",
+      "python_handler": "get_random_billing_profile",
+      "client_consumers": [
+        "templates/payment.html",
+        "static/js/payment.js",
+        "templates/accounts.html",
+        "static/js/accounts.js",
+        "templates/card_pool.html"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Payment and bind-card flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "payment"
+    },
+    {
+      "route_id": "logs:DELETE:/api/logs",
+      "path": "/api/logs",
+      "method": "DELETE",
+      "transport": "http",
+      "python_module": "src/web/routes/logs.py",
+      "python_handler": "clear_logs",
+      "client_consumers": [
+        "templates/logs.html",
+        "static/js/logs.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Log admin routes remain Python-owned.",
+      "domain": "logs"
+    },
+    {
+      "route_id": "logs:GET:/api/logs",
+      "path": "/api/logs",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/logs.py",
+      "python_handler": "list_logs",
+      "client_consumers": [
+        "templates/logs.html",
+        "static/js/logs.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Log admin routes remain Python-owned.",
+      "domain": "logs"
+    },
+    {
+      "route_id": "logs:POST:/api/logs/cleanup",
+      "path": "/api/logs/cleanup",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/logs.py",
+      "python_handler": "cleanup_logs",
+      "client_consumers": [
+        "templates/logs.html",
+        "static/js/logs.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Log admin routes remain Python-owned.",
+      "domain": "logs"
+    },
+    {
+      "route_id": "logs:GET:/api/logs/stats",
+      "path": "/api/logs/stats",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/logs.py",
+      "python_handler": "log_stats",
+      "client_consumers": [
+        "templates/logs.html",
+        "static/js/logs.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 3",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Log admin routes remain Python-owned.",
+      "domain": "logs"
+    },
+    {
+      "route_id": "team:POST:/api/team/discovery/run",
+      "path": "/api/team/discovery/run",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/team.py",
+      "python_handler": "run_team_discovery",
+      "client_consumers": [
+        "templates/auto_team.html",
+        "static/js/auto_team.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Team discovery/sync/invite/task flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "team"
+    },
+    {
+      "route_id": "team:POST:/api/team/discovery/{account_id}",
+      "path": "/api/team/discovery/{account_id}",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/team.py",
+      "python_handler": "run_single_team_discovery",
+      "client_consumers": [
+        "templates/auto_team.html",
+        "static/js/auto_team.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Team discovery/sync/invite/task flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "team"
+    },
+    {
+      "route_id": "team:POST:/api/team/memberships/{membership_id}/bind-local-account",
+      "path": "/api/team/memberships/{membership_id}/bind-local-account",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/team.py",
+      "python_handler": "bind_team_membership_local_account",
+      "client_consumers": [
+        "templates/auto_team.html",
+        "static/js/auto_team.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Team discovery/sync/invite/task flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "team"
+    },
+    {
+      "route_id": "team:GET:/api/team/tasks",
+      "path": "/api/team/tasks",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/team_tasks.py",
+      "python_handler": "list_team_tasks",
+      "client_consumers": [
+        "templates/auto_team.html",
+        "static/js/auto_team.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Team discovery/sync/invite/task flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "team"
+    },
+    {
+      "route_id": "team:GET:/api/team/tasks/{task_uuid}",
+      "path": "/api/team/tasks/{task_uuid}",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/team_tasks.py",
+      "python_handler": "get_team_task",
+      "client_consumers": [
+        "templates/auto_team.html",
+        "static/js/auto_team.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Team discovery/sync/invite/task flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "team"
+    },
+    {
+      "route_id": "team:GET:/api/team/teams",
+      "path": "/api/team/teams",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/team.py",
+      "python_handler": "list_teams",
+      "client_consumers": [
+        "templates/auto_team.html",
+        "static/js/auto_team.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Team discovery/sync/invite/task flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "team"
+    },
+    {
+      "route_id": "team:POST:/api/team/teams/sync-batch",
+      "path": "/api/team/teams/sync-batch",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/team.py",
+      "python_handler": "sync_teams_batch",
+      "client_consumers": [
+        "templates/auto_team.html",
+        "static/js/auto_team.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Team discovery/sync/invite/task flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "team"
+    },
+    {
+      "route_id": "team:GET:/api/team/teams/{team_id}",
+      "path": "/api/team/teams/{team_id}",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/team.py",
+      "python_handler": "get_team_detail",
+      "client_consumers": [
+        "templates/auto_team.html",
+        "static/js/auto_team.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Team discovery/sync/invite/task flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "team"
+    },
+    {
+      "route_id": "team:POST:/api/team/teams/{team_id}/invite-accounts",
+      "path": "/api/team/teams/{team_id}/invite-accounts",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/team.py",
+      "python_handler": "invite_accounts_to_team",
+      "client_consumers": [
+        "templates/auto_team.html",
+        "static/js/auto_team.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Team discovery/sync/invite/task flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "team"
+    },
+    {
+      "route_id": "team:POST:/api/team/teams/{team_id}/invite-emails",
+      "path": "/api/team/teams/{team_id}/invite-emails",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/team.py",
+      "python_handler": "invite_emails_to_team",
+      "client_consumers": [
+        "templates/auto_team.html",
+        "static/js/auto_team.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Team discovery/sync/invite/task flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "team"
+    },
+    {
+      "route_id": "team:GET:/api/team/teams/{team_id}/memberships",
+      "path": "/api/team/teams/{team_id}/memberships",
+      "method": "GET",
+      "transport": "http",
+      "python_module": "src/web/routes/team.py",
+      "python_handler": "list_team_memberships",
+      "client_consumers": [
+        "templates/auto_team.html",
+        "static/js/auto_team.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Team discovery/sync/invite/task flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "team"
+    },
+    {
+      "route_id": "team:POST:/api/team/teams/{team_id}/memberships/{membership_id}/remove",
+      "path": "/api/team/teams/{team_id}/memberships/{membership_id}/remove",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/team.py",
+      "python_handler": "remove_team_membership",
+      "client_consumers": [
+        "templates/auto_team.html",
+        "static/js/auto_team.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Team discovery/sync/invite/task flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "team"
+    },
+    {
+      "route_id": "team:POST:/api/team/teams/{team_id}/memberships/{membership_id}/revoke",
+      "path": "/api/team/teams/{team_id}/memberships/{membership_id}/revoke",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/team.py",
+      "python_handler": "revoke_team_membership",
+      "client_consumers": [
+        "templates/auto_team.html",
+        "static/js/auto_team.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Team discovery/sync/invite/task flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "team"
+    },
+    {
+      "route_id": "team:POST:/api/team/teams/{team_id}/sync",
+      "path": "/api/team/teams/{team_id}/sync",
+      "method": "POST",
+      "transport": "http",
+      "python_module": "src/web/routes/team.py",
+      "python_handler": "sync_team",
+      "client_consumers": [
+        "templates/auto_team.html",
+        "static/js/auto_team.js"
+      ],
+      "go_surface": null,
+      "ownership_status": "remaining-python",
+      "phase_target": "Phase 4",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Team discovery/sync/invite/task flows remain Python-owned and are deferred to Phase 4.",
+      "domain": "team"
+    },
+    {
+      "route_id": "jobs:POST:/api/jobs",
+      "path": "/api/jobs",
+      "method": "POST",
+      "transport": "http",
+      "python_module": null,
+      "python_handler": null,
+      "client_consumers": [],
+      "go_surface": "POST /api/jobs",
+      "ownership_status": "go-baseline",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Baseline, no Phase 1 reimplementation per D-03/D-04.",
+      "domain": "jobs"
+    },
+    {
+      "route_id": "jobs:GET:/api/jobs/{jobID}",
+      "path": "/api/jobs/{jobID}",
+      "method": "GET",
+      "transport": "http",
+      "python_module": null,
+      "python_handler": null,
+      "client_consumers": [],
+      "go_surface": "GET /api/jobs/{jobID}",
+      "ownership_status": "go-baseline",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Baseline, no Phase 1 reimplementation per D-03/D-04.",
+      "domain": "jobs"
+    },
+    {
+      "route_id": "jobs:POST:/api/jobs/{jobID}/cancel",
+      "path": "/api/jobs/{jobID}/cancel",
+      "method": "POST",
+      "transport": "http",
+      "python_module": null,
+      "python_handler": null,
+      "client_consumers": [],
+      "go_surface": "POST /api/jobs/{jobID}/cancel",
+      "ownership_status": "go-baseline",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Baseline, no Phase 1 reimplementation per D-03/D-04.",
+      "domain": "jobs"
+    },
+    {
+      "route_id": "jobs:GET:/api/jobs/{jobID}/logs",
+      "path": "/api/jobs/{jobID}/logs",
+      "method": "GET",
+      "transport": "http",
+      "python_module": null,
+      "python_handler": null,
+      "client_consumers": [],
+      "go_surface": "GET /api/jobs/{jobID}/logs",
+      "ownership_status": "go-baseline",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Baseline, no Phase 1 reimplementation per D-03/D-04.",
+      "domain": "jobs"
+    },
+    {
+      "route_id": "jobs:POST:/api/jobs/{jobID}/pause",
+      "path": "/api/jobs/{jobID}/pause",
+      "method": "POST",
+      "transport": "http",
+      "python_module": null,
+      "python_handler": null,
+      "client_consumers": [],
+      "go_surface": "POST /api/jobs/{jobID}/pause",
+      "ownership_status": "go-baseline",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Baseline, no Phase 1 reimplementation per D-03/D-04.",
+      "domain": "jobs"
+    },
+    {
+      "route_id": "jobs:POST:/api/jobs/{jobID}/resume",
+      "path": "/api/jobs/{jobID}/resume",
+      "method": "POST",
+      "transport": "http",
+      "python_module": null,
+      "python_handler": null,
+      "client_consumers": [],
+      "go_surface": "POST /api/jobs/{jobID}/resume",
+      "ownership_status": "go-baseline",
+      "phase_target": "Baseline",
+      "parity_scope": [
+        "path",
+        "method",
+        "json_fields",
+        "status_values",
+        "websocket_semantics",
+        "critical_side_effects"
+      ],
+      "notes": "Baseline, no Phase 1 reimplementation per D-03/D-04.",
+      "domain": "jobs"
+    }
+  ]
+}

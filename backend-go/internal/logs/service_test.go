@@ -147,6 +147,55 @@ func TestStatsServiceReturnsRepositoryError(t *testing.T) {
 	}
 }
 
+func TestCleanupLogsServiceAppliesCompatibilityDefaults(t *testing.T) {
+	repo := &fakeRepository{
+		cleanupResult: CleanupResult{
+			RetentionDays: 30,
+			MaxRows:       50000,
+			DeletedTotal:  4,
+			Remaining:     9,
+		},
+	}
+	service := NewService(repo)
+
+	resp, err := service.CleanupLogs(context.Background(), CleanupRequest{})
+	if err != nil {
+		t.Fatalf("unexpected cleanup error: %v", err)
+	}
+
+	if repo.cleanupReq.RetentionDays == nil || *repo.cleanupReq.RetentionDays != 30 {
+		t.Fatalf("expected default retention_days=30, got %+v", repo.cleanupReq)
+	}
+	if repo.cleanupReq.MaxRows != 50000 {
+		t.Fatalf("expected default max_rows=50000, got %+v", repo.cleanupReq)
+	}
+	if resp.DeletedTotal != 4 || resp.Remaining != 9 {
+		t.Fatalf("unexpected cleanup response: %+v", resp)
+	}
+}
+
+func TestClearLogsServiceRequiresConfirm(t *testing.T) {
+	service := NewService(&fakeRepository{})
+
+	_, err := service.ClearLogs(context.Background(), false)
+	if !errors.Is(err, ErrClearLogsConfirmationRequired) {
+		t.Fatalf("expected confirmation error %v, got %v", ErrClearLogsConfirmationRequired, err)
+	}
+}
+
+func TestClearLogsServiceReturnsCompatibilityPayload(t *testing.T) {
+	service := NewService(&fakeRepository{clearDeletedTotal: 12})
+
+	resp, err := service.ClearLogs(context.Background(), true)
+	if err != nil {
+		t.Fatalf("unexpected clear error: %v", err)
+	}
+
+	if resp.DeletedTotal != 12 || resp.Remaining != 0 {
+		t.Fatalf("unexpected clear response: %+v", resp)
+	}
+}
+
 type fakeRepository struct {
 	listReq   ListLogsRequest
 	listRows  []AppLogRecord
@@ -155,6 +204,13 @@ type fakeRepository struct {
 
 	stats    LogsStats
 	statsErr error
+
+	cleanupReq    CleanupRequest
+	cleanupResult CleanupResult
+	cleanupErr    error
+
+	clearDeletedTotal int
+	clearErr          error
 }
 
 func (f *fakeRepository) ListLogs(_ context.Context, req ListLogsRequest) ([]AppLogRecord, int, error) {
@@ -166,10 +222,11 @@ func (f *fakeRepository) GetStats(context.Context) (LogsStats, error) {
 	return f.stats, f.statsErr
 }
 
-func (f *fakeRepository) CleanupLogs(context.Context, CleanupRequest) (CleanupResult, error) {
-	return CleanupResult{}, nil
+func (f *fakeRepository) CleanupLogs(_ context.Context, req CleanupRequest) (CleanupResult, error) {
+	f.cleanupReq = req
+	return f.cleanupResult, f.cleanupErr
 }
 
 func (f *fakeRepository) ClearLogs(context.Context) (int, error) {
-	return 0, nil
+	return f.clearDeletedTotal, f.clearErr
 }

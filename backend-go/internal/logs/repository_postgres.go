@@ -7,14 +7,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type postgresQuerier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
 type PostgresRepository struct {
@@ -99,6 +97,81 @@ func (r *PostgresRepository) GetStats(ctx context.Context) (LogsStats, error) {
 		LatestAt: latestAt,
 		Levels:   levels,
 	}, nil
+}
+
+func (r *PostgresRepository) CleanupLogs(ctx context.Context, req CleanupRequest) (CleanupResult, error) {
+	normalized := req.Normalized()
+	retentionDays := defaultCleanupRetention
+	if normalized.RetentionDays != nil {
+		retentionDays = *normalized.RetentionDays
+	}
+	cutoff := time.Now().UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+
+	var deletedByAge int
+	if err := r.db.QueryRow(ctx, `
+		WITH deleted AS (
+			DELETE FROM app_logs
+			WHERE created_at < $1
+			RETURNING 1
+		)
+		SELECT COUNT(*) FROM deleted
+	`, cutoff).Scan(&deletedByAge); err != nil {
+		return CleanupResult{}, fmt.Errorf("cleanup app logs by age: %w", err)
+	}
+
+	var total int
+	if err := r.db.QueryRow(ctx, `SELECT COUNT(id) FROM app_logs`).Scan(&total); err != nil {
+		return CleanupResult{}, fmt.Errorf("count app logs after age cleanup: %w", err)
+	}
+
+	deletedByLimit := 0
+	if total > normalized.MaxRows {
+		overflow := total - normalized.MaxRows
+		if err := r.db.QueryRow(ctx, `
+			WITH oldest AS (
+				SELECT id
+				FROM app_logs
+				ORDER BY created_at ASC, id ASC
+				LIMIT $1
+			),
+			deleted AS (
+				DELETE FROM app_logs
+				WHERE id IN (SELECT id FROM oldest)
+				RETURNING 1
+			)
+			SELECT COUNT(*) FROM deleted
+		`, overflow).Scan(&deletedByLimit); err != nil {
+			return CleanupResult{}, fmt.Errorf("cleanup app logs by limit: %w", err)
+		}
+	}
+
+	var remaining int
+	if err := r.db.QueryRow(ctx, `SELECT COUNT(id) FROM app_logs`).Scan(&remaining); err != nil {
+		return CleanupResult{}, fmt.Errorf("count app logs after cleanup: %w", err)
+	}
+
+	return CleanupResult{
+		RetentionDays:  retentionDays,
+		MaxRows:        normalized.MaxRows,
+		DeletedByAge:   deletedByAge,
+		DeletedByLimit: deletedByLimit,
+		DeletedTotal:   deletedByAge + deletedByLimit,
+		Remaining:      remaining,
+	}, nil
+}
+
+func (r *PostgresRepository) ClearLogs(ctx context.Context) (int, error) {
+	var deletedTotal int
+	if err := r.db.QueryRow(ctx, `
+		WITH deleted AS (
+			DELETE FROM app_logs
+			RETURNING 1
+		)
+		SELECT COUNT(*) FROM deleted
+	`).Scan(&deletedTotal); err != nil {
+		return 0, fmt.Errorf("clear app logs: %w", err)
+	}
+	return deletedTotal, nil
 }
 
 func buildCountLogsQuery(req ListLogsRequest, now time.Time) (string, []any) {

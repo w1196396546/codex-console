@@ -68,7 +68,6 @@ type AppLogRecord struct {
 }
 
 type LogEntry struct {
-	ID        int64  `json:"id"`
 	Level     string `json:"level"`
 	Logger    string `json:"logger"`
 	Message   string `json:"message"`
@@ -102,16 +101,17 @@ type CleanupRequest struct {
 
 func (r CleanupRequest) Normalized() CleanupRequest {
 	normalized := r
+	retention := defaultCleanupRetention
 	if normalized.RetentionDays != nil {
-		retention := *normalized.RetentionDays
-		if retention < minCleanupRetention {
-			retention = minCleanupRetention
-		}
-		if retention > maxCleanupRetention {
-			retention = maxCleanupRetention
-		}
-		normalized.RetentionDays = &retention
+		retention = *normalized.RetentionDays
 	}
+	if retention < minCleanupRetention {
+		retention = minCleanupRetention
+	}
+	if retention > maxCleanupRetention {
+		retention = maxCleanupRetention
+	}
+	normalized.RetentionDays = &retention
 	if normalized.MaxRows < 1 {
 		normalized.MaxRows = defaultCleanupMaxRows
 	}

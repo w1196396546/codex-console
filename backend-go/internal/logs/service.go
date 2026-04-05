@@ -7,13 +7,16 @@ import (
 )
 
 var (
-	errRepositoryNotConfigured = errors.New("logs repository not configured")
-	shanghaiLocation           = mustLoadShanghaiLocation()
+	ErrClearLogsConfirmationRequired = errors.New("请传入 confirm=true 以确认清空日志")
+	errRepositoryNotConfigured       = errors.New("logs repository not configured")
+	shanghaiLocation                 = mustLoadShanghaiLocation()
 )
 
 type Repository interface {
 	ListLogs(ctx context.Context, req ListLogsRequest) ([]AppLogRecord, int, error)
 	GetStats(ctx context.Context) (LogsStats, error)
+	CleanupLogs(ctx context.Context, req CleanupRequest) (CleanupResult, error)
+	ClearLogs(ctx context.Context) (int, error)
 }
 
 type Service struct {
@@ -42,7 +45,6 @@ func (s *Service) ListLogs(ctx context.Context, req ListLogsRequest) (ListLogsRe
 	logs := make([]LogEntry, 0, len(rows))
 	for _, row := range rows {
 		logs = append(logs, LogEntry{
-			ID:        row.ID,
 			Level:     row.Level,
 			Logger:    row.Logger,
 			Message:   row.Message,
@@ -73,6 +75,34 @@ func (s *Service) GetStats(ctx context.Context) (StatsResponse, error) {
 		Total:    stats.Total,
 		LatestAt: toShanghaiISOPtr(stats.LatestAt),
 		Levels:   cloneLevels(stats.Levels),
+	}, nil
+}
+
+func (s *Service) CleanupLogs(ctx context.Context, req CleanupRequest) (CleanupResult, error) {
+	normalized := req.Normalized()
+	if s == nil || s.repository == nil {
+		return CleanupResult{}, errRepositoryNotConfigured
+	}
+
+	return s.repository.CleanupLogs(ctx, normalized)
+}
+
+func (s *Service) ClearLogs(ctx context.Context, confirm bool) (ClearResult, error) {
+	if !confirm {
+		return ClearResult{}, ErrClearLogsConfirmationRequired
+	}
+	if s == nil || s.repository == nil {
+		return ClearResult{}, errRepositoryNotConfigured
+	}
+
+	deletedTotal, err := s.repository.ClearLogs(ctx)
+	if err != nil {
+		return ClearResult{}, err
+	}
+
+	return ClearResult{
+		DeletedTotal: deletedTotal,
+		Remaining:    0,
 	}, nil
 }
 

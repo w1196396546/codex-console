@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"bytes"
 	"context"
 	"reflect"
 	"testing"
@@ -212,6 +213,71 @@ func TestProxyServiceMaintainsLegacyCrudAndDefaultSemantics(t *testing.T) {
 	}
 }
 
+func TestDatabaseServiceDelegatesInfoBackupImportAndCleanupToAdmin(t *testing.T) {
+	admin := &fakeDatabaseAdmin{
+		info: DatabaseInfoResponse{
+			DatabaseURL:        "postgres://codex:test@localhost:5432/codex",
+			DatabaseSizeBytes:  2048,
+			DatabaseSizeMB:     2.0,
+			AccountsCount:      12,
+			EmailServicesCount: 4,
+			TasksCount:         7,
+		},
+		backup: DatabaseBackupResponse{
+			Success:    true,
+			Message:    "数据库备份成功",
+			BackupPath: "/tmp/database-backup.json",
+		},
+		importResult: DatabaseImportResponse{
+			Success:    true,
+			Message:    "数据库导入成功",
+			BackupPath: "/tmp/database-before-import.json",
+		},
+		cleanup: DatabaseCleanupResponse{
+			Success:      true,
+			Message:      "已清理 3 条过期任务记录",
+			DeletedCount: 3,
+		},
+	}
+
+	service := NewService(ServiceDependencies{DatabaseAdmin: admin})
+
+	info, err := service.GetDatabaseInfo(context.Background())
+	if err != nil {
+		t.Fatalf("GetDatabaseInfo error: %v", err)
+	}
+	if info.DatabaseSizeMB != 2.0 || info.AccountsCount != 12 || info.TasksCount != 7 {
+		t.Fatalf("unexpected database info payload: %+v", info)
+	}
+
+	backup, err := service.BackupDatabase(context.Background())
+	if err != nil {
+		t.Fatalf("BackupDatabase error: %v", err)
+	}
+	if !backup.Success || backup.BackupPath != "/tmp/database-backup.json" {
+		t.Fatalf("unexpected backup payload: %+v", backup)
+	}
+
+	importResult, err := service.ImportDatabase(context.Background(), DatabaseImportRequest{
+		Filename: "backup.json",
+		Content:  []byte(`{"format":"codex-console-postgres-backup.v1"}`),
+	})
+	if err != nil {
+		t.Fatalf("ImportDatabase error: %v", err)
+	}
+	if !importResult.Success || admin.lastImport.Filename != "backup.json" || !bytes.Equal(admin.lastImport.Content, []byte(`{"format":"codex-console-postgres-backup.v1"}`)) {
+		t.Fatalf("unexpected import payload: %+v admin=%+v", importResult, admin.lastImport)
+	}
+
+	cleanup, err := service.CleanupDatabase(context.Background(), DatabaseCleanupRequest{Days: 30, KeepFailed: true})
+	if err != nil {
+		t.Fatalf("CleanupDatabase error: %v", err)
+	}
+	if cleanup.DeletedCount != 3 || admin.lastCleanup.Days != 30 || !admin.lastCleanup.KeepFailed {
+		t.Fatalf("unexpected cleanup payload: %+v admin=%+v", cleanup, admin.lastCleanup)
+	}
+}
+
 type fakeRepository struct {
 	settings      map[string]SettingRecord
 	savedSettings []SettingRecord
@@ -335,4 +401,31 @@ func stringPtr(value string) *string {
 
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+type fakeDatabaseAdmin struct {
+	info         DatabaseInfoResponse
+	backup       DatabaseBackupResponse
+	importResult DatabaseImportResponse
+	cleanup      DatabaseCleanupResponse
+	lastImport   DatabaseImportRequest
+	lastCleanup  DatabaseCleanupRequest
+}
+
+func (f *fakeDatabaseAdmin) GetInfo(context.Context) (DatabaseInfoResponse, error) {
+	return f.info, nil
+}
+
+func (f *fakeDatabaseAdmin) Backup(context.Context) (DatabaseBackupResponse, error) {
+	return f.backup, nil
+}
+
+func (f *fakeDatabaseAdmin) Import(_ context.Context, req DatabaseImportRequest) (DatabaseImportResponse, error) {
+	f.lastImport = req
+	return f.importResult, nil
+}
+
+func (f *fakeDatabaseAdmin) Cleanup(_ context.Context, req DatabaseCleanupRequest) (DatabaseCleanupResponse, error) {
+	f.lastCleanup = req
+	return f.cleanup, nil
 }

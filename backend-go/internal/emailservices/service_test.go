@@ -92,7 +92,7 @@ func TestEmailServicesStatsPreserveFieldsAndSettingsDependency(t *testing.T) {
 		},
 		enabledCount: 6,
 		settings: map[string]string{
-			"tempmail.enabled": "true",
+			"tempmail.enabled":  "true",
 			"yyds_mail.enabled": "true",
 			"yyds_mail.api_key": "secret-key",
 		},
@@ -134,11 +134,11 @@ func TestEmailServicesTypeCatalogPreservesKnownTypes(t *testing.T) {
 }
 
 type fakeRepository struct {
-	services      []EmailServiceRecord
-	stats         map[string]int
-	enabledCount  int
-	accounts      []RegisteredAccountRecord
-	settings      map[string]string
+	services     []EmailServiceRecord
+	stats        map[string]int
+	enabledCount int
+	accounts     []RegisteredAccountRecord
+	settings     map[string]string
 }
 
 func (f *fakeRepository) ListServices(context.Context, ListServicesRequest) ([]EmailServiceRecord, error) {

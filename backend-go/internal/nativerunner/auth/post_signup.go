@@ -67,6 +67,10 @@ func (c *Client) ContinueCreateAccount(ctx context.Context, created CreateAccoun
 		result.PageType = extractPayloadPageType(created.RawData, result.CallbackURL, result.ContinueURL, created.FinalURL)
 	}
 
+	if result.CallbackURL == "" && shouldSelectWorkspace(result.PageType, result.ContinueURL) && result.WorkspaceID == "" {
+		result.WorkspaceID = c.resolveWorkspaceIDForFlow(ctx, firstNonEmpty(result.ContinueURL, result.FinalURL))
+	}
+
 	if result.CallbackURL == "" && shouldSelectWorkspace(result.PageType, result.ContinueURL) && result.WorkspaceID != "" {
 		selection, err := c.SelectWorkspace(ctx, result.WorkspaceID, result.ContinueURL)
 		if err != nil {
@@ -95,33 +99,74 @@ func (c *Client) ContinueCreateAccount(ctx context.Context, created CreateAccoun
 	if err != nil {
 		return ContinueCreateAccountResult{}, err
 	}
-	if result.StatusCode == 0 {
-		result.StatusCode = followed.StatusCode
-	}
-	if followed.CallbackURL != "" {
-		result.CallbackURL = followed.CallbackURL
-	}
-	if followed.FinalURL != "" {
-		result.FinalURL = followed.FinalURL
-	}
-	if followed.FinalPath != "" {
-		result.FinalPath = followed.FinalPath
-	}
-	if followed.PageType != "" {
-		result.PageType = followed.PageType
+	return c.finalizeContinueCreateAccount(ctx, result, followed)
+}
+
+func (c *Client) continueInteractiveCreateAccount(ctx context.Context, result ContinueCreateAccountResult, continuation interactiveContinuationRequest) (ContinueCreateAccountResult, error) {
+	if strings.EqualFold(strings.TrimSpace(continuation.Method), http.MethodPost) {
+		followed, err := c.submitInteractiveContinuation(ctx, continuation, result.FinalURL)
+		if err != nil {
+			return ContinueCreateAccountResult{}, err
+		}
+
+		next := ContinueCreateAccountResult{
+			StatusCode:     result.StatusCode,
+			ContinueURL:    continuation.URL,
+			CallbackURL:    callbackURLFromValue(continuation.URL),
+			PageType:       inferPageTypeFromURL(continuation.URL),
+			AccountID:      result.AccountID,
+			UserID:         result.UserID,
+			WorkspaceID:    result.WorkspaceID,
+			OrganizationID: result.OrganizationID,
+			ProjectID:      result.ProjectID,
+			RefreshToken:   result.RefreshToken,
+			AccessToken:    result.AccessToken,
+			SessionToken:   result.SessionToken,
+			AuthProvider:   result.AuthProvider,
+			RawData:        result.RawData,
+		}
+		return c.finalizeContinueCreateAccount(ctx, next, followed)
 	}
 
-	session, err := c.ReadSession(ctx)
-	if err != nil {
-		return ContinueCreateAccountResult{}, err
+	return c.ContinueCreateAccount(ctx, CreateAccountResult{
+		ContinueURL:  continuation.URL,
+		CallbackURL:  callbackURLFromValue(continuation.URL),
+		PageType:     inferPageTypeFromURL(continuation.URL),
+		AccountID:    result.AccountID,
+		WorkspaceID:  result.WorkspaceID,
+		RefreshToken: result.RefreshToken,
+		RawData:      result.RawData,
+	})
+}
+
+func (c *Client) submitInteractiveContinuation(ctx context.Context, continuation interactiveContinuationRequest, referer string) (followedFlow, error) {
+	headers := Headers{
+		"Accept":  "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		"Origin":  c.origin(),
+		"Referer": strings.TrimSpace(referer),
+	}
+	for key, value := range cloneHeaders(continuation.Headers) {
+		headers[key] = value
 	}
 
-	mergeContinueCreateAccountSession(&result, session)
-	if result.PageType == "" {
-		result.PageType = inferPageTypeFromURL(result.FinalURL)
+	body := append([]byte(nil), continuation.Body...)
+	if len(body) == 0 {
+		form := continuation.Form
+		if form == nil {
+			form = url.Values{}
+		}
+		body = []byte(form.Encode())
+		if strings.TrimSpace(headers["Content-Type"]) == "" {
+			headers["Content-Type"] = "application/x-www-form-urlencoded"
+		}
 	}
 
-	return result, nil
+	return c.followFlowRequest(ctx, flowRequest{
+		Method:  firstNonEmpty(strings.ToUpper(strings.TrimSpace(continuation.Method)), http.MethodPost),
+		URL:     continuation.URL,
+		Headers: headers,
+		Body:    body,
+	})
 }
 
 func (c *Client) SelectWorkspace(ctx context.Context, workspaceID string, referer string) (WorkspaceSelectionResult, error) {
@@ -215,16 +260,41 @@ type followedFlow struct {
 	FinalURL    string
 	FinalPath   string
 	PageType    string
+	Body        string
+}
+
+type flowRequest struct {
+	Method  string
+	URL     string
+	Headers Headers
+	Body    []byte
 }
 
 func (c *Client) followFlow(ctx context.Context, startURL string) (followedFlow, error) {
-	currentURL := strings.TrimSpace(startURL)
+	return c.followFlowRequest(ctx, flowRequest{
+		Method: http.MethodGet,
+		URL:    startURL,
+		Headers: Headers{
+			"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		},
+	})
+}
+
+func (c *Client) followFlowRequest(ctx context.Context, start flowRequest) (followedFlow, error) {
+	currentURL := strings.TrimSpace(start.URL)
 	if currentURL == "" {
 		return followedFlow{}, errors.New("flow start url is required")
 	}
 
 	httpClient := c.redirectTrackingClient()
-	referer := c.callbackURL()
+	currentMethod := firstNonEmpty(strings.ToUpper(strings.TrimSpace(start.Method)), http.MethodGet)
+	currentHeaders := cloneHeaders(start.Headers)
+	currentBody := append([]byte(nil), start.Body...)
+
+	referer := strings.TrimSpace(currentHeaders["Referer"])
+	if referer == "" {
+		referer = c.callbackURL()
+	}
 	callbackURL := callbackURLFromValue(currentURL)
 	var lastResponse Response
 
@@ -234,16 +304,26 @@ func (c *Client) followFlow(ctx context.Context, startURL string) (followedFlow,
 			return followedFlow{}, fmt.Errorf("resolve flow url: %w", err)
 		}
 
-		httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+		var requestBody io.Reader
+		if len(currentBody) != 0 {
+			requestBody = bytes.NewReader(currentBody)
+		}
+
+		httpRequest, err := http.NewRequestWithContext(ctx, currentMethod, requestURL.String(), requestBody)
 		if err != nil {
 			return followedFlow{}, fmt.Errorf("build flow request: %w", err)
 		}
 
 		applyHeaders(httpRequest.Header, c.defaultHeaders)
-		applyHeaders(httpRequest.Header, Headers{
-			"Accept":  "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-			"Referer": referer,
-		})
+		requestHeaders := cloneHeaders(currentHeaders)
+		if requestHeaders == nil {
+			requestHeaders = Headers{}
+		}
+		if strings.TrimSpace(requestHeaders["Accept"]) == "" {
+			requestHeaders["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+		}
+		requestHeaders["Referer"] = referer
+		applyHeaders(httpRequest.Header, requestHeaders)
 		if c.userAgent != "" && httpRequest.Header.Get("User-Agent") == "" {
 			httpRequest.Header.Set("User-Agent", c.userAgent)
 		}
@@ -287,6 +367,16 @@ func (c *Client) followFlow(ctx context.Context, startURL string) (followedFlow,
 		}
 		referer = requestURL.String()
 		currentURL = nextURL
+		if httpResponse.StatusCode == http.StatusTemporaryRedirect || httpResponse.StatusCode == http.StatusPermanentRedirect {
+			currentHeaders = requestHeaders
+			continue
+		}
+
+		currentMethod = http.MethodGet
+		currentBody = nil
+		currentHeaders = Headers{
+			"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		}
 	}
 
 	return followedFlow{
@@ -295,7 +385,59 @@ func (c *Client) followFlow(ctx context.Context, startURL string) (followedFlow,
 		FinalURL:    lastResponse.FinalURL,
 		FinalPath:   lastResponse.FinalPath,
 		PageType:    extractPayloadPageType(nil, lastResponse.FinalURL, lastResponse.FinalPath),
+		Body:        string(lastResponse.Body),
 	}, nil
+}
+
+func (c *Client) finalizeContinueCreateAccount(ctx context.Context, result ContinueCreateAccountResult, followed followedFlow) (ContinueCreateAccountResult, error) {
+	if result.StatusCode == 0 {
+		result.StatusCode = followed.StatusCode
+	}
+	if followed.CallbackURL != "" {
+		result.CallbackURL = followed.CallbackURL
+	}
+	if followed.FinalURL != "" {
+		result.FinalURL = followed.FinalURL
+	}
+	if followed.FinalPath != "" {
+		result.FinalPath = followed.FinalPath
+	}
+	if followed.PageType != "" {
+		result.PageType = followed.PageType
+	} else {
+		result.PageType = extractPayloadPageType(nil, result.FinalURL, result.FinalPath)
+	}
+	if isInteractiveAuthPageType(result.PageType) {
+		if continuation := c.extractInteractiveContinuation(result.PageType, followed.Body, result.FinalURL); continuation.URL != "" {
+			continued, err := c.continueInteractiveCreateAccount(ctx, result, continuation)
+			if err != nil {
+				return ContinueCreateAccountResult{}, err
+			}
+			if strings.TrimSpace(continued.AccountID) == "" {
+				continued.AccountID = result.AccountID
+			}
+			if strings.TrimSpace(continued.WorkspaceID) == "" {
+				continued.WorkspaceID = result.WorkspaceID
+			}
+			if strings.TrimSpace(continued.RefreshToken) == "" {
+				continued.RefreshToken = result.RefreshToken
+			}
+			return continued, nil
+		}
+		return result, nil
+	}
+
+	session, err := c.ReadSession(ctx)
+	if err != nil {
+		return ContinueCreateAccountResult{}, err
+	}
+
+	mergeContinueCreateAccountSession(&result, session)
+	if result.PageType == "" {
+		result.PageType = inferPageTypeFromURL(result.FinalURL)
+	}
+
+	return result, nil
 }
 
 func (c *Client) redirectTrackingClient() *http.Client {
@@ -346,11 +488,19 @@ func (c *Client) postJSONFlow(ctx context.Context, path string, referer string, 
 }
 
 func shouldSelectWorkspace(pageType string, continueURL string) bool {
-	pageType = strings.TrimSpace(pageType)
-	if pageType == "" {
-		pageType = inferPageTypeFromURL(continueURL)
+	if isWorkspaceSelectionPageType(pageType) {
+		return true
 	}
-	return pageType == "workspace_selection"
+	return isWorkspaceSelectionPageType(inferPageTypeFromURL(continueURL))
+}
+
+func isWorkspaceSelectionPageType(pageType string) bool {
+	switch strings.TrimSpace(pageType) {
+	case "workspace_selection", "consent":
+		return true
+	default:
+		return false
+	}
 }
 
 func callbackURLFromValue(raw string) string {

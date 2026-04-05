@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
 	"github.com/dou-jiang/codex-console/backend-go/internal/nativerunner/auth"
@@ -101,38 +104,64 @@ func (f HistoricalPasswordProviderFunc) ResolveHistoricalPassword(ctx context.Co
 	return f(ctx, input, email)
 }
 
+type TokenCompletionCooldownProvider interface {
+	ResolveTokenCompletionCooldown(ctx context.Context, input FlowRequest, email string) (*time.Time, error)
+}
+
+type TokenCompletionCooldownProviderFunc func(ctx context.Context, input FlowRequest, email string) (*time.Time, error)
+
+func (f TokenCompletionCooldownProviderFunc) ResolveTokenCompletionCooldown(ctx context.Context, input FlowRequest, email string) (*time.Time, error) {
+	return f(ctx, input, email)
+}
+
+type TokenCompletionAttemptProvider interface {
+	ResolveTokenCompletionAttempts(ctx context.Context, input FlowRequest, email string) ([]TokenCompletionAttempt, error)
+}
+
+type TokenCompletionAttemptProviderFunc func(ctx context.Context, input FlowRequest, email string) ([]TokenCompletionAttempt, error)
+
+func (f TokenCompletionAttemptProviderFunc) ResolveTokenCompletionAttempts(ctx context.Context, input FlowRequest, email string) ([]TokenCompletionAttempt, error) {
+	return f(ctx, input, email)
+}
+
 type TokenCompletionDispatcher interface {
 	Complete(ctx context.Context, command TokenCompletionCommand) (TokenCompletionResult, error)
 }
 
 type PrepareSignupFlowOptions struct {
-	PreparerFactory            SignupPreparerFactory
-	PostSignupClientFactory    AuthPostSignupClientFactory
-	AccountProfileProvider     AccountProfileProvider
-	ClientIDResolver           ClientIDResolver
-	HistoricalPasswordProvider HistoricalPasswordProvider
-	TokenCompletionCoordinator TokenCompletionDispatcher
+	PreparerFactory                 SignupPreparerFactory
+	PostSignupClientFactory         AuthPostSignupClientFactory
+	AccountProfileProvider          AccountProfileProvider
+	ClientIDResolver                ClientIDResolver
+	HistoricalPasswordProvider      HistoricalPasswordProvider
+	TokenCompletionCooldownProvider TokenCompletionCooldownProvider
+	TokenCompletionAttemptProvider  TokenCompletionAttemptProvider
+	TokenCompletionCoordinator      TokenCompletionDispatcher
 }
 
 type PrepareSignupFlow struct {
-	preparerFactory            SignupPreparerFactory
-	postSignupClientFactory    AuthPostSignupClientFactory
-	accountProfileProvider     AccountProfileProvider
-	clientIDResolver           ClientIDResolver
-	historicalPasswordProvider HistoricalPasswordProvider
-	tokenCompletionCoordinator TokenCompletionDispatcher
+	preparerFactory                 SignupPreparerFactory
+	postSignupClientFactory         AuthPostSignupClientFactory
+	accountProfileProvider          AccountProfileProvider
+	clientIDResolver                ClientIDResolver
+	historicalPasswordProvider      HistoricalPasswordProvider
+	tokenCompletionCooldownProvider TokenCompletionCooldownProvider
+	tokenCompletionAttemptProvider  TokenCompletionAttemptProvider
+	tokenCompletionCoordinator      TokenCompletionDispatcher
 }
 
 var _ Flow = (*PrepareSignupFlow)(nil)
 
 func NewPrepareSignupFlow(options PrepareSignupFlowOptions) *PrepareSignupFlow {
 	return &PrepareSignupFlow{
-		preparerFactory:            options.PreparerFactory,
-		postSignupClientFactory:    options.PostSignupClientFactory,
-		accountProfileProvider:     options.AccountProfileProvider,
-		clientIDResolver:           options.ClientIDResolver,
-		historicalPasswordProvider: options.HistoricalPasswordProvider,
-		tokenCompletionCoordinator: options.TokenCompletionCoordinator,
+		preparerFactory:                 options.PreparerFactory,
+		postSignupClientFactory:         options.PostSignupClientFactory,
+		accountProfileProvider:          options.AccountProfileProvider,
+		clientIDResolver:                options.ClientIDResolver,
+		historicalPasswordProvider:      options.HistoricalPasswordProvider,
+		tokenCompletionCooldownProvider: options.TokenCompletionCooldownProvider,
+		tokenCompletionAttemptProvider:  options.TokenCompletionAttemptProvider,
+		tokenCompletionCoordinator:      options.TokenCompletionCoordinator,
 	}
 }
 
@@ -193,7 +222,12 @@ func (f *PrepareSignupFlow) Run(ctx context.Context, input FlowRequest) (registr
 		return registration.NativeRunnerResult{}, errors.New("post-signup auth client is required")
 	}
 
-	otpCode, err := input.MailProvider.WaitCode(ctx, input.Inbox, mail.DefaultCodePattern)
+	inbox := input.Inbox
+	if inbox.OTPSentAt.IsZero() {
+		inbox.OTPSentAt = time.Now().UTC()
+	}
+
+	otpCode, err := input.MailProvider.WaitCode(ctx, inbox, mail.DefaultCodePattern)
 	if err != nil {
 		return registration.NativeRunnerResult{}, fmt.Errorf("read inbox email otp: %w", err)
 	}
@@ -303,6 +337,13 @@ func (f *PrepareSignupFlow) Run(ctx context.Context, input FlowRequest) (registr
 	}
 
 	emailServiceType, _ := resolveMailProvider(input.RunnerRequest)
+	resultMetadata := map[string]any{
+		"auth_provider":               strings.TrimSpace(continueCreateAccountResult.AuthProvider),
+		"refresh_token_source":        "create_account",
+		"has_session_token":           strings.TrimSpace(continueCreateAccountResult.SessionToken) != "",
+		"create_account_callback_url": strings.TrimSpace(createAccountResult.CallbackURL),
+		"create_account_continue_url": strings.TrimSpace(createAccountResult.ContinueURL),
+	}
 	accountPersistence := &accounts.UpsertAccountRequest{
 		Email:          email,
 		Password:       preparation.Password,
@@ -324,6 +365,7 @@ func (f *PrepareSignupFlow) Run(ctx context.Context, input FlowRequest) (registr
 			"refresh_token_source": "create_account",
 		},
 	}
+	attachAuthSessionArtifacts(postSignupClient, accountPersistence, resultMetadata)
 
 	if err := logf("info", fmt.Sprintf("prepare signup completed for %s page_type=%s final_path=%s", email, strings.TrimSpace(continueCreateAccountResult.PageType), strings.TrimSpace(continueCreateAccountResult.FinalPath))); err != nil {
 		return registration.NativeRunnerResult{}, fmt.Errorf("log prepare signup completion: %w", err)
@@ -340,13 +382,7 @@ func (f *PrepareSignupFlow) Run(ctx context.Context, input FlowRequest) (registr
 			"refresh_token": refreshToken,
 			"session_token": continueCreateAccountResult.SessionToken,
 			"password":      preparation.Password,
-			"metadata": map[string]any{
-				"auth_provider":             strings.TrimSpace(continueCreateAccountResult.AuthProvider),
-				"refresh_token_source":      "create_account",
-				"has_session_token":         strings.TrimSpace(continueCreateAccountResult.SessionToken) != "",
-				"create_account_callback_url": strings.TrimSpace(createAccountResult.CallbackURL),
-				"create_account_continue_url": strings.TrimSpace(createAccountResult.ContinueURL),
-			},
+			"metadata":      resultMetadata,
 			"inbox": map[string]any{
 				"email": email,
 				"token": input.Inbox.Token,
@@ -453,6 +489,7 @@ func (f *PrepareSignupFlow) completeExistingAccountToken(
 	if f.tokenCompletionCoordinator == nil {
 		return registration.NativeRunnerResult{}, errors.New("token completion coordinator is required")
 	}
+	emailServiceType, _ := resolveMailProvider(input.RunnerRequest)
 
 	historicalPassword := ""
 	if f.historicalPasswordProvider != nil {
@@ -463,23 +500,75 @@ func (f *PrepareSignupFlow) completeExistingAccountToken(
 		historicalPassword = strings.TrimSpace(resolved)
 	}
 
+	var cooldownUntil *time.Time
+	if f.tokenCompletionCooldownProvider != nil {
+		resolved, err := f.tokenCompletionCooldownProvider.ResolveTokenCompletionCooldown(ctx, input, email)
+		if err != nil {
+			return registration.NativeRunnerResult{}, fmt.Errorf("resolve token completion cooldown: %w", err)
+		}
+		if resolved != nil {
+			cloned := resolved.UTC()
+			cooldownUntil = &cloned
+		}
+	}
+
+	var attempts []TokenCompletionAttempt
+	if f.tokenCompletionAttemptProvider != nil {
+		resolved, err := f.tokenCompletionAttemptProvider.ResolveTokenCompletionAttempts(ctx, input, email)
+		if err != nil {
+			return registration.NativeRunnerResult{}, fmt.Errorf("resolve token completion attempts: %w", err)
+		}
+		attempts = append(attempts, resolved...)
+	}
+
 	completionResult, err := f.tokenCompletionCoordinator.Complete(ctx, TokenCompletionCommand{
 		Account: TokenCompletionAccount{
 			Email:    email,
 			Password: historicalPassword,
 		},
-		ContinueURL: createAccountResult.ContinueURL,
-		CallbackURL: createAccountResult.CallbackURL,
-		PageType:    createAccountResult.PageType,
-		AccountID:   createAccountResult.AccountID,
-		WorkspaceID: createAccountResult.WorkspaceID,
-		AuthClient:  authClientFromPostSignupClient(postSignupClient),
+		CooldownUntil: cooldownUntil,
+		Attempts:      attempts,
+		ContinueURL:   createAccountResult.ContinueURL,
+		CallbackURL:   createAccountResult.CallbackURL,
+		PageType:      createAccountResult.PageType,
+		AccountID:     createAccountResult.AccountID,
+		WorkspaceID:   createAccountResult.WorkspaceID,
+		AuthClient:    authClientFromPostSignupClient(postSignupClient),
 	})
 	if err != nil {
 		return registration.NativeRunnerResult{}, fmt.Errorf("complete token: %w", err)
 	}
+	attemptsExtraData, cooldownExtraData := tokenCompletionPersistenceState(attempts, completionResult, time.Now().UTC())
 	if completionResult.State != TokenCompletionStateCompleted {
-		return registration.NativeRunnerResult{}, tokenCompletionDispatchError(completionResult)
+		failureAccountPersistence := &accounts.UpsertAccountRequest{
+			Email:          email,
+			Password:       historicalPassword,
+			EmailService:   strings.TrimSpace(emailServiceType),
+			EmailServiceID: resolveEmailServiceID(input.RunnerRequest),
+			AccountID:      firstNonEmptyTrimmed(createAccountResult.AccountID),
+			WorkspaceID:    firstNonEmptyTrimmed(createAccountResult.WorkspaceID),
+			ProxyUsed:      strings.TrimSpace(input.RunnerRequest.Plan.Proxy.Selected),
+			Status:         tokenCompletionFailureStatus(completionResult),
+			Source:         "login",
+			ExtraData: map[string]any{
+				"task_uuid":                    strings.TrimSpace(input.RunnerRequest.TaskUUID),
+				"flow":                         "native_runner",
+				"token_completion":             true,
+				"signup_page_type":             strings.TrimSpace(createAccountResult.PageType),
+				"token_completion_mode":        string(completionResult.Strategy),
+				"existing_account_detected":    true,
+				"refresh_token_cooldown_until": cooldownExtraData,
+				"token_completion_attempts":    attemptsExtraData,
+				"token_pending":                completionResult.Error != nil && completionResult.Error.Retryable,
+				"login_incomplete":             completionResult.Error == nil || !completionResult.Error.Retryable,
+				"account_status_reason":        tokenCompletionStatusReason(completionResult),
+			},
+		}
+		attachAuthSessionArtifacts(postSignupClient, failureAccountPersistence, nil)
+		return registration.NativeRunnerResult{}, newTokenCompletionPersistenceError(
+			tokenCompletionDispatchError(completionResult),
+			failureAccountPersistence,
+		)
 	}
 
 	accessToken := strings.TrimSpace(completionResult.Provider.AccessToken)
@@ -504,10 +593,16 @@ func (f *PrepareSignupFlow) completeExistingAccountToken(
 		return registration.NativeRunnerResult{}, errors.New("registration result missing refresh token")
 	}
 
-	emailServiceType, _ := resolveMailProvider(input.RunnerRequest)
 	refreshTokenSource := "oauth_passwordless"
 	if completionResult.Strategy == TokenCompletionStrategyPassword {
 		refreshTokenSource = "oauth_password"
+	}
+	resultMetadata := map[string]any{
+		"existing_account_detected":   true,
+		"refresh_token_source":        refreshTokenSource,
+		"has_session_token":           sessionToken != "",
+		"create_account_callback_url": strings.TrimSpace(createAccountResult.CallbackURL),
+		"create_account_continue_url": strings.TrimSpace(createAccountResult.ContinueURL),
 	}
 	accountPersistence := &accounts.UpsertAccountRequest{
 		Email:          email,
@@ -524,15 +619,18 @@ func (f *PrepareSignupFlow) completeExistingAccountToken(
 		Status:         accounts.DefaultAccountStatus,
 		Source:         "login",
 		ExtraData: map[string]any{
-			"task_uuid":                 strings.TrimSpace(input.RunnerRequest.TaskUUID),
-			"flow":                      "native_runner",
-			"token_completion":          true,
-			"signup_page_type":          strings.TrimSpace(createAccountResult.PageType),
-			"token_completion_mode":     string(completionResult.Strategy),
-			"existing_account_detected": true,
-			"refresh_token_source":      refreshTokenSource,
+			"task_uuid":                    strings.TrimSpace(input.RunnerRequest.TaskUUID),
+			"flow":                         "native_runner",
+			"token_completion":             true,
+			"signup_page_type":             strings.TrimSpace(createAccountResult.PageType),
+			"token_completion_mode":        string(completionResult.Strategy),
+			"existing_account_detected":    true,
+			"refresh_token_source":         refreshTokenSource,
+			"refresh_token_cooldown_until": cooldownExtraData,
+			"token_completion_attempts":    attemptsExtraData,
 		},
 	}
+	attachAuthSessionArtifacts(postSignupClient, accountPersistence, resultMetadata)
 
 	if err := logf("info", fmt.Sprintf("prepare signup completed via token completion for %s page_type=%s", email, strings.TrimSpace(createAccountResult.PageType))); err != nil {
 		return registration.NativeRunnerResult{}, fmt.Errorf("log prepare signup completion: %w", err)
@@ -550,13 +648,7 @@ func (f *PrepareSignupFlow) completeExistingAccountToken(
 			"refresh_token": refreshToken,
 			"session_token": sessionToken,
 			"password":      historicalPassword,
-			"metadata": map[string]any{
-				"existing_account_detected": true,
-				"refresh_token_source":      refreshTokenSource,
-				"has_session_token":         sessionToken != "",
-				"create_account_callback_url": strings.TrimSpace(createAccountResult.CallbackURL),
-				"create_account_continue_url": strings.TrimSpace(createAccountResult.ContinueURL),
-			},
+			"metadata":      resultMetadata,
 			"inbox": map[string]any{
 				"email": email,
 				"token": input.Inbox.Token,
@@ -636,6 +728,128 @@ func tokenCompletionResultMap(result TokenCompletionResult) map[string]any {
 		}
 	}
 	return mapped
+}
+
+type authCookieReader interface {
+	Cookies() []*http.Cookie
+}
+
+func attachAuthSessionArtifacts(client AuthPostSignupClient, accountPersistence *accounts.UpsertAccountRequest, resultMetadata map[string]any) {
+	cookieHeader, deviceID := authSessionArtifacts(client)
+
+	if accountPersistence != nil {
+		accountPersistence.Cookies = firstNonEmptyTrimmed(accountPersistence.Cookies, cookieHeader)
+		if deviceID != "" {
+			if accountPersistence.ExtraData == nil {
+				accountPersistence.ExtraData = map[string]any{}
+			}
+			accountPersistence.ExtraData["device_id"] = deviceID
+		}
+	}
+
+	if resultMetadata != nil && deviceID != "" {
+		resultMetadata["device_id"] = deviceID
+	}
+}
+
+func authSessionArtifacts(client AuthPostSignupClient) (string, string) {
+	cookieReader, ok := client.(authCookieReader)
+	if !ok || cookieReader == nil {
+		return "", ""
+	}
+
+	cookies := cookieReader.Cookies()
+	return serializeCookieHeader(cookies), deviceIDFromCookies(cookies)
+}
+
+func serializeCookieHeader(cookies []*http.Cookie) string {
+	filtered := make([]*http.Cookie, 0, len(cookies))
+	for _, cookie := range cookies {
+		if cookie == nil || strings.TrimSpace(cookie.Name) == "" || strings.TrimSpace(cookie.Value) == "" {
+			continue
+		}
+		filtered = append(filtered, cookie)
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+
+	sort.SliceStable(filtered, func(i, j int) bool {
+		if filtered[i].Name != filtered[j].Name {
+			return filtered[i].Name < filtered[j].Name
+		}
+		return filtered[i].Value < filtered[j].Value
+	})
+
+	parts := make([]string, 0, len(filtered))
+	for _, cookie := range filtered {
+		parts = append(parts, strings.TrimSpace(cookie.Name)+"="+strings.TrimSpace(cookie.Value))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func deviceIDFromCookies(cookies []*http.Cookie) string {
+	for _, cookie := range cookies {
+		if cookie == nil || cookie.Name != "oai-did" {
+			continue
+		}
+		return strings.TrimSpace(cookie.Value)
+	}
+	return ""
+}
+
+type tokenCompletionPersistenceError struct {
+	cause error
+	req   *accounts.UpsertAccountRequest
+}
+
+func newTokenCompletionPersistenceError(cause error, req *accounts.UpsertAccountRequest) error {
+	if cause == nil {
+		return nil
+	}
+	return &tokenCompletionPersistenceError{cause: cause, req: req}
+}
+
+func (e *tokenCompletionPersistenceError) Error() string {
+	if e == nil || e.cause == nil {
+		return ""
+	}
+	return e.cause.Error()
+}
+
+func (e *tokenCompletionPersistenceError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func (e *tokenCompletionPersistenceError) AccountPersistenceRequest() *accounts.UpsertAccountRequest {
+	if e == nil {
+		return nil
+	}
+	return e.req
+}
+
+func tokenCompletionPersistenceState(existing []TokenCompletionAttempt, result TokenCompletionResult, now time.Time) ([]map[string]any, string) {
+	state := BuildTokenCompletionRuntimeState(now, result.Email, TokenCompletionRuntimeState{
+		Attempts: existing,
+	}, result)
+	return serializeTokenCompletionAttempts(state.Attempts), formatTokenCompletionCooldown(state.CooldownUntil)
+}
+
+func tokenCompletionFailureStatus(result TokenCompletionResult) string {
+	if result.Error != nil && result.Error.Retryable {
+		return "token_pending"
+	}
+	return "login_incomplete"
+}
+
+func tokenCompletionStatusReason(result TokenCompletionResult) string {
+	if result.Error != nil && strings.TrimSpace(string(result.Error.Kind)) != "" {
+		return strings.TrimSpace(string(result.Error.Kind))
+	}
+	return strings.TrimSpace(string(result.State))
 }
 
 func firstNonEmptyTrimmed(values ...string) string {

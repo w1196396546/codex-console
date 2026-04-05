@@ -786,6 +786,1158 @@ func TestClientContinueCreateAccountSelectsWorkspaceAndOrganization(t *testing.T
 	}
 }
 
+func TestClientContinueCreateAccountSelectsWorkspaceFromConsentCookie(t *testing.T) {
+	t.Parallel()
+
+	var (
+		consentRequests         int
+		workspaceSelectRequests int
+		callbackRequests        int
+		sessionRequests         int
+		serverURL               string
+	)
+
+	accessToken := testJWT(t, map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": "account-from-jwt",
+		},
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sign-in-with-chatgpt/codex/consent":
+			consentRequests++
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body>consent</body></html>`))
+		case "/api/accounts/workspace/select":
+			workspaceSelectRequests++
+			if got := r.Header.Get("Referer"); got != serverURL+"/sign-in-with-chatgpt/codex/consent" {
+				t.Fatalf("expected workspace select referer, got %q", got)
+			}
+			var payload map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode workspace select payload: %v", err)
+			}
+			if got := payload["workspace_id"]; got != "workspace-cookie" {
+				t.Fatalf("expected workspace id from cookie, got %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"continue_url":"` + serverURL + `/api/auth/callback/openai?code=cookie-workspace-code"
+			}`))
+		case "/api/auth/callback/openai":
+			callbackRequests++
+			http.SetCookie(w, &http.Cookie{
+				Name:  "__Secure-next-auth.session-token",
+				Value: "session-cookie",
+				Path:  "/",
+			})
+			http.Redirect(w, r, "/u/continue?state=cookie-workspace", http.StatusFound)
+		case "/u/continue":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body data-page="continue">Continue</body></html>`))
+		case "/api/auth/session":
+			sessionRequests++
+			if callbackRequests == 0 {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":"callback required"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"accessToken":"` + accessToken + `",
+				"user":{},
+				"account":{}
+			}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	client, err := NewClient(Options{
+		BaseURL:   server.URL,
+		UserAgent: "codex-native-auth/0.1",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	sessionJSON, err := json.Marshal(map[string]any{
+		"workspaces": []map[string]string{{"id": "workspace-cookie"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal oauth session cookie: %v", err)
+	}
+
+	baseURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+	client.httpClient.Jar.SetCookies(baseURL, []*http.Cookie{{
+		Name:  "oai-client-auth-session",
+		Value: base64.RawURLEncoding.EncodeToString(sessionJSON) + ".signature",
+		Path:  "/",
+	}})
+
+	result, err := client.ContinueCreateAccount(context.Background(), CreateAccountResult{
+		ContinueURL: serverURL + "/sign-in-with-chatgpt/codex/consent",
+		PageType:    "consent",
+	})
+	if err != nil {
+		t.Fatalf("continue create account: %v", err)
+	}
+	if consentRequests != 0 {
+		t.Fatalf("expected workspace resolution to prefer cookie before consent html, got %d consent requests", consentRequests)
+	}
+	if workspaceSelectRequests != 1 {
+		t.Fatalf("expected one workspace select request, got %d", workspaceSelectRequests)
+	}
+	if callbackRequests != 1 {
+		t.Fatalf("expected one callback request, got %d", callbackRequests)
+	}
+	if sessionRequests != 1 {
+		t.Fatalf("expected one session request, got %d", sessionRequests)
+	}
+	if result.WorkspaceID != "workspace-cookie" {
+		t.Fatalf("expected resolved workspace id to persist, got %q", result.WorkspaceID)
+	}
+	if result.CallbackURL != serverURL+"/api/auth/callback/openai?code=cookie-workspace-code" {
+		t.Fatalf("expected callback url from workspace selection, got %q", result.CallbackURL)
+	}
+}
+
+func TestClientContinueCreateAccountSelectsWorkspaceFromConsentHTML(t *testing.T) {
+	t.Parallel()
+
+	var (
+		consentRequests         int
+		workspaceSelectRequests int
+		callbackRequests        int
+		sessionRequests         int
+		serverURL               string
+	)
+
+	accessToken := testJWT(t, map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": "account-from-jwt",
+		},
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sign-in-with-chatgpt/codex/consent":
+			consentRequests++
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body><script>streamController.enqueue("{\"workspaces\":[{\"id\":\"workspace-html\",\"kind\":\"personal\"}],\"openai_client_id\":\"client-123\"}")</script></body></html>`))
+		case "/api/accounts/workspace/select":
+			workspaceSelectRequests++
+			var payload map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode workspace select payload: %v", err)
+			}
+			if got := payload["workspace_id"]; got != "workspace-html" {
+				t.Fatalf("expected workspace id from consent html, got %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"continue_url":"` + serverURL + `/api/auth/callback/openai?code=html-workspace-code"
+			}`))
+		case "/api/auth/callback/openai":
+			callbackRequests++
+			http.SetCookie(w, &http.Cookie{
+				Name:  "__Secure-next-auth.session-token",
+				Value: "session-cookie",
+				Path:  "/",
+			})
+			http.Redirect(w, r, "/u/continue?state=html-workspace", http.StatusFound)
+		case "/u/continue":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body data-page="continue">Continue</body></html>`))
+		case "/api/auth/session":
+			sessionRequests++
+			if callbackRequests == 0 {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":"callback required"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"accessToken":"` + accessToken + `",
+				"user":{},
+				"account":{}
+			}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	client, err := NewClient(Options{
+		BaseURL:   server.URL,
+		UserAgent: "codex-native-auth/0.1",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	result, err := client.ContinueCreateAccount(context.Background(), CreateAccountResult{
+		ContinueURL: serverURL + "/sign-in-with-chatgpt/codex/consent",
+		PageType:    "consent",
+	})
+	if err != nil {
+		t.Fatalf("continue create account: %v", err)
+	}
+	if consentRequests != 1 {
+		t.Fatalf("expected one consent html fetch, got %d", consentRequests)
+	}
+	if workspaceSelectRequests != 1 {
+		t.Fatalf("expected one workspace select request, got %d", workspaceSelectRequests)
+	}
+	if callbackRequests != 1 {
+		t.Fatalf("expected one callback request, got %d", callbackRequests)
+	}
+	if sessionRequests != 1 {
+		t.Fatalf("expected one session request, got %d", sessionRequests)
+	}
+	if result.WorkspaceID != "workspace-html" {
+		t.Fatalf("expected resolved workspace id from consent html, got %q", result.WorkspaceID)
+	}
+	if result.CallbackURL != serverURL+"/api/auth/callback/openai?code=html-workspace-code" {
+		t.Fatalf("expected callback url from workspace selection, got %q", result.CallbackURL)
+	}
+}
+
+func TestClientContinueCreateAccountPrefersConsentURLWhenPageTypeIsStale(t *testing.T) {
+	t.Parallel()
+
+	var (
+		consentRequests         int
+		workspaceSelectRequests int
+		callbackRequests        int
+		sessionRequests         int
+		serverURL               string
+	)
+
+	accessToken := testJWT(t, map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": "account-from-jwt",
+		},
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sign-in-with-chatgpt/codex/consent":
+			consentRequests++
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body><script>streamController.enqueue("{\"workspaces\":[{\"id\":\"workspace-stale\",\"kind\":\"personal\"}],\"openai_client_id\":\"client-123\"}")</script></body></html>`))
+		case "/api/accounts/workspace/select":
+			workspaceSelectRequests++
+			var payload map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode workspace select payload: %v", err)
+			}
+			if got := payload["workspace_id"]; got != "workspace-stale" {
+				t.Fatalf("expected workspace id from consent html, got %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"continue_url":"` + serverURL + `/api/auth/callback/openai?code=stale-consent-code"
+			}`))
+		case "/api/auth/callback/openai":
+			callbackRequests++
+			http.SetCookie(w, &http.Cookie{
+				Name:  "__Secure-next-auth.session-token",
+				Value: "session-cookie",
+				Path:  "/",
+			})
+			http.Redirect(w, r, "/u/continue?state=stale-consent", http.StatusFound)
+		case "/u/continue":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body data-page="continue">Continue</body></html>`))
+		case "/api/auth/session":
+			sessionRequests++
+			if callbackRequests == 0 {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":"callback required"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"accessToken":"` + accessToken + `",
+				"user":{},
+				"account":{}
+			}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	client, err := NewClient(Options{
+		BaseURL:   server.URL,
+		UserAgent: "codex-native-auth/0.1",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	result, err := client.ContinueCreateAccount(context.Background(), CreateAccountResult{
+		ContinueURL: serverURL + "/sign-in-with-chatgpt/codex/consent",
+		PageType:    "callback",
+	})
+	if err != nil {
+		t.Fatalf("continue create account: %v", err)
+	}
+	if consentRequests != 1 {
+		t.Fatalf("expected one consent html fetch, got %d", consentRequests)
+	}
+	if workspaceSelectRequests != 1 {
+		t.Fatalf("expected one workspace select request, got %d", workspaceSelectRequests)
+	}
+	if callbackRequests != 1 {
+		t.Fatalf("expected one callback request, got %d", callbackRequests)
+	}
+	if sessionRequests != 1 {
+		t.Fatalf("expected one session request, got %d", sessionRequests)
+	}
+	if result.WorkspaceID != "workspace-stale" {
+		t.Fatalf("expected resolved workspace id from consent html, got %q", result.WorkspaceID)
+	}
+	if result.CallbackURL != serverURL+"/api/auth/callback/openai?code=stale-consent-code" {
+		t.Fatalf("expected callback url from workspace selection, got %q", result.CallbackURL)
+	}
+}
+
+func TestClientContinueCreateAccountReturnsAddPhoneStateWithoutReadingSession(t *testing.T) {
+	t.Parallel()
+
+	var (
+		addPhoneRequests int
+		sessionRequests  int
+		serverURL        string
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/add-phone":
+			addPhoneRequests++
+			if r.Method != http.MethodGet {
+				t.Fatalf("expected GET /add-phone, got %s", r.Method)
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body data-page="add-phone">Add phone</body></html>`))
+		case "/api/auth/session":
+			sessionRequests++
+			t.Fatal("did not expect session request when flow is blocked on add_phone")
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	client, err := NewClient(Options{
+		BaseURL:   server.URL,
+		UserAgent: "codex-native-auth/0.1",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	result, err := client.ContinueCreateAccount(context.Background(), CreateAccountResult{
+		ContinueURL: serverURL + "/add-phone",
+		PageType:    "add_phone",
+		AccountID:   "account-created",
+	})
+	if err != nil {
+		t.Fatalf("continue create account: %v", err)
+	}
+	if addPhoneRequests != 1 {
+		t.Fatalf("expected one add-phone request, got %d", addPhoneRequests)
+	}
+	if sessionRequests != 0 {
+		t.Fatalf("expected zero session requests, got %d", sessionRequests)
+	}
+	if result.FinalURL != serverURL+"/add-phone" {
+		t.Fatalf("expected final url /add-phone, got %q", result.FinalURL)
+	}
+	if result.FinalPath != "/add-phone" {
+		t.Fatalf("expected final path /add-phone, got %q", result.FinalPath)
+	}
+	if result.PageType != "add_phone" {
+		t.Fatalf("expected add_phone page type, got %q", result.PageType)
+	}
+	if result.AccountID != "account-created" {
+		t.Fatalf("expected account id retained, got %q", result.AccountID)
+	}
+	if result.AccessToken != "" {
+		t.Fatalf("expected empty access token for add_phone boundary, got %q", result.AccessToken)
+	}
+}
+
+func TestClientContinueCreateAccountAutoContinuesAddPhoneSkipURL(t *testing.T) {
+	t.Parallel()
+
+	var (
+		addPhoneRequests int
+		continueRequests int
+		callbackRequests int
+		sessionRequests  int
+		serverURL        string
+	)
+
+	accessToken := testJWT(t, map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": "account-from-session",
+		},
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/add-phone":
+			addPhoneRequests++
+			if r.Method != http.MethodGet {
+				t.Fatalf("expected GET /add-phone, got %s", r.Method)
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body data-page="add-phone"><a href="` + serverURL + `/u/continue?state=skip-phone">Skip for now</a></body></html>`))
+		case "/u/continue":
+			continueRequests++
+			if got := r.URL.Query().Get("state"); got != "skip-phone" {
+				t.Fatalf("expected skip-phone state, got %q", got)
+			}
+			http.Redirect(w, r, "/api/auth/callback/openai?code=skip-phone-code", http.StatusFound)
+		case "/api/auth/callback/openai":
+			callbackRequests++
+			if got := r.URL.Query().Get("code"); got != "skip-phone-code" {
+				t.Fatalf("expected skip-phone code, got %q", got)
+			}
+			http.SetCookie(w, &http.Cookie{
+				Name:  "__Secure-next-auth.session-token",
+				Value: "session-cookie",
+				Path:  "/",
+			})
+			http.Redirect(w, r, "/welcome", http.StatusFound)
+		case "/welcome":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body>Welcome</body></html>`))
+		case "/api/auth/session":
+			sessionRequests++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"accessToken":"` + accessToken + `",
+				"refreshToken":"refresh-from-session",
+				"sessionToken":"session-from-payload",
+				"user":{},
+				"account":{},
+				"workspace":{"id":"workspace-from-session"}
+			}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	client, err := NewClient(Options{
+		BaseURL:   server.URL,
+		UserAgent: "codex-native-auth/0.1",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	result, err := client.ContinueCreateAccount(context.Background(), CreateAccountResult{
+		ContinueURL: serverURL + "/add-phone",
+		PageType:    "add_phone",
+		AccountID:   "account-created",
+	})
+	if err != nil {
+		t.Fatalf("continue create account: %v", err)
+	}
+	if addPhoneRequests != 1 {
+		t.Fatalf("expected one add-phone request, got %d", addPhoneRequests)
+	}
+	if continueRequests != 1 {
+		t.Fatalf("expected one continue request from add-phone skip link, got %d", continueRequests)
+	}
+	if callbackRequests != 1 {
+		t.Fatalf("expected one callback request after add-phone skip link, got %d", callbackRequests)
+	}
+	if sessionRequests != 1 {
+		t.Fatalf("expected one session request after add-phone auto-continue, got %d", sessionRequests)
+	}
+	if result.FinalPath != "/welcome" {
+		t.Fatalf("expected final path /welcome, got %q", result.FinalPath)
+	}
+	if result.CallbackURL != serverURL+"/api/auth/callback/openai?code=skip-phone-code" {
+		t.Fatalf("expected callback url from add-phone continuation, got %q", result.CallbackURL)
+	}
+	if result.AccessToken != accessToken {
+		t.Fatalf("expected access token from session, got %q", result.AccessToken)
+	}
+	if result.AccountID != "account-created" {
+		t.Fatalf("expected created account id retained, got %q", result.AccountID)
+	}
+}
+
+func TestClientContinueCreateAccountAutoContinuesAddPhoneSkipFormPost(t *testing.T) {
+	t.Parallel()
+
+	var (
+		addPhoneRequests int
+		formPostRequests int
+		callbackRequests int
+		sessionRequests  int
+		serverURL        string
+	)
+
+	accessToken := testJWT(t, map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": "account-from-session",
+		},
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/add-phone":
+			addPhoneRequests++
+			if r.Method != http.MethodGet {
+				t.Fatalf("expected GET /add-phone, got %s", r.Method)
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body data-page="add-phone"><form method="post" action="` + serverURL + `/add-phone/skip"><input type="hidden" name="state" value="skip-phone"><input type="hidden" name="intent" value="skip"></form></body></html>`))
+		case "/add-phone/skip":
+			formPostRequests++
+			if r.Method != http.MethodPost {
+				t.Fatalf("expected POST /add-phone/skip, got %s", r.Method)
+			}
+			if got := r.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/x-www-form-urlencoded") {
+				t.Fatalf("expected form content type on add-phone submit, got %q", got)
+			}
+			if got := r.Header.Get("Referer"); got != serverURL+"/add-phone" {
+				t.Fatalf("expected add-phone referer on form submit, got %q", got)
+			}
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse add-phone submit form: %v", err)
+			}
+			if got := r.Form.Get("state"); got != "skip-phone" {
+				t.Fatalf("expected hidden state, got %q", got)
+			}
+			if got := r.Form.Get("intent"); got != "skip" {
+				t.Fatalf("expected hidden intent, got %q", got)
+			}
+			http.Redirect(w, r, "/api/auth/callback/openai?code=skip-phone-form-code", http.StatusFound)
+		case "/api/auth/callback/openai":
+			callbackRequests++
+			if got := r.URL.Query().Get("code"); got != "skip-phone-form-code" {
+				t.Fatalf("expected skip-phone-form-code, got %q", got)
+			}
+			http.SetCookie(w, &http.Cookie{
+				Name:  "__Secure-next-auth.session-token",
+				Value: "session-cookie",
+				Path:  "/",
+			})
+			http.Redirect(w, r, "/welcome", http.StatusFound)
+		case "/welcome":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body>Welcome</body></html>`))
+		case "/api/auth/session":
+			sessionRequests++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"accessToken":"` + accessToken + `",
+				"refreshToken":"refresh-from-session",
+				"sessionToken":"session-from-payload",
+				"user":{},
+				"account":{},
+				"workspace":{"id":"workspace-from-session"}
+			}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	client, err := NewClient(Options{
+		BaseURL:   server.URL,
+		UserAgent: "codex-native-auth/0.1",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	result, err := client.ContinueCreateAccount(context.Background(), CreateAccountResult{
+		ContinueURL: serverURL + "/add-phone",
+		PageType:    "add_phone",
+		AccountID:   "account-created",
+	})
+	if err != nil {
+		t.Fatalf("continue create account: %v", err)
+	}
+	if addPhoneRequests != 1 {
+		t.Fatalf("expected one add-phone request, got %d", addPhoneRequests)
+	}
+	if formPostRequests != 1 {
+		t.Fatalf("expected one form submit from add-phone page, got %d", formPostRequests)
+	}
+	if callbackRequests != 1 {
+		t.Fatalf("expected one callback request after add-phone form submit, got %d", callbackRequests)
+	}
+	if sessionRequests != 1 {
+		t.Fatalf("expected one session request after add-phone form submit, got %d", sessionRequests)
+	}
+	if result.FinalPath != "/welcome" {
+		t.Fatalf("expected final path /welcome, got %q", result.FinalPath)
+	}
+	if result.CallbackURL != serverURL+"/api/auth/callback/openai?code=skip-phone-form-code" {
+		t.Fatalf("expected callback url from add-phone form continuation, got %q", result.CallbackURL)
+	}
+	if result.AccessToken != accessToken {
+		t.Fatalf("expected access token from session, got %q", result.AccessToken)
+	}
+	if result.AccountID != "account-created" {
+		t.Fatalf("expected created account id retained, got %q", result.AccountID)
+	}
+}
+
+func TestClientContinueCreateAccountAutoContinuesAddPhonePrefersSkipFormWithButtonAndCSRF(t *testing.T) {
+	t.Parallel()
+
+	var (
+		addPhoneRequests int
+		verifyRequests   int
+		formPostRequests int
+		callbackRequests int
+		sessionRequests  int
+		serverURL        string
+	)
+
+	accessToken := testJWT(t, map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": "account-from-session",
+		},
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/add-phone":
+			addPhoneRequests++
+			if r.Method != http.MethodGet {
+				t.Fatalf("expected GET /add-phone, got %s", r.Method)
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body data-page="add-phone">
+				<form id="verify-phone" method="post" action="` + serverURL + `/add-phone/verify">
+					<input type="hidden" name="csrf_token" value="verify-csrf">
+					<input type="hidden" name="state" value="verify-phone">
+					<button type="submit" name="intent" value="verify_phone">Continue</button>
+				</form>
+				<form id="skip-phone" method="post" action="` + serverURL + `/add-phone/skip">
+					<input type="hidden" name="csrf_token" value="skip-csrf">
+					<input type="hidden" name="state" value="skip-phone">
+					<input type="hidden" name="screen_hint" value="add_phone">
+					<button type="submit" name="intent" value="skip_phone">Skip for now</button>
+				</form>
+			</body></html>`))
+		case "/add-phone/verify":
+			verifyRequests++
+			t.Fatalf("did not expect verify form to be submitted")
+		case "/add-phone/skip":
+			formPostRequests++
+			if r.Method != http.MethodPost {
+				t.Fatalf("expected POST /add-phone/skip, got %s", r.Method)
+			}
+			if got := r.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/x-www-form-urlencoded") {
+				t.Fatalf("expected form content type on add-phone submit, got %q", got)
+			}
+			if got := r.Header.Get("Referer"); got != serverURL+"/add-phone" {
+				t.Fatalf("expected add-phone referer on form submit, got %q", got)
+			}
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse add-phone submit form: %v", err)
+			}
+			if got := r.Form.Get("csrf_token"); got != "skip-csrf" {
+				t.Fatalf("expected skip csrf token, got %q", got)
+			}
+			if got := r.Form.Get("state"); got != "skip-phone" {
+				t.Fatalf("expected skip state, got %q", got)
+			}
+			if got := r.Form.Get("screen_hint"); got != "add_phone" {
+				t.Fatalf("expected screen_hint, got %q", got)
+			}
+			if got := r.Form.Get("intent"); got != "skip_phone" {
+				t.Fatalf("expected skip button value, got %q", got)
+			}
+			http.Redirect(w, r, "/api/auth/callback/openai?code=skip-phone-form-priority-code", http.StatusFound)
+		case "/api/auth/callback/openai":
+			callbackRequests++
+			if got := r.URL.Query().Get("code"); got != "skip-phone-form-priority-code" {
+				t.Fatalf("expected skip-phone-form-priority-code, got %q", got)
+			}
+			http.SetCookie(w, &http.Cookie{
+				Name:  "__Secure-next-auth.session-token",
+				Value: "session-cookie",
+				Path:  "/",
+			})
+			http.Redirect(w, r, "/welcome", http.StatusFound)
+		case "/welcome":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body>Welcome</body></html>`))
+		case "/api/auth/session":
+			sessionRequests++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"accessToken":"` + accessToken + `",
+				"refreshToken":"refresh-from-session",
+				"sessionToken":"session-from-payload",
+				"user":{},
+				"account":{},
+				"workspace":{"id":"workspace-from-session"}
+			}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	client, err := NewClient(Options{
+		BaseURL:   server.URL,
+		UserAgent: "codex-native-auth/0.1",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	result, err := client.ContinueCreateAccount(context.Background(), CreateAccountResult{
+		ContinueURL: serverURL + "/add-phone",
+		PageType:    "add_phone",
+		AccountID:   "account-created",
+	})
+	if err != nil {
+		t.Fatalf("continue create account: %v", err)
+	}
+	if addPhoneRequests != 1 {
+		t.Fatalf("expected one add-phone request, got %d", addPhoneRequests)
+	}
+	if verifyRequests != 0 {
+		t.Fatalf("expected verify form to be skipped, got %d requests", verifyRequests)
+	}
+	if formPostRequests != 1 {
+		t.Fatalf("expected one add-phone form submit, got %d", formPostRequests)
+	}
+	if callbackRequests != 1 {
+		t.Fatalf("expected one callback request after add-phone form submit, got %d", callbackRequests)
+	}
+	if sessionRequests != 1 {
+		t.Fatalf("expected one session request after add-phone form submit, got %d", sessionRequests)
+	}
+	if result.FinalPath != "/welcome" {
+		t.Fatalf("expected final path /welcome, got %q", result.FinalPath)
+	}
+	if result.CallbackURL != serverURL+"/api/auth/callback/openai?code=skip-phone-form-priority-code" {
+		t.Fatalf("expected callback url from prioritized add-phone form continuation, got %q", result.CallbackURL)
+	}
+	if result.AccessToken != accessToken {
+		t.Fatalf("expected access token from session, got %q", result.AccessToken)
+	}
+	if result.AccountID != "account-created" {
+		t.Fatalf("expected created account id retained, got %q", result.AccountID)
+	}
+}
+
+func TestClientContinueCreateAccountAutoContinuesAddPhoneDataActionJSONPayload(t *testing.T) {
+	t.Parallel()
+
+	var (
+		addPhoneRequests int
+		verifyRequests   int
+		formPostRequests int
+		callbackRequests int
+		sessionRequests  int
+		serverURL        string
+	)
+
+	accessToken := testJWT(t, map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": "account-from-session",
+		},
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/add-phone":
+			addPhoneRequests++
+			if r.Method != http.MethodGet {
+				t.Fatalf("expected GET /add-phone, got %s", r.Method)
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body data-page="add-phone">
+				<button
+					type="button"
+					data-action="` + serverURL + `/add-phone/verify"
+					data-method="post"
+					data-payload='{"state":"verify-phone","intent":"verify_phone","csrf_token":"verify-csrf"}'
+				>Verify phone</button>
+				<div
+					role="button"
+					data-action="` + serverURL + `/add-phone/skip"
+					data-method="post"
+					data-payload='{"state":"skip-phone","intent":"skip_phone","screen_hint":"add_phone","csrf_token":"skip-csrf"}'
+				>Skip for now</div>
+			</body></html>`))
+		case "/add-phone/verify":
+			verifyRequests++
+			t.Fatalf("did not expect verify data action to be submitted")
+		case "/add-phone/skip":
+			formPostRequests++
+			if r.Method != http.MethodPost {
+				t.Fatalf("expected POST /add-phone/skip, got %s", r.Method)
+			}
+			if got := r.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/x-www-form-urlencoded") {
+				t.Fatalf("expected form content type on add-phone submit, got %q", got)
+			}
+			if got := r.Header.Get("Referer"); got != serverURL+"/add-phone" {
+				t.Fatalf("expected add-phone referer on form submit, got %q", got)
+			}
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse add-phone submit form: %v", err)
+			}
+			if got := r.Form.Get("csrf_token"); got != "skip-csrf" {
+				t.Fatalf("expected skip csrf token, got %q", got)
+			}
+			if got := r.Form.Get("state"); got != "skip-phone" {
+				t.Fatalf("expected skip state, got %q", got)
+			}
+			if got := r.Form.Get("screen_hint"); got != "add_phone" {
+				t.Fatalf("expected screen_hint, got %q", got)
+			}
+			if got := r.Form.Get("intent"); got != "skip_phone" {
+				t.Fatalf("expected skip intent, got %q", got)
+			}
+			http.Redirect(w, r, "/api/auth/callback/openai?code=skip-phone-data-action-code", http.StatusFound)
+		case "/api/auth/callback/openai":
+			callbackRequests++
+			if got := r.URL.Query().Get("code"); got != "skip-phone-data-action-code" {
+				t.Fatalf("expected skip-phone-data-action-code, got %q", got)
+			}
+			http.SetCookie(w, &http.Cookie{
+				Name:  "__Secure-next-auth.session-token",
+				Value: "session-cookie",
+				Path:  "/",
+			})
+			http.Redirect(w, r, "/welcome", http.StatusFound)
+		case "/welcome":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body>Welcome</body></html>`))
+		case "/api/auth/session":
+			sessionRequests++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"accessToken":"` + accessToken + `",
+				"refreshToken":"refresh-from-session",
+				"sessionToken":"session-from-payload",
+				"user":{},
+				"account":{},
+				"workspace":{"id":"workspace-from-session"}
+			}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	client, err := NewClient(Options{
+		BaseURL:   server.URL,
+		UserAgent: "codex-native-auth/0.1",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	result, err := client.ContinueCreateAccount(context.Background(), CreateAccountResult{
+		ContinueURL: serverURL + "/add-phone",
+		PageType:    "add_phone",
+		AccountID:   "account-created",
+	})
+	if err != nil {
+		t.Fatalf("continue create account: %v", err)
+	}
+	if addPhoneRequests != 1 {
+		t.Fatalf("expected one add-phone request, got %d", addPhoneRequests)
+	}
+	if verifyRequests != 0 {
+		t.Fatalf("expected verify action to be skipped, got %d requests", verifyRequests)
+	}
+	if formPostRequests != 1 {
+		t.Fatalf("expected one add-phone data action submit, got %d", formPostRequests)
+	}
+	if callbackRequests != 1 {
+		t.Fatalf("expected one callback request after add-phone data action, got %d", callbackRequests)
+	}
+	if sessionRequests != 1 {
+		t.Fatalf("expected one session request after add-phone data action, got %d", sessionRequests)
+	}
+	if result.FinalPath != "/welcome" {
+		t.Fatalf("expected final path /welcome, got %q", result.FinalPath)
+	}
+	if result.CallbackURL != serverURL+"/api/auth/callback/openai?code=skip-phone-data-action-code" {
+		t.Fatalf("expected callback url from add-phone data action, got %q", result.CallbackURL)
+	}
+	if result.AccessToken != accessToken {
+		t.Fatalf("expected access token from session, got %q", result.AccessToken)
+	}
+	if result.AccountID != "account-created" {
+		t.Fatalf("expected created account id retained, got %q", result.AccountID)
+	}
+}
+
+func TestClientContinueCreateAccountAutoContinuesAddPhoneStaticFetchJSONBody(t *testing.T) {
+	t.Parallel()
+
+	var (
+		addPhoneRequests  int
+		verifyRequests    int
+		fetchPostRequests int
+		callbackRequests  int
+		sessionRequests   int
+		serverURL         string
+	)
+
+	accessToken := testJWT(t, map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": "account-from-session",
+		},
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/add-phone":
+			addPhoneRequests++
+			if r.Method != http.MethodGet {
+				t.Fatalf("expected GET /add-phone, got %s", r.Method)
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body data-page="add-phone">
+				<script>
+					fetch("` + serverURL + `/add-phone/verify", {
+						method: "POST",
+						headers: {"Content-Type": "application/json"},
+						body: JSON.stringify({"state":"verify-phone","intent":"verify_phone","csrf_token":"verify-csrf"})
+					});
+					fetch("` + serverURL + `/add-phone/skip", {
+						method: "POST",
+						headers: {"Content-Type": "application/json"},
+						body: JSON.stringify({
+							"state":"skip-phone",
+							"intent":"skip_phone",
+							"screen_hint":"add_phone",
+							"csrf_token":"skip-csrf",
+							"remember_me":true
+						})
+					});
+				</script>
+			</body></html>`))
+		case "/add-phone/verify":
+			verifyRequests++
+			t.Fatalf("did not expect verify fetch branch to be submitted")
+		case "/add-phone/skip":
+			fetchPostRequests++
+			if r.Method != http.MethodPost {
+				t.Fatalf("expected POST /add-phone/skip, got %s", r.Method)
+			}
+			if got := r.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+				t.Fatalf("expected json content type on add-phone fetch submit, got %q", got)
+			}
+			if got := r.Header.Get("Referer"); got != serverURL+"/add-phone" {
+				t.Fatalf("expected add-phone referer on fetch submit, got %q", got)
+			}
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode add-phone fetch payload: %v", err)
+			}
+			if got := payload["csrf_token"]; got != "skip-csrf" {
+				t.Fatalf("expected skip csrf token, got %#v", got)
+			}
+			if got := payload["state"]; got != "skip-phone" {
+				t.Fatalf("expected skip state, got %#v", got)
+			}
+			if got := payload["screen_hint"]; got != "add_phone" {
+				t.Fatalf("expected screen_hint, got %#v", got)
+			}
+			if got := payload["intent"]; got != "skip_phone" {
+				t.Fatalf("expected skip intent, got %#v", got)
+			}
+			if got := payload["remember_me"]; got != true {
+				t.Fatalf("expected remember_me bool, got %#v", got)
+			}
+			http.Redirect(w, r, "/api/auth/callback/openai?code=skip-phone-static-fetch-code", http.StatusFound)
+		case "/api/auth/callback/openai":
+			callbackRequests++
+			if got := r.URL.Query().Get("code"); got != "skip-phone-static-fetch-code" {
+				t.Fatalf("expected skip-phone-static-fetch-code, got %q", got)
+			}
+			http.SetCookie(w, &http.Cookie{
+				Name:  "__Secure-next-auth.session-token",
+				Value: "session-cookie",
+				Path:  "/",
+			})
+			http.Redirect(w, r, "/welcome", http.StatusFound)
+		case "/welcome":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body>Welcome</body></html>`))
+		case "/api/auth/session":
+			sessionRequests++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"accessToken":"` + accessToken + `",
+				"refreshToken":"refresh-from-session",
+				"sessionToken":"session-from-payload",
+				"user":{},
+				"account":{},
+				"workspace":{"id":"workspace-from-session"}
+			}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	client, err := NewClient(Options{
+		BaseURL:   server.URL,
+		UserAgent: "codex-native-auth/0.1",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	result, err := client.ContinueCreateAccount(context.Background(), CreateAccountResult{
+		ContinueURL: serverURL + "/add-phone",
+		PageType:    "add_phone",
+		AccountID:   "account-created",
+	})
+	if err != nil {
+		t.Fatalf("continue create account: %v", err)
+	}
+	if addPhoneRequests != 1 {
+		t.Fatalf("expected one add-phone request, got %d", addPhoneRequests)
+	}
+	if verifyRequests != 0 {
+		t.Fatalf("expected verify fetch to be skipped, got %d requests", verifyRequests)
+	}
+	if fetchPostRequests != 1 {
+		t.Fatalf("expected one add-phone fetch submit, got %d", fetchPostRequests)
+	}
+	if callbackRequests != 1 {
+		t.Fatalf("expected one callback request after add-phone fetch, got %d", callbackRequests)
+	}
+	if sessionRequests != 1 {
+		t.Fatalf("expected one session request after add-phone fetch, got %d", sessionRequests)
+	}
+	if result.FinalPath != "/welcome" {
+		t.Fatalf("expected final path /welcome, got %q", result.FinalPath)
+	}
+	if result.CallbackURL != serverURL+"/api/auth/callback/openai?code=skip-phone-static-fetch-code" {
+		t.Fatalf("expected callback url from add-phone static fetch, got %q", result.CallbackURL)
+	}
+	if result.AccessToken != accessToken {
+		t.Fatalf("expected access token from session, got %q", result.AccessToken)
+	}
+	if result.AccountID != "account-created" {
+		t.Fatalf("expected created account id retained, got %q", result.AccountID)
+	}
+}
+
+func TestClientContinueCreateAccountKeepsAddPhoneBoundaryWhenFetchBodyIsDynamic(t *testing.T) {
+	t.Parallel()
+
+	var (
+		addPhoneRequests int
+		skipRequests     int
+		sessionRequests  int
+		serverURL        string
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/add-phone":
+			addPhoneRequests++
+			if r.Method != http.MethodGet {
+				t.Fatalf("expected GET /add-phone, got %s", r.Method)
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body data-page="add-phone">
+				<script>
+					const skipPayload = {
+						state: "skip-phone",
+						intent: "skip_phone",
+						screen_hint: "add_phone",
+						csrf_token: window.__csrfToken
+					};
+					fetch("` + serverURL + `/add-phone/skip", {
+						method: "POST",
+						headers: {"Content-Type": "application/json"},
+						body: JSON.stringify(skipPayload)
+					});
+				</script>
+			</body></html>`))
+		case "/add-phone/skip":
+			skipRequests++
+			t.Fatal("did not expect dynamic fetch payload to be auto-submitted")
+		case "/api/auth/session":
+			sessionRequests++
+			t.Fatal("did not expect session request when dynamic fetch payload cannot be inferred statically")
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	client, err := NewClient(Options{
+		BaseURL:   server.URL,
+		UserAgent: "codex-native-auth/0.1",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	result, err := client.ContinueCreateAccount(context.Background(), CreateAccountResult{
+		ContinueURL: serverURL + "/add-phone",
+		PageType:    "add_phone",
+		AccountID:   "account-created",
+	})
+	if err != nil {
+		t.Fatalf("continue create account: %v", err)
+	}
+	if addPhoneRequests != 1 {
+		t.Fatalf("expected one add-phone request, got %d", addPhoneRequests)
+	}
+	if skipRequests != 0 {
+		t.Fatalf("expected zero add-phone skip requests, got %d", skipRequests)
+	}
+	if sessionRequests != 0 {
+		t.Fatalf("expected zero session requests, got %d", sessionRequests)
+	}
+	if result.FinalPath != "/add-phone" {
+		t.Fatalf("expected final path /add-phone, got %q", result.FinalPath)
+	}
+	if result.PageType != "add_phone" {
+		t.Fatalf("expected add_phone page type, got %q", result.PageType)
+	}
+	if result.AccessToken != "" {
+		t.Fatalf("expected empty access token for dynamic fetch boundary, got %q", result.AccessToken)
+	}
+}
+
 func TestClientReadSessionSupportsAlternateChunkedSessionCookies(t *testing.T) {
 	t.Parallel()
 

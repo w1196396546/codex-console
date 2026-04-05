@@ -3,9 +3,11 @@ package nativerunner
 import (
 	"context"
 	"errors"
+	"net/http"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
 	"github.com/dou-jiang/codex-console/backend-go/internal/nativerunner/auth"
@@ -52,6 +54,10 @@ func TestPrepareSignupFlowCompletesRegistrationAndBuildsPersistence(t *testing.T
 			AccessToken:  "access-123",
 			SessionToken: "session-123",
 			AuthProvider: "openai",
+		},
+		cookies: []*http.Cookie{
+			{Name: "__Secure-next-auth.session-token", Value: "session-cookie"},
+			{Name: "oai-did", Value: "device-123"},
 		},
 		sessionErr: errors.New("unexpected read session call"),
 	}
@@ -149,6 +155,9 @@ func TestPrepareSignupFlowCompletesRegistrationAndBuildsPersistence(t *testing.T
 	if metadata["has_session_token"] != true {
 		t.Fatalf("expected has_session_token=true, got %#v", metadata)
 	}
+	if metadata["device_id"] != "device-123" {
+		t.Fatalf("expected device_id metadata, got %#v", metadata)
+	}
 
 	inboxResult, ok := result.Result["inbox"].(map[string]any)
 	if !ok {
@@ -173,6 +182,9 @@ func TestPrepareSignupFlowCompletesRegistrationAndBuildsPersistence(t *testing.T
 	}
 	if mailProvider.waitedInbox.Email != "signup@example.com" || mailProvider.waitedInbox.Token != "mail-token-1" {
 		t.Fatalf("expected mail provider wait inbox, got %+v", mailProvider.waitedInbox)
+	}
+	if mailProvider.waitedInbox.OTPSentAt.IsZero() {
+		t.Fatalf("expected otp sent timestamp on waited inbox, got %+v", mailProvider.waitedInbox)
 	}
 	if mailProvider.waitedPattern == nil || !mailProvider.waitedPattern.MatchString("123456") {
 		t.Fatalf("expected default otp pattern, got %#v", mailProvider.waitedPattern)
@@ -211,6 +223,12 @@ func TestPrepareSignupFlowCompletesRegistrationAndBuildsPersistence(t *testing.T
 	}
 	if result.AccountPersistence.ExtraData["refresh_token_source"] != "create_account" {
 		t.Fatalf("expected create_account refresh token source in persistence extra data, got %#v", result.AccountPersistence.ExtraData)
+	}
+	if result.AccountPersistence.Cookies != "__Secure-next-auth.session-token=session-cookie; oai-did=device-123" {
+		t.Fatalf("expected persisted auth cookies, got %#v", result.AccountPersistence.Cookies)
+	}
+	if result.AccountPersistence.ExtraData["device_id"] != "device-123" {
+		t.Fatalf("expected device_id in persistence extra data, got %#v", result.AccountPersistence.ExtraData)
 	}
 
 	if len(logs) != 2 {
@@ -411,6 +429,10 @@ func TestPrepareSignupFlowDispatchesTokenCompletionForExistingAccountWithoutRefr
 			AccountID:   "account-123",
 			WorkspaceID: "workspace-123",
 		},
+		cookies: []*http.Cookie{
+			{Name: "__Secure-next-auth.session-token", Value: "session-cookie"},
+			{Name: "oai-did", Value: "device-123"},
+		},
 		continueErr: errors.New("unexpected continue create account call"),
 		sessionErr:  errors.New("unexpected read session call"),
 	}
@@ -527,6 +549,22 @@ func TestPrepareSignupFlowDispatchesTokenCompletionForExistingAccountWithoutRefr
 		got.WorkspaceID != "workspace-123" {
 		t.Fatalf("unexpected account persistence payload: %+v", got)
 	}
+	if result.AccountPersistence.Cookies != "__Secure-next-auth.session-token=session-cookie; oai-did=device-123" {
+		t.Fatalf("expected persisted auth cookies, got %#v", result.AccountPersistence.Cookies)
+	}
+	if result.AccountPersistence.ExtraData["device_id"] != "device-123" {
+		t.Fatalf("expected device_id in persistence extra data, got %#v", result.AccountPersistence.ExtraData)
+	}
+	runtimeState, err := ParseTokenCompletionRuntimeState(result.AccountPersistence.ExtraData, "signup@example.com")
+	if err != nil {
+		t.Fatalf("parse persisted token completion runtime: %v", err)
+	}
+	if runtimeState.CooldownUntil != nil {
+		t.Fatalf("expected completed token completion to clear cooldown, got %+v", runtimeState.CooldownUntil)
+	}
+	if len(runtimeState.Attempts) != 1 || runtimeState.Attempts[0].State != TokenCompletionStateCompleted {
+		t.Fatalf("expected completed runtime attempt, got %+v", runtimeState.Attempts)
+	}
 }
 
 func TestPrepareSignupFlowDispatchesPasswordTokenCompletionForUserExistsWithHistoricalPassword(t *testing.T) {
@@ -551,6 +589,10 @@ func TestPrepareSignupFlowDispatchesPasswordTokenCompletionForUserExistsWithHist
 			AccountID:    "account-created",
 			WorkspaceID:  "workspace-created",
 			RefreshToken: "",
+		},
+		cookies: []*http.Cookie{
+			{Name: "__Secure-next-auth.session-token", Value: "session-cookie"},
+			{Name: "oai-did", Value: "device-123"},
 		},
 		continueErr: errors.New("unexpected continue create account call"),
 		sessionErr:  errors.New("unexpected read session call"),
@@ -638,6 +680,9 @@ func TestPrepareSignupFlowDispatchesPasswordTokenCompletionForUserExistsWithHist
 	if metadata["refresh_token_source"] != "oauth_password" {
 		t.Fatalf("expected oauth_password refresh token source, got %#v", metadata)
 	}
+	if metadata["device_id"] != "device-123" {
+		t.Fatalf("expected device_id metadata, got %#v", metadata)
+	}
 
 	if result.AccountPersistence == nil {
 		t.Fatal("expected account persistence payload")
@@ -654,6 +699,16 @@ func TestPrepareSignupFlowDispatchesPasswordTokenCompletionForUserExistsWithHist
 	if result.AccountPersistence.ExtraData["token_completion_mode"] != "password" {
 		t.Fatalf("expected password token completion mode in persistence extra data, got %#v", result.AccountPersistence.ExtraData)
 	}
+	if result.AccountPersistence.Cookies != "__Secure-next-auth.session-token=session-cookie; oai-did=device-123" {
+		t.Fatalf("expected persisted auth cookies, got %#v", result.AccountPersistence.Cookies)
+	}
+	runtimeState, err := ParseTokenCompletionRuntimeState(result.AccountPersistence.ExtraData, "signup@example.com")
+	if err != nil {
+		t.Fatalf("parse persisted token completion runtime: %v", err)
+	}
+	if len(runtimeState.Attempts) != 1 || runtimeState.Attempts[0].State != TokenCompletionStateCompleted {
+		t.Fatalf("expected completed runtime attempt, got %+v", runtimeState.Attempts)
+	}
 }
 
 func TestPrepareSignupFlowContinuesWhenCreateAccountReturnsTypedUserExistsError(t *testing.T) {
@@ -669,26 +724,26 @@ func TestPrepareSignupFlowContinuesWhenCreateAccountReturnsTypedUserExistsError(
 			PageType:     "about_you",
 		},
 		createResult: auth.CreateAccountResult{
-			StatusCode:   409,
-			FinalURL:     "https://auth.example.com/user-exists",
-			FinalPath:    "/user-exists",
-			PageType:     "user_exists",
-			ContinueURL:  "https://auth.example.com/api/auth/callback/openai?code=user-exists",
-			CallbackURL:  "https://auth.example.com/api/auth/callback/openai?code=user-exists",
-			AccountID:    "account-created",
-			WorkspaceID:  "workspace-created",
+			StatusCode:  409,
+			FinalURL:    "https://auth.example.com/user-exists",
+			FinalPath:   "/user-exists",
+			PageType:    "user_exists",
+			ContinueURL: "https://auth.example.com/api/auth/callback/openai?code=user-exists",
+			CallbackURL: "https://auth.example.com/api/auth/callback/openai?code=user-exists",
+			AccountID:   "account-created",
+			WorkspaceID: "workspace-created",
 		},
 		createErr: &auth.CreateAccountUserExistsError{
 			StatusCode: 409,
 			Code:       "user_exists",
 			Message:    "Email already exists",
 			Result: auth.CreateAccountResult{
-				StatusCode:   409,
-				PageType:     "user_exists",
-				ContinueURL:  "https://auth.example.com/api/auth/callback/openai?code=user-exists",
-				CallbackURL:  "https://auth.example.com/api/auth/callback/openai?code=user-exists",
-				AccountID:    "account-created",
-				WorkspaceID:  "workspace-created",
+				StatusCode:  409,
+				PageType:    "user_exists",
+				ContinueURL: "https://auth.example.com/api/auth/callback/openai?code=user-exists",
+				CallbackURL: "https://auth.example.com/api/auth/callback/openai?code=user-exists",
+				AccountID:   "account-created",
+				WorkspaceID: "workspace-created",
 			},
 		},
 		continueErr: errors.New("unexpected continue create account call"),
@@ -753,6 +808,316 @@ func TestPrepareSignupFlowContinuesWhenCreateAccountReturnsTypedUserExistsError(
 	}
 	if got := result.Result["refresh_token"]; got != "refresh-from-login" {
 		t.Fatalf("expected token-completion refresh token, got %#v", got)
+	}
+}
+
+func TestPrepareSignupFlowPassesStoredCooldownIntoTokenCompletionCommand(t *testing.T) {
+	t.Parallel()
+
+	cooldownUntil := time.Date(2026, time.April, 5, 10, 7, 0, 0, time.UTC)
+	postSignupClient := &stubAuthPostSignupClient{
+		verifyResult: auth.PrepareSignupResult{
+			CSRFToken:    "csrf-123",
+			AuthorizeURL: "https://auth.example.com/authorize",
+			FinalURL:     "https://auth.example.com/about-you",
+			FinalPath:    "/about-you",
+			ContinueURL:  "https://auth.example.com/about-you",
+			PageType:     "about_you",
+		},
+		createResult: auth.CreateAccountResult{
+			StatusCode:  200,
+			FinalURL:    "https://auth.example.com/existing-account",
+			FinalPath:   "/existing-account",
+			PageType:    "existing_account_detected",
+			AccountID:   "account-123",
+			WorkspaceID: "workspace-123",
+		},
+		cookies: []*http.Cookie{
+			{Name: "__Secure-next-auth.session-token", Value: "session-cookie"},
+			{Name: "oai-did", Value: "device-123"},
+		},
+		continueErr: errors.New("unexpected continue create account call"),
+		sessionErr:  errors.New("unexpected read session call"),
+	}
+	tokenCompletion := &stubPrepareSignupFlowTokenCompletionCoordinator{
+		result: TokenCompletionResult{
+			State: TokenCompletionStateBlocked,
+			Email: "signup@example.com",
+			Error: &TokenCompletionError{
+				Kind:      TokenCompletionErrorKindCooldownActive,
+				Message:   "token completion cooldown active",
+				Retryable: true,
+			},
+			NextEligibleAt: &cooldownUntil,
+		},
+	}
+
+	flow := NewPrepareSignupFlow(PrepareSignupFlowOptions{
+		PreparerFactory: SignupPreparerFactoryFunc(func(context.Context, FlowRequest) (SignupPreparer, error) {
+			return SignupPreparerFunc(func(context.Context, string) (SignupPreparation, error) {
+				return SignupPreparation{
+					CSRFToken:    "csrf-123",
+					AuthorizeURL: "https://auth.example.com/authorize",
+					FinalURL:     "https://auth.example.com/email-verification",
+					FinalPath:    "/email-verification",
+					PageType:     "email_otp_verification",
+					Password:     "Password123!",
+				}, nil
+			}), nil
+		}),
+		PostSignupClientFactory: AuthPostSignupClientFactoryFunc(func(context.Context, FlowRequest) (AuthPostSignupClient, error) {
+			return postSignupClient, nil
+		}),
+		AccountProfileProvider: AccountProfileProviderFunc(func(context.Context, FlowRequest) (AccountProfile, error) {
+			return AccountProfile{FirstName: "Teammate", LastName: "Example", Birthdate: "1990-01-02"}, nil
+		}),
+		ClientIDResolver: ClientIDResolverFunc(func(context.Context, FlowRequest) (string, error) {
+			return "client-123", nil
+		}),
+		TokenCompletionCooldownProvider: TokenCompletionCooldownProviderFunc(func(context.Context, FlowRequest, string) (*time.Time, error) {
+			return &cooldownUntil, nil
+		}),
+		TokenCompletionCoordinator: tokenCompletion,
+	})
+
+	_, err := flow.Run(context.Background(), FlowRequest{
+		RunnerRequest: registration.RunnerRequest{
+			TaskUUID: "task-existing-account-cooldown",
+			StartRequest: registration.StartRequest{
+				EmailServiceType: "tempmail",
+			},
+		},
+		MailProvider: &stubPrepareSignupFlowMailProvider{code: "123456"},
+		Inbox:        mail.Inbox{Email: "signup@example.com", Token: "mail-token-1"},
+	})
+	var persistenceErr *tokenCompletionPersistenceError
+	if !errors.As(err, &persistenceErr) {
+		t.Fatalf("expected tokenCompletionPersistenceError, got %v", err)
+	}
+	if tokenCompletion.lastCommand.CooldownUntil == nil || !tokenCompletion.lastCommand.CooldownUntil.Equal(cooldownUntil) {
+		t.Fatalf("expected cooldown_until forwarded into token completion command, got %+v", tokenCompletion.lastCommand)
+	}
+	if persistenceErr.AccountPersistenceRequest() == nil {
+		t.Fatal("expected account persistence carrier for blocked token completion")
+	}
+	runtimeState, err := ParseTokenCompletionRuntimeState(persistenceErr.AccountPersistenceRequest().ExtraData, "signup@example.com")
+	if err != nil {
+		t.Fatalf("parse persisted token completion runtime: %v", err)
+	}
+	if runtimeState.CooldownUntil == nil || !runtimeState.CooldownUntil.Equal(cooldownUntil) {
+		t.Fatalf("expected blocked cooldown persisted into runtime, got %+v", runtimeState.CooldownUntil)
+	}
+	if len(runtimeState.Attempts) != 0 {
+		t.Fatalf("expected blocked result not to append attempts, got %+v", runtimeState.Attempts)
+	}
+}
+
+func TestPrepareSignupFlowPassesPersistedRuntimeIntoTokenCompletionCommand(t *testing.T) {
+	t.Parallel()
+
+	cooldownUntil := time.Date(2026, time.April, 5, 10, 7, 0, 0, time.UTC)
+	persistedAttempts := []TokenCompletionAttempt{
+		{
+			Email:       "signup@example.com",
+			State:       TokenCompletionStateFailed,
+			CompletedAt: time.Date(2026, time.April, 5, 9, 59, 0, 0, time.UTC),
+			Error: &TokenCompletionError{
+				Kind:      TokenCompletionErrorKindProviderUnavailable,
+				Message:   "temporary outage",
+				Retryable: true,
+			},
+		},
+	}
+	postSignupClient := &stubAuthPostSignupClient{
+		verifyResult: auth.PrepareSignupResult{
+			CSRFToken:    "csrf-123",
+			AuthorizeURL: "https://auth.example.com/authorize",
+			FinalURL:     "https://auth.example.com/about-you",
+			FinalPath:    "/about-you",
+			ContinueURL:  "https://auth.example.com/about-you",
+			PageType:     "about_you",
+		},
+		createResult: auth.CreateAccountResult{
+			StatusCode:  200,
+			FinalURL:    "https://auth.example.com/existing-account",
+			FinalPath:   "/existing-account",
+			PageType:    "existing_account_detected",
+			AccountID:   "account-123",
+			WorkspaceID: "workspace-123",
+		},
+		cookies: []*http.Cookie{
+			{Name: "__Secure-next-auth.session-token", Value: "session-cookie"},
+			{Name: "oai-did", Value: "device-123"},
+		},
+		continueErr: errors.New("unexpected continue create account call"),
+		sessionErr:  errors.New("unexpected read session call"),
+	}
+	tokenCompletion := &stubPrepareSignupFlowTokenCompletionCoordinator{
+		result: TokenCompletionResult{
+			State:    TokenCompletionStateCompleted,
+			Email:    "signup@example.com",
+			Strategy: TokenCompletionStrategyPasswordless,
+			Provider: TokenCompletionProviderResult{
+				AccessToken:  "access-from-login",
+				RefreshToken: "refresh-from-login",
+				SessionToken: "session-from-login",
+				AccountID:    "account-123",
+				WorkspaceID:  "workspace-123",
+			},
+		},
+	}
+
+	flow := NewPrepareSignupFlow(PrepareSignupFlowOptions{
+		PreparerFactory: SignupPreparerFactoryFunc(func(context.Context, FlowRequest) (SignupPreparer, error) {
+			return SignupPreparerFunc(func(context.Context, string) (SignupPreparation, error) {
+				return SignupPreparation{
+					CSRFToken:    "csrf-123",
+					AuthorizeURL: "https://auth.example.com/authorize",
+					FinalURL:     "https://auth.example.com/email-verification",
+					FinalPath:    "/email-verification",
+					PageType:     "email_otp_verification",
+					Password:     "Password123!",
+				}, nil
+			}), nil
+		}),
+		PostSignupClientFactory: AuthPostSignupClientFactoryFunc(func(context.Context, FlowRequest) (AuthPostSignupClient, error) {
+			return postSignupClient, nil
+		}),
+		AccountProfileProvider: AccountProfileProviderFunc(func(context.Context, FlowRequest) (AccountProfile, error) {
+			return AccountProfile{FirstName: "Teammate", LastName: "Example", Birthdate: "1990-01-02"}, nil
+		}),
+		ClientIDResolver: ClientIDResolverFunc(func(context.Context, FlowRequest) (string, error) {
+			return "client-123", nil
+		}),
+		TokenCompletionCooldownProvider: TokenCompletionCooldownProviderFunc(func(context.Context, FlowRequest, string) (*time.Time, error) {
+			return &cooldownUntil, nil
+		}),
+		TokenCompletionAttemptProvider: TokenCompletionAttemptProviderFunc(func(context.Context, FlowRequest, string) ([]TokenCompletionAttempt, error) {
+			return persistedAttempts, nil
+		}),
+		TokenCompletionCoordinator: tokenCompletion,
+	})
+
+	_, err := flow.Run(context.Background(), FlowRequest{
+		RunnerRequest: registration.RunnerRequest{
+			TaskUUID: "task-existing-account-runtime",
+			StartRequest: registration.StartRequest{
+				EmailServiceType: "tempmail",
+			},
+		},
+		MailProvider: &stubPrepareSignupFlowMailProvider{code: "123456"},
+		Inbox:        mail.Inbox{Email: "signup@example.com", Token: "mail-token-1"},
+	})
+	if err != nil {
+		t.Fatalf("run flow: %v", err)
+	}
+	if len(tokenCompletion.lastCommand.Attempts) != 1 {
+		t.Fatalf("expected persisted attempts forwarded to token completion command, got %+v", tokenCompletion.lastCommand)
+	}
+	if tokenCompletion.lastCommand.Attempts[0].State != TokenCompletionStateFailed {
+		t.Fatalf("expected failed attempt forwarded to token completion command, got %+v", tokenCompletion.lastCommand.Attempts)
+	}
+	if tokenCompletion.lastCommand.CooldownUntil == nil || !tokenCompletion.lastCommand.CooldownUntil.Equal(cooldownUntil) {
+		t.Fatalf("expected persisted cooldown forwarded to token completion command, got %+v", tokenCompletion.lastCommand)
+	}
+}
+
+func TestPrepareSignupFlowPersistsRuntimeWhenTokenCompletionFails(t *testing.T) {
+	t.Parallel()
+
+	postSignupClient := &stubAuthPostSignupClient{
+		verifyResult: auth.PrepareSignupResult{
+			CSRFToken:    "csrf-123",
+			AuthorizeURL: "https://auth.example.com/authorize",
+			FinalURL:     "https://auth.example.com/about-you",
+			FinalPath:    "/about-you",
+			ContinueURL:  "https://auth.example.com/about-you",
+			PageType:     "about_you",
+		},
+		createResult: auth.CreateAccountResult{
+			StatusCode:  200,
+			FinalURL:    "https://auth.example.com/existing-account",
+			FinalPath:   "/existing-account",
+			PageType:    "existing_account_detected",
+			AccountID:   "account-123",
+			WorkspaceID: "workspace-123",
+		},
+		cookies: []*http.Cookie{
+			{Name: "__Secure-next-auth.session-token", Value: "session-cookie"},
+			{Name: "oai-did", Value: "device-123"},
+		},
+		continueErr: errors.New("unexpected continue create account call"),
+		sessionErr:  errors.New("unexpected read session call"),
+	}
+	tokenCompletion := &stubPrepareSignupFlowTokenCompletionCoordinator{
+		result: TokenCompletionResult{
+			State: TokenCompletionStateFailed,
+			Email: "signup@example.com",
+			Error: &TokenCompletionError{
+				Kind:      TokenCompletionErrorKindProviderUnavailable,
+				Message:   "temporary outage",
+				Retryable: true,
+			},
+		},
+	}
+
+	flow := NewPrepareSignupFlow(PrepareSignupFlowOptions{
+		PreparerFactory: SignupPreparerFactoryFunc(func(context.Context, FlowRequest) (SignupPreparer, error) {
+			return SignupPreparerFunc(func(context.Context, string) (SignupPreparation, error) {
+				return SignupPreparation{
+					CSRFToken:    "csrf-123",
+					AuthorizeURL: "https://auth.example.com/authorize",
+					FinalURL:     "https://auth.example.com/email-verification",
+					FinalPath:    "/email-verification",
+					PageType:     "email_otp_verification",
+					Password:     "Password123!",
+				}, nil
+			}), nil
+		}),
+		PostSignupClientFactory: AuthPostSignupClientFactoryFunc(func(context.Context, FlowRequest) (AuthPostSignupClient, error) {
+			return postSignupClient, nil
+		}),
+		AccountProfileProvider: AccountProfileProviderFunc(func(context.Context, FlowRequest) (AccountProfile, error) {
+			return AccountProfile{FirstName: "Teammate", LastName: "Example", Birthdate: "1990-01-02"}, nil
+		}),
+		ClientIDResolver: ClientIDResolverFunc(func(context.Context, FlowRequest) (string, error) {
+			return "client-123", nil
+		}),
+		TokenCompletionCoordinator: tokenCompletion,
+	})
+
+	_, err := flow.Run(context.Background(), FlowRequest{
+		RunnerRequest: registration.RunnerRequest{
+			TaskUUID: "task-existing-account-failed-runtime",
+			StartRequest: registration.StartRequest{
+				EmailServiceType: "tempmail",
+			},
+		},
+		MailProvider: &stubPrepareSignupFlowMailProvider{code: "123456"},
+		Inbox:        mail.Inbox{Email: "signup@example.com", Token: "mail-token-1"},
+	})
+	var persistenceErr *tokenCompletionPersistenceError
+	if !errors.As(err, &persistenceErr) {
+		t.Fatalf("expected tokenCompletionPersistenceError, got %v", err)
+	}
+	if persistenceErr.AccountPersistenceRequest() == nil {
+		t.Fatal("expected account persistence carrier for failed token completion")
+	}
+	if persistenceErr.AccountPersistenceRequest().Status != "token_pending" {
+		t.Fatalf("expected token_pending status for retryable failed token completion, got %+v", persistenceErr.AccountPersistenceRequest())
+	}
+	if persistenceErr.AccountPersistenceRequest().Cookies != "__Secure-next-auth.session-token=session-cookie; oai-did=device-123" {
+		t.Fatalf("expected persisted auth cookies on failure, got %#v", persistenceErr.AccountPersistenceRequest().Cookies)
+	}
+	if persistenceErr.AccountPersistenceRequest().ExtraData["device_id"] != "device-123" {
+		t.Fatalf("expected device_id in failure persistence extra data, got %#v", persistenceErr.AccountPersistenceRequest().ExtraData)
+	}
+	runtimeState, err := ParseTokenCompletionRuntimeState(persistenceErr.AccountPersistenceRequest().ExtraData, "signup@example.com")
+	if err != nil {
+		t.Fatalf("parse persisted token completion runtime: %v", err)
+	}
+	if len(runtimeState.Attempts) != 1 || runtimeState.Attempts[0].State != TokenCompletionStateFailed {
+		t.Fatalf("expected failed attempt persisted into runtime, got %+v", runtimeState.Attempts)
 	}
 }
 
@@ -882,6 +1247,7 @@ type stubAuthPostSignupClient struct {
 	sessionResult    auth.SessionResult
 	sessionErr       error
 	readSessionCalls int
+	cookies          []*http.Cookie
 }
 
 func (s *stubAuthPostSignupClient) VerifyEmailOTP(_ context.Context, prepared auth.PrepareSignupResult, code string) (auth.PrepareSignupResult, error) {
@@ -918,6 +1284,10 @@ func (s *stubAuthPostSignupClient) ReadSession(context.Context) (auth.SessionRes
 		return auth.SessionResult{}, s.sessionErr
 	}
 	return s.sessionResult, nil
+}
+
+func (s *stubAuthPostSignupClient) Cookies() []*http.Cookie {
+	return s.cookies
 }
 
 type stubPrepareSignupFlowTokenCompletionCoordinator struct {

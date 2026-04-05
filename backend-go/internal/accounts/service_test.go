@@ -398,6 +398,10 @@ func (f *fakeRepository) ListAccountsForSelectable(context.Context, AccountOverv
 	return nil, nil
 }
 
+func (f *fakeRepository) ListAccountsBySelection(context.Context, AccountSelectionRequest) ([]Account, error) {
+	return append([]Account(nil), f.listedAccounts...), nil
+}
+
 func (f *fakeRepository) UpsertAccount(_ context.Context, account Account) (Account, error) {
 	f.savedAccount = account
 	if f.upsertErr != nil {
@@ -407,6 +411,10 @@ func (f *fakeRepository) UpsertAccount(_ context.Context, account Account) (Acco
 		return f.upsertedAccount, nil
 	}
 	return account, nil
+}
+
+func (f *fakeRepository) DeleteAccount(context.Context, int) error {
+	return nil
 }
 
 func boolPtr(value bool) *bool {

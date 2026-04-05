@@ -133,6 +133,45 @@ func (r *PostgresRepository) ListAccountsForSelectable(ctx context.Context, req 
 	})
 }
 
+func (r *PostgresRepository) ListAccountsBySelection(ctx context.Context, req AccountSelectionRequest) ([]Account, error) {
+	normalized := req.Normalized()
+	if normalized.SelectAll {
+		return r.listAccountsByFilters(ctx, accountFilters{
+			Status:            normalized.StatusFilter,
+			EmailService:      normalized.EmailServiceFilter,
+			RefreshTokenState: normalized.RefreshTokenStateFilter,
+			Search:            normalized.SearchFilter,
+		})
+	}
+	if len(normalized.IDs) == 0 {
+		return []Account{}, nil
+	}
+
+	rows, err := r.db.Query(ctx, fmt.Sprintf(`
+		SELECT %s
+		FROM accounts
+		WHERE id = ANY($1)
+		ORDER BY COALESCE(created_at, registered_at, updated_at) DESC, id DESC
+	`, accountSelectColumns), toInt32Slice(normalized.IDs))
+	if err != nil {
+		return nil, fmt.Errorf("query accounts by ids: %w", err)
+	}
+	defer rows.Close()
+
+	accounts := make([]Account, 0, len(normalized.IDs))
+	for rows.Next() {
+		account, err := scanAccount(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan selected account: %w", err)
+		}
+		accounts = append(accounts, account)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate selected accounts: %w", err)
+	}
+	return accounts, nil
+}
+
 func (r *PostgresRepository) GetAccountByID(ctx context.Context, accountID int) (Account, error) {
 	account, err := scanAccount(r.db.QueryRow(ctx, fmt.Sprintf(`
 		SELECT %s
@@ -146,6 +185,20 @@ func (r *PostgresRepository) GetAccountByID(ctx context.Context, accountID int) 
 		return Account{}, fmt.Errorf("get account by id: %w", err)
 	}
 	return account, nil
+}
+
+func (r *PostgresRepository) DeleteAccount(ctx context.Context, accountID int) error {
+	if _, scanErr := scanDeleteResult(r.db.QueryRow(ctx, `
+		DELETE FROM accounts
+		WHERE id = $1
+		RETURNING id
+	`, accountID)); scanErr != nil {
+		if errors.Is(scanErr, pgx.ErrNoRows) {
+			return ErrAccountNotFound
+		}
+		return fmt.Errorf("delete account: %w", scanErr)
+	}
+	return nil
 }
 
 func (r *PostgresRepository) GetCurrentAccountID(ctx context.Context) (*int, error) {
@@ -664,6 +717,22 @@ func buildAccountFiltersSQL(filters accountFilters, startIndex int) (string, []a
 		return "", args
 	}
 	return "WHERE " + strings.Join(conditions, " AND "), args
+}
+
+func toInt32Slice(ids []int) []int32 {
+	values := make([]int32, 0, len(ids))
+	for _, id := range ids {
+		values = append(values, int32(id))
+	}
+	return values
+}
+
+func scanDeleteResult(scanner accountScanner) (int, error) {
+	var id int
+	if err := scanner.Scan(&id); err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 type accountScanner interface {

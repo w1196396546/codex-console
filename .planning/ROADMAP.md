@@ -47,12 +47,13 @@ Plans:
   1. Registration start, batch, and Outlook batch flows complete through Go-owned execution without requiring the Python runner bridge on the critical path.
   2. Existing clients can inspect, pause, resume, cancel, and observe task and batch progress through Go with compatible status and log behavior.
   3. Account persistence and CPA/Sub2API/TM upload side effects remain compatible with current workflow semantics.
-**Plans**: 3 plans
+**Plans**: 4 plans
 
 Plans:
 - [ ] 02-01: Close native registration preparation and worker critical-path parity
-- [ ] 02-02: Complete task, batch, Outlook, and websocket runtime-semantics compatibility
+- [ ] 02-02: Complete task, batch, Outlook, and polling runtime-semantics compatibility
 - [ ] 02-03: Finalize Go-owned account persistence and auto-upload side effects
+- [ ] 02-04: Align task and batch websocket runtime semantics
 
 ### Phase 3: Management APIs
 **Goal**: Migrate the current account, settings, email-service, upload-config, proxy, and log management surfaces to Go while preserving the current UI contract.

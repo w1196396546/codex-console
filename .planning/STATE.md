@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 04-01-PLAN.md
-last_updated: "2026-04-05T15:52:51.841Z"
+stopped_at: Completed 04-02-PLAN.md
+last_updated: "2026-04-05T16:05:12.670Z"
 last_activity: 2026-04-05
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 18
-  completed_plans: 16
-  percent: 89
+  completed_plans: 17
+  percent: 94
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-05)
 ## Current Position
 
 Phase: 04 (Payment and Team Domains) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-04-05
 
@@ -66,6 +66,7 @@ Progress: [███████░░░] 75%
 | Phase 03-management-apis P08 | 496 | 2 tasks | 4 files |
 | Phase 03-management-apis P07 | 297 | 2 tasks | 3 files |
 | Phase 04 P01 | 1192 | 2 tasks | 10 files |
+| Phase 04 P02 | 13min | 2 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -110,6 +111,8 @@ Recent decisions affecting current work:
 - [Phase 04]: Payment slice stays a bind_card_tasks-backed state machine and does not move onto jobs/websocket semantics in 04-01.
 - [Phase 04]: Payment session_token, cookies, and subscription writeback continue to use the shared accounts truth source.
 - [Phase 04]: High-risk payment operations are isolated behind explicit adapter seams rather than Python route fallbacks in handlers.
+- [Phase 04]: 将 shared jobs 的 JobID 直接作为 team task_uuid，避免为 Team 引入第二套 websocket 通道或任务标识。
+- [Phase 04]: 在不覆盖当前 workspace 已占用 migration 序号的前提下，将计划中的 team migration 实际落为 0007_init_team_domains.sql。
 
 ### Pending Todos
 
@@ -124,6 +127,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-05T15:52:51.839Z
-Stopped at: Completed 04-01-PLAN.md
+Last session: 2026-04-05T16:04:59.110Z
+Stopped at: Completed 04-02-PLAN.md
 Resume file: None

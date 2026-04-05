@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: planning
-stopped_at: Phase 2 complete; Phase 3 is ready for planning
-last_updated: "2026-04-05T11:11:13Z"
+status: executing
+stopped_at: Completed 03-05-PLAN.md
+last_updated: "2026-04-05T13:25:59.121Z"
 last_activity: 2026-04-05
 progress:
   total_phases: 5
   completed_phases: 2
-  total_plans: 15
-  completed_plans: 7
-  percent: 47
+  total_plans: 13
+  completed_plans: 8
+  percent: 62
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-05)
 
 **Core value:** The Go backend can take over the current Codex Console backend responsibilities without forcing existing clients, persisted data, or critical registration, payment, and team workflows to change behavior.
-**Current focus:** Management APIs
+**Current focus:** Phase 03 — Management APIs
 
 ## Current Position
 
-Phase: 3 of 5 (Management APIs)
-Plan: 0 of 3 in current phase
-Status: Ready to plan
-Last activity: 2026-04-05 - Phase 2 completed; Phase 3 ready for planning
+Phase: 03 (Management APIs) — EXECUTING
+Plan: 2 of 6
+Status: Ready to execute
+Last activity: 2026-04-05
 
 Progress: [█████░░░░░] 47%
 
@@ -56,6 +56,7 @@ Progress: [█████░░░░░] 47%
 | Phase 02 P02 | 15m | 1 tasks | 13 files |
 | Phase 02 P03 | 16m | 2 tasks | 8 files |
 | Phase 02 P04 | 6min | 2 tasks | 5 files |
+| Phase 03-management-apis P05 | 907 | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -78,6 +79,8 @@ Recent decisions affecting current work:
 - [Phase 02]: Task websocket 在控制回包上投影 `cancelling` 中间态和中文 message，但 jobs 仍保持持久真值源。
 - [Phase 02]: Batch websocket 状态帧补齐 `skipped/current_index/log_*` 和 `timestamp`，让重连与 polling 回退共享同一游标语义。
 - [Phase 02]: 当 HTTP 先消费掉 batch service 的一次性 `cancelling` 窗口时，由 websocket 投影层补发 `cancelling`，避免 Outlook 批量直接跳到 `cancelled`。
+- [Phase 03-management-apis]: 日志管理独立落到 app_logs slice，明确不复用 job_logs。
+- [Phase 03-management-apis]: 列表响应只暴露 logs 页面当前消费字段，错误保持 JSON detail 语义。
 
 ### Pending Todos
 
@@ -91,6 +94,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-05T11:11:13Z
-Stopped at: Phase 2 completed; ready to plan Phase 3
+Last session: 2026-04-05T13:25:59.119Z
+Stopped at: Completed 03-05-PLAN.md
 Resume file: None

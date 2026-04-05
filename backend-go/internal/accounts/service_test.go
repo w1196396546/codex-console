@@ -287,18 +287,66 @@ func TestServiceUpsertAccountMergesTokenTimingAndSubscriptionFields(t *testing.T
 	}
 }
 
+func TestServiceListAccountsNormalizesCompatibilityFiltersAndEnvelope(t *testing.T) {
+	repo := &fakeRepository{
+		listedAccounts: []Account{
+			{
+				ID:               41,
+				Email:            "alpha@example.com",
+				EmailService:     "outlook",
+				Status:           "active",
+				SubscriptionType: "team",
+			},
+		},
+		listedTotal: 1,
+	}
+	service := NewService(repo)
+
+	resp, err := service.ListAccounts(context.Background(), ListAccountsRequest{
+		Page:              0,
+		PageSize:          999,
+		Status:            " invalid ",
+		EmailService:      " outlook ",
+		RefreshTokenState: " has ",
+		Search:            " alpha ",
+	})
+	if err != nil {
+		t.Fatalf("unexpected list accounts error: %v", err)
+	}
+
+	if repo.listReq.Page != DefaultPage {
+		t.Fatalf("expected normalized page=%d, got %+v", DefaultPage, repo.listReq)
+	}
+	if repo.listReq.PageSize != MaxPageSize {
+		t.Fatalf("expected normalized page_size=%d, got %+v", MaxPageSize, repo.listReq)
+	}
+	if repo.listReq.Status != "invalid" || repo.listReq.EmailService != "outlook" || repo.listReq.RefreshTokenState != "has" || repo.listReq.Search != "alpha" {
+		t.Fatalf("expected normalized compatibility filters, got %+v", repo.listReq)
+	}
+	if resp.Total != 1 || resp.Page != DefaultPage || resp.PageSize != MaxPageSize {
+		t.Fatalf("unexpected list response envelope: %+v", resp)
+	}
+	if len(resp.Accounts) != 1 || resp.Accounts[0].EmailService != "outlook" || resp.Accounts[0].SubscriptionType != "team" {
+		t.Fatalf("unexpected list response accounts: %+v", resp.Accounts)
+	}
+}
+
 type fakeRepository struct {
 	foundAccount    Account
 	found           bool
 	findErr         error
+	listReq         ListAccountsRequest
+	listedAccounts  []Account
+	listedTotal     int
 	upsertedAccount Account
 	upsertErr       error
 	lookedUpEmail   string
 	savedAccount    Account
 }
 
-func (f *fakeRepository) ListAccounts(context.Context, ListAccountsRequest) ([]Account, int, error) {
-	return nil, 0, nil
+func (f *fakeRepository) ListAccounts(_ context.Context, req ListAccountsRequest) ([]Account, int, error) {
+	f.listReq = req
+	return append([]Account(nil), f.listedAccounts...), f.listedTotal, nil
 }
 
 func (f *fakeRepository) GetAccountByEmail(_ context.Context, email string) (Account, bool, error) {

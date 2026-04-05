@@ -20,16 +20,42 @@ type Repository interface {
 	SetProxyDefault(ctx context.Context, proxyID int) (ProxyRecord, bool, error)
 }
 
+type DatabaseAdmin interface {
+	GetInfo(ctx context.Context) (DatabaseInfoResponse, error)
+	Backup(ctx context.Context) (DatabaseBackupResponse, error)
+	Import(ctx context.Context, req DatabaseImportRequest) (DatabaseImportResponse, error)
+	Cleanup(ctx context.Context, req DatabaseCleanupRequest) (DatabaseCleanupResponse, error)
+}
+
+type DynamicProxyTester interface {
+	TestDynamicProxy(ctx context.Context, req UpdateDynamicProxySettingsRequest) (DynamicProxyTestResponse, error)
+}
+
+type ProxyTester interface {
+	TestProxy(ctx context.Context, proxy ProxyRecord) (ProxyTestResult, error)
+}
+
 type ServiceDependencies struct {
-	Repository Repository
+	Repository         Repository
+	DatabaseAdmin      DatabaseAdmin
+	DynamicProxyTester DynamicProxyTester
+	ProxyTester        ProxyTester
 }
 
 type Service struct {
-	repository Repository
+	repository         Repository
+	databaseAdmin      DatabaseAdmin
+	dynamicProxyTester DynamicProxyTester
+	proxyTester        ProxyTester
 }
 
 func NewService(deps ServiceDependencies) *Service {
-	return &Service{repository: deps.Repository}
+	return &Service{
+		repository:         deps.Repository,
+		databaseAdmin:      deps.DatabaseAdmin,
+		dynamicProxyTester: deps.DynamicProxyTester,
+		proxyTester:        deps.ProxyTester,
+	}
 }
 
 func (s *Service) GetAllSettings(ctx context.Context) (AllSettingsResponse, error) {
@@ -414,6 +440,123 @@ func (s *Service) SetProxyDefault(ctx context.Context, proxyID int) (ProxyPayloa
 	}
 
 	return toProxyPayload(record, false), nil
+}
+
+func (s *Service) TestDynamicProxy(ctx context.Context, req UpdateDynamicProxySettingsRequest) (DynamicProxyTestResponse, error) {
+	if s == nil || s.dynamicProxyTester == nil {
+		return DynamicProxyTestResponse{}, ErrDynamicProxyTesterMissing
+	}
+
+	resolved := req
+	resolved.APIKeyHeader = defaultIfBlank(resolved.APIKeyHeader, settingDefinitions["proxy.dynamic_api_key_header"].Default)
+	if resolved.APIKey == nil && s.repository != nil {
+		settings, err := s.repository.GetSettings(ctx, []string{"proxy.dynamic_api_key"})
+		if err != nil {
+			return DynamicProxyTestResponse{}, fmt.Errorf("load saved dynamic proxy api key: %w", err)
+		}
+		if value := settingString(settings, "proxy.dynamic_api_key"); strings.TrimSpace(value) != "" {
+			resolved.APIKey = &value
+		}
+	}
+
+	return s.dynamicProxyTester.TestDynamicProxy(ctx, resolved)
+}
+
+func (s *Service) TestProxy(ctx context.Context, proxyID int) (ProxyTestResponse, error) {
+	if s == nil || s.proxyTester == nil {
+		return ProxyTestResponse{}, ErrProxyTesterMissing
+	}
+
+	record, found, err := s.repository.GetProxyByID(ctx, proxyID)
+	if err != nil {
+		return ProxyTestResponse{}, fmt.Errorf("load proxy for test: %w", err)
+	}
+	if !found {
+		return ProxyTestResponse{}, ErrProxyNotFound
+	}
+
+	result, err := s.proxyTester.TestProxy(ctx, record)
+	if err != nil {
+		return ProxyTestResponse{}, err
+	}
+
+	return ProxyTestResponse{
+		Success:      result.Success,
+		IP:           result.IP,
+		ResponseTime: result.ResponseTime,
+		Message:      result.Message,
+	}, nil
+}
+
+func (s *Service) TestAllProxies(ctx context.Context) (ProxyTestAllResponse, error) {
+	if s == nil || s.proxyTester == nil {
+		return ProxyTestAllResponse{}, ErrProxyTesterMissing
+	}
+
+	enabled := true
+	proxies, err := s.repository.ListProxies(ctx, &enabled)
+	if err != nil {
+		return ProxyTestAllResponse{}, fmt.Errorf("list enabled proxies: %w", err)
+	}
+
+	results := make([]ProxyTestResult, 0, len(proxies))
+	successCount := 0
+	for _, proxy := range proxies {
+		result, testErr := s.proxyTester.TestProxy(ctx, proxy)
+		if testErr != nil {
+			result = ProxyTestResult{
+				ID:      proxy.ID,
+				Name:    proxy.Name,
+				Success: false,
+				Message: testErr.Error(),
+			}
+		}
+		if result.ID == 0 {
+			result.ID = proxy.ID
+		}
+		if result.Name == "" {
+			result.Name = proxy.Name
+		}
+		if result.Success {
+			successCount++
+		}
+		results = append(results, result)
+	}
+
+	return ProxyTestAllResponse{
+		Total:   len(proxies),
+		Success: successCount,
+		Failed:  len(proxies) - successCount,
+		Results: results,
+	}, nil
+}
+
+func (s *Service) GetDatabaseInfo(ctx context.Context) (DatabaseInfoResponse, error) {
+	if s == nil || s.databaseAdmin == nil {
+		return DatabaseInfoResponse{}, ErrDatabaseAdminNotConfigured
+	}
+	return s.databaseAdmin.GetInfo(ctx)
+}
+
+func (s *Service) BackupDatabase(ctx context.Context) (DatabaseBackupResponse, error) {
+	if s == nil || s.databaseAdmin == nil {
+		return DatabaseBackupResponse{}, ErrDatabaseAdminNotConfigured
+	}
+	return s.databaseAdmin.Backup(ctx)
+}
+
+func (s *Service) ImportDatabase(ctx context.Context, req DatabaseImportRequest) (DatabaseImportResponse, error) {
+	if s == nil || s.databaseAdmin == nil {
+		return DatabaseImportResponse{}, ErrDatabaseAdminNotConfigured
+	}
+	return s.databaseAdmin.Import(ctx, req)
+}
+
+func (s *Service) CleanupDatabase(ctx context.Context, req DatabaseCleanupRequest) (DatabaseCleanupResponse, error) {
+	if s == nil || s.databaseAdmin == nil {
+		return DatabaseCleanupResponse{}, ErrDatabaseAdminNotConfigured
+	}
+	return s.databaseAdmin.Cleanup(ctx, req)
 }
 
 func (s *Service) loadSettings(ctx context.Context, keys []string) (map[string]SettingRecord, error) {

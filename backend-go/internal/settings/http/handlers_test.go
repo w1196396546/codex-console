@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	settingspkg "github.com/dou-jiang/codex-console/backend-go/internal/settings"
+	settingshttp "github.com/dou-jiang/codex-console/backend-go/internal/settings/http"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -96,7 +97,7 @@ func TestSettingsHandlerCompatibilityRoutes(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	NewHandler(service).RegisterRoutes(router)
+	settingshttp.NewHandler(service).RegisterRoutes(router)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
@@ -167,7 +168,7 @@ func TestProxyHandlerCompatibilityRoutes(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	NewHandler(service).RegisterRoutes(router)
+	settingshttp.NewHandler(service).RegisterRoutes(router)
 
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/settings/proxies", nil))
@@ -240,7 +241,7 @@ func TestDatabaseHandlerCompatibilityRoutes(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	NewHandler(service).RegisterRoutes(router)
+	settingshttp.NewHandler(service).RegisterRoutes(router)
 
 	infoRec := httptest.NewRecorder()
 	router.ServeHTTP(infoRec, httptest.NewRequest(http.MethodGet, "/api/settings/database", nil))

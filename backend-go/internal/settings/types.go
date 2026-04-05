@@ -7,6 +7,9 @@ import (
 
 var (
 	ErrRepositoryNotConfigured    = errors.New("settings repository is not configured")
+	ErrDatabaseAdminNotConfigured = errors.New("settings database admin is not configured")
+	ErrDynamicProxyTesterMissing  = errors.New("dynamic proxy tester is not configured")
+	ErrProxyTesterMissing         = errors.New("proxy tester is not configured")
 	ErrProxyNotFound              = errors.New("proxy not found")
 	ErrInvalidProxyName           = errors.New("proxy name is required")
 	ErrInvalidProxyHost           = errors.New("proxy host is required")
@@ -142,6 +145,74 @@ type AllSettingsResponse struct {
 type MutationResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
+}
+
+type DynamicProxyTestResponse struct {
+	Success      bool   `json:"success"`
+	ProxyURL     string `json:"proxy_url,omitempty"`
+	IP           string `json:"ip,omitempty"`
+	ResponseTime int    `json:"response_time,omitempty"`
+	Message      string `json:"message"`
+}
+
+type ProxyTestResult struct {
+	ID           int    `json:"id"`
+	Name         string `json:"name"`
+	Success      bool   `json:"success"`
+	IP           string `json:"ip,omitempty"`
+	ResponseTime int    `json:"response_time,omitempty"`
+	Message      string `json:"message,omitempty"`
+}
+
+type ProxyTestResponse struct {
+	Success      bool   `json:"success"`
+	IP           string `json:"ip,omitempty"`
+	ResponseTime int    `json:"response_time,omitempty"`
+	Message      string `json:"message"`
+}
+
+type ProxyTestAllResponse struct {
+	Total   int               `json:"total"`
+	Success int               `json:"success"`
+	Failed  int               `json:"failed"`
+	Results []ProxyTestResult `json:"results"`
+}
+
+type DatabaseInfoResponse struct {
+	DatabaseURL        string  `json:"database_url"`
+	DatabaseSizeBytes  int64   `json:"database_size_bytes"`
+	DatabaseSizeMB     float64 `json:"database_size_mb"`
+	AccountsCount      int     `json:"accounts_count"`
+	EmailServicesCount int     `json:"email_services_count"`
+	TasksCount         int     `json:"tasks_count"`
+}
+
+type DatabaseBackupResponse struct {
+	Success    bool   `json:"success"`
+	Message    string `json:"message"`
+	BackupPath string `json:"backup_path"`
+}
+
+type DatabaseImportRequest struct {
+	Filename string
+	Content  []byte
+}
+
+type DatabaseImportResponse struct {
+	Success    bool   `json:"success"`
+	Message    string `json:"message"`
+	BackupPath string `json:"backup_path"`
+}
+
+type DatabaseCleanupRequest struct {
+	Days       int
+	KeepFailed bool
+}
+
+type DatabaseCleanupResponse struct {
+	Success      bool   `json:"success"`
+	Message      string `json:"message"`
+	DeletedCount int    `json:"deleted_count"`
 }
 
 type CreateProxyRequest struct {

@@ -3,10 +3,12 @@ package emailservices
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/registration"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -34,14 +36,13 @@ func (r *PostgresRepository) ListServices(ctx context.Context, req ListServicesR
 		return []EmailServiceRecord{}, nil
 	}
 
-	query := `
+	rows, err := r.pool.Query(ctx, `
 		SELECT id, service_type, name, config::text, enabled, priority, last_used, created_at, updated_at
 		FROM email_services
 		WHERE ($1 = '' OR service_type = $1)
 		  AND ($2 = FALSE OR enabled = TRUE)
 		ORDER BY priority ASC, id ASC
-	`
-	rows, err := r.pool.Query(ctx, query, req.ServiceType, req.EnabledOnly)
+	`, req.ServiceType, req.EnabledOnly)
 	if err != nil {
 		return nil, fmt.Errorf("query email services: %w", err)
 	}
@@ -49,36 +50,10 @@ func (r *PostgresRepository) ListServices(ctx context.Context, req ListServicesR
 
 	services := make([]EmailServiceRecord, 0)
 	for rows.Next() {
-		var (
-			record    EmailServiceRecord
-			configRaw string
-			lastUsed  pgtype.Timestamptz
-			createdAt pgtype.Timestamptz
-			updatedAt pgtype.Timestamptz
-		)
-		if err := rows.Scan(
-			&record.ID,
-			&record.ServiceType,
-			&record.Name,
-			&configRaw,
-			&record.Enabled,
-			&record.Priority,
-			&lastUsed,
-			&createdAt,
-			&updatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan email service: %w", err)
+		record, err := scanEmailService(rows)
+		if err != nil {
+			return nil, err
 		}
-
-		record.Config = make(map[string]any)
-		if configRaw != "" {
-			if err := json.Unmarshal([]byte(configRaw), &record.Config); err != nil {
-				return nil, fmt.Errorf("decode email service config for %s(%d): %w", record.ServiceType, record.ID, err)
-			}
-		}
-		record.LastUsed = timestampPtr(lastUsed)
-		record.CreatedAt = timestampPtr(createdAt)
-		record.UpdatedAt = timestampPtr(updatedAt)
 		services = append(services, record)
 	}
 	if err := rows.Err(); err != nil {
@@ -98,41 +73,108 @@ func (r *PostgresRepository) GetService(ctx context.Context, serviceID int) (Ema
 		FROM email_services
 		WHERE id = $1
 	`, serviceID)
-
-	var (
-		record    EmailServiceRecord
-		configRaw string
-		lastUsed  pgtype.Timestamptz
-		createdAt pgtype.Timestamptz
-		updatedAt pgtype.Timestamptz
-	)
-	if err := row.Scan(
-		&record.ID,
-		&record.ServiceType,
-		&record.Name,
-		&configRaw,
-		&record.Enabled,
-		&record.Priority,
-		&lastUsed,
-		&createdAt,
-		&updatedAt,
-	); err != nil {
-		if err.Error() == "no rows in result set" {
+	record, err := scanEmailService(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return EmailServiceRecord{}, false, nil
 		}
-		return EmailServiceRecord{}, false, fmt.Errorf("query email service %d: %w", serviceID, err)
+		return EmailServiceRecord{}, false, err
+	}
+	return record, true, nil
+}
+
+func (r *PostgresRepository) FindServiceByName(ctx context.Context, name string) (EmailServiceRecord, bool, error) {
+	if r == nil || r.pool == nil {
+		return EmailServiceRecord{}, false, nil
 	}
 
-	record.Config = make(map[string]any)
-	if configRaw != "" {
-		if err := json.Unmarshal([]byte(configRaw), &record.Config); err != nil {
-			return EmailServiceRecord{}, false, fmt.Errorf("decode email service config for %d: %w", serviceID, err)
+	row := r.pool.QueryRow(ctx, `
+		SELECT id, service_type, name, config::text, enabled, priority, last_used, created_at, updated_at
+		FROM email_services
+		WHERE name = $1
+		ORDER BY id ASC
+		LIMIT 1
+	`, name)
+	record, err := scanEmailService(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return EmailServiceRecord{}, false, nil
 		}
+		return EmailServiceRecord{}, false, err
 	}
-	record.LastUsed = timestampPtr(lastUsed)
-	record.CreatedAt = timestampPtr(createdAt)
-	record.UpdatedAt = timestampPtr(updatedAt)
 	return record, true, nil
+}
+
+func (r *PostgresRepository) CreateService(ctx context.Context, service EmailServiceRecord) (EmailServiceRecord, error) {
+	if r == nil || r.pool == nil {
+		return EmailServiceRecord{}, nil
+	}
+
+	configRaw, err := json.Marshal(normalizeConfigForStorage(service.Config))
+	if err != nil {
+		return EmailServiceRecord{}, fmt.Errorf("marshal email service config: %w", err)
+	}
+
+	row := r.pool.QueryRow(ctx, `
+		INSERT INTO email_services (service_type, name, config, enabled, priority)
+		VALUES ($1, $2, $3::jsonb, $4, $5)
+		RETURNING id, service_type, name, config::text, enabled, priority, last_used, created_at, updated_at
+	`, service.ServiceType, service.Name, string(configRaw), service.Enabled, service.Priority)
+	return scanEmailService(row)
+}
+
+func (r *PostgresRepository) SaveService(ctx context.Context, service EmailServiceRecord) (EmailServiceRecord, error) {
+	if r == nil || r.pool == nil {
+		return service, nil
+	}
+
+	configRaw, err := json.Marshal(normalizeConfigForStorage(service.Config))
+	if err != nil {
+		return EmailServiceRecord{}, fmt.Errorf("marshal email service config: %w", err)
+	}
+
+	row := r.pool.QueryRow(ctx, `
+		UPDATE email_services
+		SET name = $2,
+			config = $3::jsonb,
+			enabled = $4,
+			priority = $5,
+			updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, service_type, name, config::text, enabled, priority, last_used, created_at, updated_at
+	`, service.ID, service.Name, string(configRaw), service.Enabled, service.Priority)
+	return scanEmailService(row)
+}
+
+func (r *PostgresRepository) DeleteService(ctx context.Context, serviceID int) (EmailServiceRecord, bool, error) {
+	if r == nil || r.pool == nil {
+		return EmailServiceRecord{}, false, nil
+	}
+
+	row := r.pool.QueryRow(ctx, `
+		DELETE FROM email_services
+		WHERE id = $1
+		RETURNING id, service_type, name, config::text, enabled, priority, last_used, created_at, updated_at
+	`, serviceID)
+	record, err := scanEmailService(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return EmailServiceRecord{}, false, nil
+		}
+		return EmailServiceRecord{}, false, err
+	}
+	return record, true, nil
+}
+
+func (r *PostgresRepository) UpdateServicePriority(ctx context.Context, serviceID int, priority int) error {
+	if r == nil || r.pool == nil {
+		return nil
+	}
+	_, err := r.pool.Exec(ctx, `UPDATE email_services SET priority = $2, updated_at = NOW() WHERE id = $1`, serviceID, priority)
+	if err != nil {
+		return fmt.Errorf("update email service priority: %w", err)
+	}
+	return nil
 }
 
 func (r *PostgresRepository) CountServices(ctx context.Context) (map[string]int, int, error) {
@@ -198,6 +240,55 @@ func (r *PostgresRepository) ListRegisteredAccountsByEmails(ctx context.Context,
 		})
 	}
 	return records, nil
+}
+
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func scanEmailService(source scanner) (EmailServiceRecord, error) {
+	var (
+		record    EmailServiceRecord
+		configRaw string
+		lastUsed  pgtype.Timestamptz
+		createdAt pgtype.Timestamptz
+		updatedAt pgtype.Timestamptz
+	)
+	if err := source.Scan(
+		&record.ID,
+		&record.ServiceType,
+		&record.Name,
+		&configRaw,
+		&record.Enabled,
+		&record.Priority,
+		&lastUsed,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return EmailServiceRecord{}, err
+	}
+
+	record.Config = make(map[string]any)
+	if configRaw != "" {
+		if err := json.Unmarshal([]byte(configRaw), &record.Config); err != nil {
+			return EmailServiceRecord{}, fmt.Errorf("decode email service config for %s(%d): %w", record.ServiceType, record.ID, err)
+		}
+	}
+	record.LastUsed = timestampPtr(lastUsed)
+	record.CreatedAt = timestampPtr(createdAt)
+	record.UpdatedAt = timestampPtr(updatedAt)
+	return record, nil
+}
+
+func normalizeConfigForStorage(config map[string]any) map[string]any {
+	if len(config) == 0 {
+		return map[string]any{}
+	}
+	cloned := make(map[string]any, len(config))
+	for key, value := range config {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func timestampPtr(value pgtype.Timestamptz) *time.Time {

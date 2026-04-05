@@ -237,6 +237,7 @@ func TestOutlookBatchImportAndTempmailDependencyStayInGo(t *testing.T) {
 	t.Parallel()
 
 	repo := &fakeRepository{
+		// 03-03 只消费 tempmail/yyds settings；/api/settings/tempmail 的 owner 仍是 03-02。
 		services: []EmailServiceRecord{
 			{
 				ID:          9,
@@ -356,7 +357,13 @@ func (f *fakeRepository) FindServiceByName(_ context.Context, name string) (Emai
 
 func (f *fakeRepository) CreateService(_ context.Context, service EmailServiceRecord) (EmailServiceRecord, error) {
 	if f.nextID == 0 {
-		f.nextID = len(f.services) + 1
+		maxID := 0
+		for _, existing := range f.services {
+			if existing.ID > maxID {
+				maxID = existing.ID
+			}
+		}
+		f.nextID = maxID + 1
 	}
 	service.ID = f.nextID
 	f.nextID++

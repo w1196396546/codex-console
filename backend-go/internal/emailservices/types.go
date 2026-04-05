@@ -19,14 +19,69 @@ const (
 )
 
 var (
-	ErrServiceNotFound      = errors.New("service not found")
-	ErrDuplicateServiceName = errors.New("duplicate service name")
-	ErrInvalidServiceType   = errors.New("invalid service type")
+	ErrServiceNotFound       = errors.New("service not found")
+	ErrDuplicateServiceName  = errors.New("duplicate service name")
+	ErrInvalidServiceType    = errors.New("invalid service type")
+	ErrInvalidReorderInput   = errors.New("invalid reorder input")
+	ErrEmptyOutlookImport    = errors.New("empty outlook import")
+	ErrTempmailProviderError = errors.New("tempmail provider error")
 )
 
 type ListServicesRequest struct {
 	ServiceType string
 	EnabledOnly bool
+}
+
+type CreateServiceRequest struct {
+	ServiceType string         `json:"service_type"`
+	Name        string         `json:"name"`
+	Config      map[string]any `json:"config"`
+	Enabled     bool           `json:"enabled"`
+	Priority    int            `json:"priority"`
+}
+
+type UpdateServiceRequest struct {
+	Name     *string        `json:"name,omitempty"`
+	Config   map[string]any `json:"config,omitempty"`
+	Enabled  *bool          `json:"enabled,omitempty"`
+	Priority *int           `json:"priority,omitempty"`
+}
+
+type ActionResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+type BatchDeleteResponse struct {
+	Success bool   `json:"success"`
+	Deleted int    `json:"deleted"`
+	Message string `json:"message"`
+}
+
+type ServiceTestResult struct {
+	Success bool           `json:"success"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
+}
+
+type OutlookBatchImportRequest struct {
+	Data     string `json:"data"`
+	Enabled  bool   `json:"enabled"`
+	Priority int    `json:"priority"`
+}
+
+type OutlookBatchImportResponse struct {
+	Total    int              `json:"total"`
+	Success  int              `json:"success"`
+	Failed   int              `json:"failed"`
+	Accounts []map[string]any `json:"accounts"`
+	Errors   []string         `json:"errors"`
+}
+
+type TempmailTestRequest struct {
+	Provider string `json:"provider"`
+	APIURL   string `json:"api_url,omitempty"`
+	APIKey   string `json:"api_key,omitempty"`
 }
 
 type EmailServiceRecord struct {

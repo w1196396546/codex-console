@@ -65,7 +65,7 @@ Plans:
   1. Existing account-management workflows operate against Go-owned APIs with current CRUD, import/export, refresh, validate, and upload behavior.
   2. Existing configuration and admin APIs behave compatibly for settings, email services, upload services, proxies, and logs.
   3. Current templates and static JavaScript can target these migrated Go domains without a frontend rewrite.
-**Plans**: 6 plans
+**Plans**: 8 plans
 
 Plans:
 - [ ] 03-01-PLAN.md — Migrate accounts workflows, compatibility DTOs, and account action endpoints
@@ -74,6 +74,8 @@ Plans:
 - [x] 03-04-PLAN.md — Migrate CPA/Sub2API/TM upload-config management APIs
 - [x] 03-05-PLAN.md — Migrate app log browsing, cleanup, and clear APIs
 - [ ] 03-06-PLAN.md — Wire management domains into Go API and verify current UI contract parity
+- [ ] 03-07-PLAN.md — Restore Python-compatible `/accounts-overview` refresh semantics and regression coverage
+- [ ] 03-08-PLAN.md — Wire `UploadAccountStore` into live Sub2API upload bootstrap and add bootstrap-level tests
 
 ### Phase 4: Payment and Team Domains
 **Goal**: Migrate the remaining Python-only payment/bind-card and team workflows to Go with compatible runtime and persistence behavior.

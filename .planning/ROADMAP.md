@@ -13,7 +13,7 @@ This roadmap finishes the remaining Python-to-Go backend migration in the curren
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Compatibility Baseline** - Freeze the migration contract, parity matrix, and shared data/runtime rules. (completed 2026-04-05)
-- [ ] **Phase 2: Native Registration Runtime** - Remove Python from the registration critical path while preserving task behavior.
+- [x] **Phase 2: Native Registration Runtime** - Remove Python from the registration critical path while preserving task behavior. (completed 2026-04-05)
 - [ ] **Phase 3: Management APIs** - Move current admin and management domains to Go behind the existing UI.
 - [ ] **Phase 4: Payment and Team Domains** - Migrate the remaining Python-only product workflows with compatible runtime semantics.
 - [ ] **Phase 5: Cutover and Decommission** - Switch production backend ownership to Go and retire Python responsibilities safely.
@@ -65,12 +65,15 @@ Plans:
   1. Existing account-management workflows operate against Go-owned APIs with current CRUD, import/export, refresh, validate, and upload behavior.
   2. Existing configuration and admin APIs behave compatibly for settings, email services, upload services, proxies, and logs.
   3. Current templates and static JavaScript can target these migrated Go domains without a frontend rewrite.
-**Plans**: 3 plans
+**Plans**: 6 plans
 
 Plans:
-- [ ] 03-01: Migrate accounts workflows and compatibility DTOs
-- [ ] 03-02: Migrate settings, email services, upload configs, proxies, and logs
-- [ ] 03-03: Switch current management UI flows to Go-backed domains and verify parity
+- [ ] 03-01-PLAN.md — Migrate accounts workflows, compatibility DTOs, and account action endpoints
+- [ ] 03-02-PLAN.md — Migrate settings, proxies, and database-admin compatibility APIs
+- [ ] 03-03-PLAN.md — Migrate email-services management APIs and Outlook admin actions
+- [ ] 03-04-PLAN.md — Migrate CPA/Sub2API/TM upload-config management APIs
+- [ ] 03-05-PLAN.md — Migrate app log browsing, cleanup, and clear APIs
+- [ ] 03-06-PLAN.md — Wire management domains into Go API and verify current UI contract parity
 
 ### Phase 4: Payment and Team Domains
 **Goal**: Migrate the remaining Python-only payment/bind-card and team workflows to Go with compatible runtime and persistence behavior.
@@ -113,7 +116,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Compatibility Baseline | 3/3 | Complete    | 2026-04-05 |
-| 2. Native Registration Runtime | 3/4 | In Progress|  |
-| 3. Management APIs | 0/3 | Not started | - |
+| 2. Native Registration Runtime | 4/4 | Complete    | 2026-04-05 |
+| 3. Management APIs | 0/6 | Not started | - |
 | 4. Payment and Team Domains | 0/3 | Not started | - |
 | 5. Cutover and Decommission | 0/2 | Not started | - |

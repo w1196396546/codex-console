@@ -7,8 +7,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dou-jiang/codex-console/backend-go/internal/uploader"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+var _ uploader.UploadAccountStore = (*PostgresRepository)(nil)
 
 func TestPostgresRepositoryUpsertAccountUsesOnConflictAndSerializesExtraData(t *testing.T) {
 	registeredAt := time.Date(2026, 4, 4, 9, 0, 0, 0, time.UTC)
@@ -284,14 +288,116 @@ func TestPostgresRepositoryCompareAndSwapTokenCompletionRuntimeReturnsFalseOnFen
 	}
 }
 
+func TestPostgresRepositoryListUploadAccountsPreservesSub2APIFields(t *testing.T) {
+	rows := &fakeAccountsRows{
+		items: []fakeAccountsRow{
+			{
+				values: []any{
+					3,
+					"alpha@example.com",
+					"secret",
+					"client-1",
+					"session-1",
+					"outlook",
+					"mailbox-1",
+					"account-1",
+					"workspace-1",
+					"access-1",
+					"refresh-1",
+					"id-token-1",
+					"cookie=value",
+					"http://proxy.internal:8080",
+					false,
+					(*time.Time)(nil),
+					false,
+					(*time.Time)(nil),
+					(*time.Time)(nil),
+					(*time.Time)(nil),
+					`{"device_id":"dev-1"}`,
+					"active",
+					"register",
+					"team",
+					(*time.Time)(nil),
+					(*time.Time)(nil),
+					(*time.Time)(nil),
+					(*time.Time)(nil),
+				},
+			},
+		},
+	}
+	db := &fakeAccountsDB{rows: rows}
+	repo := newPostgresRepository(db)
+
+	accounts, err := repo.ListUploadAccounts(context.Background(), []int{3})
+	if err != nil {
+		t.Fatalf("list upload accounts: %v", err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("expected one upload account, got %d", len(accounts))
+	}
+	if !strings.Contains(db.queryQuery, "FROM accounts") || !strings.Contains(db.queryQuery, "WHERE id = ANY($1)") {
+		t.Fatalf("expected id selection query, got %q", db.queryQuery)
+	}
+	if len(db.queryArgs) != 1 {
+		t.Fatalf("expected one query arg, got %d", len(db.queryArgs))
+	}
+	if ids, ok := db.queryArgs[0].([]int32); !ok || len(ids) != 1 || ids[0] != 3 {
+		t.Fatalf("expected ids arg [3], got %#v", db.queryArgs[0])
+	}
+	if accounts[0].ID != 3 || accounts[0].Email != "alpha@example.com" || accounts[0].AccessToken != "access-1" {
+		t.Fatalf("unexpected upload account: %+v", accounts[0])
+	}
+	if accounts[0].RefreshToken != "refresh-1" || accounts[0].SessionToken != "session-1" || accounts[0].ClientID != "client-1" {
+		t.Fatalf("expected upload tokens/session identifiers to round-trip, got %+v", accounts[0])
+	}
+}
+
+func TestPostgresRepositoryMarkSub2APIUploadedUpdatesSelectedAccounts(t *testing.T) {
+	db := &fakeAccountsDB{
+		row: fakeAccountsRow{
+			values: []any{int64(2)},
+		},
+	}
+	repo := newPostgresRepository(db)
+	uploadedAt := time.Date(2026, 4, 5, 14, 0, 0, 0, time.UTC)
+
+	if err := repo.MarkSub2APIUploaded(context.Background(), []int{3, 7}, uploadedAt); err != nil {
+		t.Fatalf("mark sub2api uploaded: %v", err)
+	}
+
+	if !strings.Contains(db.queryRowQuery, "UPDATE accounts") || !strings.Contains(db.queryRowQuery, "sub2api_uploaded = TRUE") {
+		t.Fatalf("expected update query, got %q", db.queryRowQuery)
+	}
+	if !strings.Contains(db.queryRowQuery, "WHERE id = ANY($2)") {
+		t.Fatalf("expected selected-id update constraint, got %q", db.queryRowQuery)
+	}
+	if len(db.queryRowArgs) != 2 {
+		t.Fatalf("expected two query args, got %d", len(db.queryRowArgs))
+	}
+	if got, ok := db.queryRowArgs[0].(time.Time); !ok || !got.Equal(uploadedAt) {
+		t.Fatalf("expected uploaded_at arg %v, got %#v", uploadedAt, db.queryRowArgs[0])
+	}
+	if ids, ok := db.queryRowArgs[1].([]int32); !ok || len(ids) != 2 || ids[0] != 3 || ids[1] != 7 {
+		t.Fatalf("expected ids arg [3 7], got %#v", db.queryRowArgs[1])
+	}
+}
+
 type fakeAccountsDB struct {
+	queryQuery    string
+	queryArgs     []any
 	queryRowQuery string
 	queryRowArgs  []any
+	rows          pgx.Rows
 	row           fakeAccountsRow
 }
 
-func (f *fakeAccountsDB) Query(context.Context, string, ...any) (pgx.Rows, error) {
-	return nil, nil
+func (f *fakeAccountsDB) Query(_ context.Context, query string, args ...any) (pgx.Rows, error) {
+	f.queryQuery = query
+	f.queryArgs = args
+	if f.rows != nil {
+		return f.rows, nil
+	}
+	return &fakeAccountsRows{}, nil
 }
 
 func (f *fakeAccountsDB) QueryRow(_ context.Context, query string, args ...any) pgx.Row {
@@ -312,7 +418,16 @@ func (r fakeAccountsRow) Scan(dest ...any) error {
 	for i := range dest {
 		switch out := dest[i].(type) {
 		case *int:
-			*out = r.values[i].(int)
+			switch value := r.values[i].(type) {
+			case int:
+				*out = value
+			case int64:
+				*out = int(value)
+			default:
+				return nil
+			}
+		case *int64:
+			*out = r.values[i].(int64)
 		case *bool:
 			*out = r.values[i].(bool)
 		case *string:
@@ -323,5 +438,52 @@ func (r fakeAccountsRow) Scan(dest ...any) error {
 			return nil
 		}
 	}
+	return nil
+}
+
+type fakeAccountsRows struct {
+	items []fakeAccountsRow
+	index int
+	err   error
+}
+
+func (r *fakeAccountsRows) Close() {}
+
+func (r *fakeAccountsRows) Err() error {
+	return r.err
+}
+
+func (r *fakeAccountsRows) CommandTag() pgconn.CommandTag {
+	return pgconn.NewCommandTag("SELECT 1")
+}
+
+func (r *fakeAccountsRows) FieldDescriptions() []pgconn.FieldDescription {
+	return nil
+}
+
+func (r *fakeAccountsRows) Next() bool {
+	if r.index >= len(r.items) {
+		return false
+	}
+	r.index++
+	return true
+}
+
+func (r *fakeAccountsRows) Scan(dest ...any) error {
+	if r.index == 0 || r.index > len(r.items) {
+		return pgx.ErrNoRows
+	}
+	return r.items[r.index-1].Scan(dest...)
+}
+
+func (r *fakeAccountsRows) Values() ([]any, error) {
+	return nil, nil
+}
+
+func (r *fakeAccountsRows) RawValues() [][]byte {
+	return nil
+}
+
+func (r *fakeAccountsRows) Conn() *pgx.Conn {
 	return nil
 }

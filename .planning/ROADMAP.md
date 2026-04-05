@@ -87,12 +87,15 @@ Plans:
   1. Payment, bind-card, and subscription-sync flows run through Go-owned APIs with current task, session, and side-effect semantics.
   2. Team discovery, sync, invite, membership, and team-task workflows run through Go-owned APIs with compatible persisted data and operator behavior.
   3. Remaining Python-only runtime semantics in these domains are either migrated or isolated behind explicit transition adapters.
-**Plans**: 3 plans
+**Plans**: 6 plans
 
 Plans:
 - [x] 04-01-PLAN.md — Build the Go payment slice for bind-card tasks, session/bootstrap, and subscription-sync compatibility
 - [x] 04-02-PLAN.md — Build the Go team slice for discovery, sync, invite, membership, and accepted-task compatibility
 - [x] 04-03-PLAN.md — Mount payment/team into the Go API and verify phase-wide runtime and operator parity
+- [ ] 04-04-PLAN.md — Close live payment runtime seams with explicit transition adapters and bootstrap-level constructor tests
+- [ ] 04-05-PLAN.md — Close live Team gateway/executor seams and accepted-task execution wiring
+- [ ] 04-06-PLAN.md — Wire the new runtime helpers into `cmd/api` and refresh bootstrap-oriented Phase 4 regression coverage
 
 ### Phase 5: Cutover and Decommission
 **Goal**: Cut production backend ownership over to Go, verify compatibility end to end, and retire Python backend responsibilities safely.
@@ -120,5 +123,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | 1. Compatibility Baseline | 3/3 | Complete    | 2026-04-05 |
 | 2. Native Registration Runtime | 4/4 | Complete    | 2026-04-05 |
 | 3. Management APIs | 8/8 | Complete    | 2026-04-05 |
-| 4. Payment and Team Domains | 0/3 | Not started | - |
+| 4. Payment and Team Domains | 3/6 | Gaps found | - |
 | 5. Cutover and Decommission | 0/2 | Not started | - |

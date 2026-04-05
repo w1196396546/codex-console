@@ -145,9 +145,9 @@ func TestUploadServiceCreateUpdateAndDeletePreserveCurrentCredentialRules(t *tes
 	}
 
 	updated, err := svc.UpdateTMService(context.Background(), 33, UpdateTMServiceRequest{
-		Name:     stringPointer("TM One Updated"),
-		APIURL:   stringPointer("https://tm-new.example.com"),
-		APIKey:   stringPointer(""),
+		Name:     testStringPointer("TM One Updated"),
+		APIURL:   testStringPointer("https://tm-new.example.com"),
+		APIKey:   testStringPointer(""),
 		Enabled:  boolPointer(false),
 		Priority: intPointer(7),
 	})
@@ -171,20 +171,20 @@ func TestUploadServiceCreateUpdateAndDeletePreserveCurrentCredentialRules(t *tes
 }
 
 type fakeUploadAdminRepository struct {
-	lastListKind   UploadKind
-	lastListFilter *ServiceConfigListFilter
-	lastGetKind    UploadKind
-	lastGetID      int
-	lastCreated    ManagedServiceConfig
-	lastUpdated    ManagedServiceConfigPatch
+	lastListKind    UploadKind
+	lastListFilter  *ServiceConfigListFilter
+	lastGetKind     UploadKind
+	lastGetID       int
+	lastCreated     ManagedServiceConfig
+	lastUpdated     ManagedServiceConfigPatch
 	lastDeletedKind UploadKind
 	lastDeletedID   int
 
-	listConfigs   []ManagedServiceConfig
-	getConfig     ManagedServiceConfig
-	createConfig  ManagedServiceConfig
-	updateConfig  ManagedServiceConfig
-	deleteConfig  ManagedServiceConfig
+	listConfigs  []ManagedServiceConfig
+	getConfig    ManagedServiceConfig
+	createConfig ManagedServiceConfig
+	updateConfig ManagedServiceConfig
+	deleteConfig ManagedServiceConfig
 }
 
 func (f *fakeUploadAdminRepository) ListServiceConfigs(_ context.Context, kind UploadKind, filter ServiceConfigListFilter) ([]ManagedServiceConfig, error) {
@@ -226,7 +226,7 @@ func cloneServiceConfigListFilter(filter ServiceConfigListFilter) *ServiceConfig
 	return &cloned
 }
 
-func stringPointer(value string) *string {
+func testStringPointer(value string) *string {
 	return &value
 }
 

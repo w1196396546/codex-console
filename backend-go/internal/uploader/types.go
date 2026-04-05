@@ -15,12 +15,15 @@ const (
 )
 
 var (
-	ErrUploadKindInvalid         = errors.New("uploader: invalid upload kind")
-	ErrUploadAccountEmailMissing = errors.New("uploader: account email is required")
-	ErrUploadAccessTokenMissing  = errors.New("uploader: access token is required")
-	ErrUploadAccountsEmpty       = errors.New("uploader: at least one upload account is required")
-	ErrUploadServiceBaseURLEmpty = errors.New("uploader: service base url is required")
-	ErrUploadCredentialMissing   = errors.New("uploader: service credential is required")
+	ErrUploadKindInvalid             = errors.New("uploader: invalid upload kind")
+	ErrUploadAccountEmailMissing     = errors.New("uploader: account email is required")
+	ErrUploadAccessTokenMissing      = errors.New("uploader: access token is required")
+	ErrUploadAccountsEmpty           = errors.New("uploader: at least one upload account is required")
+	ErrUploadServiceBaseURLEmpty     = errors.New("uploader: service base url is required")
+	ErrUploadCredentialMissing       = errors.New("uploader: service credential is required")
+	ErrConfigRepositoryNotConfigured = errors.New("uploader: config repository is not configured")
+	ErrServiceConfigNotFound         = errors.New("uploader: service config not found")
+	ErrSub2APITargetTypeInvalid      = errors.New("uploader: invalid sub2api target type")
 )
 
 type UploadKind string
@@ -65,6 +68,166 @@ func (c ServiceConfig) Normalized() ServiceConfig {
 	}
 
 	return normalized
+}
+
+type ManagedServiceConfig struct {
+	ServiceConfig
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+}
+
+func (c ManagedServiceConfig) Normalized() ManagedServiceConfig {
+	normalized := c
+	normalized.ServiceConfig = normalized.ServiceConfig.Normalized()
+	normalized.CreatedAt = cloneTime(normalized.CreatedAt)
+	normalized.UpdatedAt = cloneTime(normalized.UpdatedAt)
+	return normalized
+}
+
+type ServiceConfigListFilter struct {
+	Enabled *bool
+}
+
+type ManagedServiceConfigPatch struct {
+	Name       *string
+	BaseURL    *string
+	Credential *string
+	TargetType *string
+	ProxyURL   *string
+	Enabled    *bool
+	Priority   *int
+}
+
+type AdminRepository interface {
+	ListServiceConfigs(ctx context.Context, kind UploadKind, filter ServiceConfigListFilter) ([]ManagedServiceConfig, error)
+	GetServiceConfig(ctx context.Context, kind UploadKind, id int) (ManagedServiceConfig, bool, error)
+	CreateServiceConfig(ctx context.Context, config ManagedServiceConfig) (ManagedServiceConfig, error)
+	UpdateServiceConfig(ctx context.Context, kind UploadKind, id int, patch ManagedServiceConfigPatch) (ManagedServiceConfig, bool, error)
+	DeleteServiceConfig(ctx context.Context, kind UploadKind, id int) (ManagedServiceConfig, bool, error)
+}
+
+type CPAServiceResponse struct {
+	ID        int        `json:"id"`
+	Name      string     `json:"name"`
+	APIURL    string     `json:"api_url"`
+	ProxyURL  string     `json:"proxy_url,omitempty"`
+	HasToken  bool       `json:"has_token"`
+	Enabled   bool       `json:"enabled"`
+	Priority  int        `json:"priority"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+}
+
+type CPAServiceFullResponse struct {
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	APIURL   string `json:"api_url"`
+	APIToken string `json:"api_token"`
+	ProxyURL string `json:"proxy_url,omitempty"`
+	Enabled  bool   `json:"enabled"`
+	Priority int    `json:"priority"`
+}
+
+type Sub2APIServiceResponse struct {
+	ID        int        `json:"id"`
+	Name      string     `json:"name"`
+	APIURL    string     `json:"api_url"`
+	HasKey    bool       `json:"has_key"`
+	Enabled   bool       `json:"enabled"`
+	Priority  int        `json:"priority"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+}
+
+type Sub2APIServiceFullResponse struct {
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	APIURL     string `json:"api_url"`
+	APIKey     string `json:"api_key"`
+	TargetType string `json:"target_type"`
+	Enabled    bool   `json:"enabled"`
+	Priority   int    `json:"priority"`
+}
+
+type TMServiceResponse struct {
+	ID        int        `json:"id"`
+	Name      string     `json:"name"`
+	APIURL    string     `json:"api_url"`
+	HasKey    bool       `json:"has_key"`
+	Enabled   bool       `json:"enabled"`
+	Priority  int        `json:"priority"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+}
+
+type DeleteServiceResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+type CreateCPAServiceRequest struct {
+	Name     string `json:"name"`
+	APIURL   string `json:"api_url"`
+	APIToken string `json:"api_token"`
+	ProxyURL string `json:"proxy_url,omitempty"`
+	Enabled  bool   `json:"enabled"`
+	Priority int    `json:"priority"`
+}
+
+type UpdateCPAServiceRequest struct {
+	Name     *string `json:"name,omitempty"`
+	APIURL   *string `json:"api_url,omitempty"`
+	APIToken *string `json:"api_token,omitempty"`
+	ProxyURL *string `json:"proxy_url,omitempty"`
+	Enabled  *bool   `json:"enabled,omitempty"`
+	Priority *int    `json:"priority,omitempty"`
+}
+
+type CreateSub2APIServiceRequest struct {
+	Name       string `json:"name"`
+	APIURL     string `json:"api_url"`
+	APIKey     string `json:"api_key"`
+	TargetType string `json:"target_type,omitempty"`
+	Enabled    bool   `json:"enabled"`
+	Priority   int    `json:"priority"`
+}
+
+type UpdateSub2APIServiceRequest struct {
+	Name       *string `json:"name,omitempty"`
+	APIURL     *string `json:"api_url,omitempty"`
+	APIKey     *string `json:"api_key,omitempty"`
+	TargetType *string `json:"target_type,omitempty"`
+	Enabled    *bool   `json:"enabled,omitempty"`
+	Priority   *int    `json:"priority,omitempty"`
+}
+
+type CreateTMServiceRequest struct {
+	Name     string `json:"name"`
+	APIURL   string `json:"api_url"`
+	APIKey   string `json:"api_key"`
+	Enabled  bool   `json:"enabled"`
+	Priority int    `json:"priority"`
+}
+
+type UpdateTMServiceRequest struct {
+	Name     *string `json:"name,omitempty"`
+	APIURL   *string `json:"api_url,omitempty"`
+	APIKey   *string `json:"api_key,omitempty"`
+	Enabled  *bool   `json:"enabled,omitempty"`
+	Priority *int    `json:"priority,omitempty"`
+}
+
+func normalizeSub2APITargetType(value string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" {
+		return DefaultSub2APITargetType, nil
+	}
+	switch normalized {
+	case DefaultSub2APITargetType, "newapi":
+		return normalized, nil
+	default:
+		return "", ErrSub2APITargetTypeInvalid
+	}
 }
 
 type UploadAccount struct {

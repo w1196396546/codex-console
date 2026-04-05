@@ -5,12 +5,13 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func TestPostgresConfigRepositoryListCPAServiceConfigsUsesEnabledServicesByDefault(t *testing.T) {
+func TestServiceConfigRepositoryListCPAServiceConfigsUsesEnabledServicesByDefault(t *testing.T) {
 	db := &fakeUploaderDB{
 		rows: &fakeUploaderRows{
 			values: [][]any{
@@ -36,7 +37,7 @@ func TestPostgresConfigRepositoryListCPAServiceConfigsUsesEnabledServicesByDefau
 	}
 }
 
-func TestPostgresConfigRepositoryListSub2APIServiceConfigsMapsTargetType(t *testing.T) {
+func TestServiceConfigRepositoryListSub2APIServiceConfigsMapsTargetType(t *testing.T) {
 	db := &fakeUploaderDB{
 		rows: &fakeUploaderRows{
 			values: [][]any{
@@ -62,7 +63,7 @@ func TestPostgresConfigRepositoryListSub2APIServiceConfigsMapsTargetType(t *test
 	}
 }
 
-func TestPostgresConfigRepositoryListTMServiceConfigsReturnsScanError(t *testing.T) {
+func TestServiceConfigRepositoryListTMServiceConfigsReturnsScanError(t *testing.T) {
 	db := &fakeUploaderDB{
 		err: errors.New("boom"),
 	}
@@ -74,7 +75,7 @@ func TestPostgresConfigRepositoryListTMServiceConfigsReturnsScanError(t *testing
 	}
 }
 
-func TestPostgresConfigRepositoryCreateServiceConfigUsesKindSpecificColumns(t *testing.T) {
+func TestServiceConfigRepositoryCreateServiceConfigUsesKindSpecificColumns(t *testing.T) {
 	db := &fakeUploaderDB{
 		row: fakeUploaderRow{
 			values: []any{
@@ -115,7 +116,7 @@ func TestPostgresConfigRepositoryCreateServiceConfigUsesKindSpecificColumns(t *t
 	}
 }
 
-func TestPostgresConfigRepositoryUpdateAndDeleteServiceConfigPreserveKindSpecificFields(t *testing.T) {
+func TestServiceConfigRepositoryUpdateAndDeleteServiceConfigPreserveKindSpecificFields(t *testing.T) {
 	db := &fakeUploaderDB{
 		row: fakeUploaderRow{
 			values: []any{
@@ -185,13 +186,13 @@ func TestPostgresConfigRepositoryUpdateAndDeleteServiceConfigPreserveKindSpecifi
 }
 
 type fakeUploaderDB struct {
-	query        string
-	args         []any
-	rows         pgx.Rows
-	err          error
+	query         string
+	args          []any
+	rows          pgx.Rows
+	err           error
 	queryRowQuery string
 	queryRowArgs  []any
-	row          fakeUploaderRow
+	row           fakeUploaderRow
 }
 
 func (f *fakeUploaderDB) Query(_ context.Context, query string, args ...any) (pgx.Rows, error) {

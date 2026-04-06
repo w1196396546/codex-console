@@ -390,6 +390,27 @@ function getStatusIcon(status) {
     return `<span title="${s.title}">${s.icon}</span>`;
 }
 
+function normalizeAdminRoute(path) {
+    if (!path) return '';
+    const normalized = path.replace(/\/+$/, '');
+    return normalized || '/';
+}
+
+function syncAdminNavigation() {
+    const pathname = normalizeAdminRoute(window.location.pathname);
+    const navItems = document.querySelectorAll('[data-admin-route]');
+    navItems.forEach((item) => {
+        const route = normalizeAdminRoute(item.dataset.adminRoute || item.getAttribute('href'));
+        const isActive = pathname === route || (route !== '/go-admin' && pathname.startsWith(`${route}/`));
+        item.classList.toggle('is-active', isActive);
+        if (isActive) {
+            item.setAttribute('aria-current', 'page');
+        } else {
+            item.removeAttribute('aria-current');
+        }
+    });
+}
+
 // ============================================
 // 确认对话框
 // ============================================
@@ -506,6 +527,7 @@ const storage = {
 document.addEventListener('DOMContentLoaded', () => {
     // 初始化主题
     theme.applyTheme();
+    syncAdminNavigation();
 
     // 全局键盘快捷键
     document.addEventListener('keydown', (e) => {
@@ -540,3 +562,4 @@ window.getStatusText = getStatusText;
 window.getStatusClass = getStatusClass;
 window.getServiceTypeText = getServiceTypeText;
 window.getStatusIcon = getStatusIcon;
+window.syncAdminNavigation = syncAdminNavigation;

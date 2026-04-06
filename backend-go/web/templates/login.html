@@ -3,24 +3,34 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>访问验证 - OpenAI 注册系统</title>
+    <title>访问验证 - Go 管理控制台</title>
     <link rel="stylesheet" href="/go-admin/static/css/style.css?v={{ static_version }}">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔒</text></svg>">
     <style>
-        .login-wrap {
-            max-width: 420px;
-            margin: 12vh auto 0;
+        .login-panel {
+            display: grid;
+            gap: var(--spacing-lg);
         }
-        .login-card {
-            padding: var(--spacing-lg);
+
+        .login-title-group {
+            display: grid;
+            gap: 8px;
         }
-        .login-title {
-            margin-bottom: var(--spacing-sm);
+
+        .login-title-group h1 {
+            margin: 0;
+            font-family: var(--font-display);
+            font-size: clamp(1.6rem, 1.2rem + 1vw, 2.2rem);
+            line-height: 1.05;
         }
-        .login-subtitle {
+
+        .login-subtitle,
+        .login-footnote {
+            margin: 0;
             color: var(--text-secondary);
-            margin-bottom: var(--spacing-lg);
+            line-height: 1.7;
         }
+
         .login-error {
             background: var(--danger-light);
             color: var(--danger-color);
@@ -30,33 +40,49 @@
             margin-bottom: var(--spacing-md);
             font-size: 0.875rem;
         }
+
+        .login-form {
+            display: grid;
+            gap: var(--spacing-md);
+        }
     </style>
 </head>
-<body>
-    {% include "partials/site_notice.html" %}
-    <div class="container">
-        <div class="login-wrap">
-            <div class="card login-card">
-                <div class="card-header">
-                    <h3 class="login-title">🔒 访问验证</h3>
-                    <span class="hint">请输入访问密码继续</span>
-                </div>
-                <div class="card-body">
-                    {% if error %}
-                    <div class="login-error">{{ error }}</div>
-                    {% endif %}
-                    <form method="post" action="/go-admin/login">
-                        <input type="hidden" name="next" value="{{ next }}">
-                        <div class="form-group">
-                            <label for="password">访问密码</label>
-                            <input type="password" id="password" name="password" autocomplete="current-password" required autofocus>
-                        </div>
-                        <div class="form-actions" style="margin-top: var(--spacing-lg);">
-                            <button type="submit" class="btn btn-primary" style="width: 100%">验证进入</button>
-                        </div>
-                    </form>
-                </div>
+<body class="admin-login-shell">
+    <div class="admin-login-card card">
+        <div class="login-panel">
+            <div class="admin-brand">
+                <div class="admin-brand__eyebrow">Go Admin Entry</div>
+                <strong>访问验证</strong>
+                <span>进入 Go 专属管理控制台，核心流程保持一致，页面视角切换为内部运营工作台。</span>
             </div>
+
+            <div class="admin-status-strip" aria-label="入口说明">
+                <span class="admin-status-pill is-live">独立前端副本</span>
+                <span class="admin-status-pill is-info">统一路由 /go-admin/*</span>
+                <span class="admin-status-pill is-warning">需要访问密码</span>
+            </div>
+
+            <div class="login-title-group">
+                <h1>验证后进入管理台</h1>
+                <p class="login-subtitle">此入口仅作用于 Go 重构版页面，不会覆盖现有前端。</p>
+            </div>
+
+            {% if error %}
+            <div class="login-error">{{ error }}</div>
+            {% endif %}
+
+            <form class="login-form" method="post" action="/go-admin/login">
+                <input type="hidden" name="next" value="{{ next }}">
+                <div class="form-group">
+                    <label for="password">访问密码</label>
+                    <input type="password" id="password" name="password" autocomplete="current-password" required autofocus>
+                </div>
+                <div class="form-actions" style="margin-top: 0;">
+                    <button type="submit" class="btn btn-primary" style="width: 100%">验证进入</button>
+                </div>
+            </form>
+
+            <p class="login-footnote">如果需要对照旧页面，请继续使用现有前端入口；当前页面仅承载 Go 版本的管理端重构。</p>
         </div>
     </div>
 </body>

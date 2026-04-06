@@ -1,127 +1,102 @@
-# Roadmap: Codex Console Go Migration
+# Roadmap: Codex Console Go Migration (v1.1 Go Admin Frontend Refactor)
 
 ## Overview
 
-This roadmap finishes the remaining Python-to-Go backend migration in the current brownfield repository. It treats the existing Go jobs, registration, accounts, and uploader foundations as baseline, then focuses only on the domains and runtime semantics that still keep Python on the critical path. Every phase is organized around preserving current API contracts, stored data shapes, and operator-facing business behavior while progressively shifting ownership to Go.
+This roadmap turns the completed Go backend migration into a Go-owned operator console. It does that by copying the current frontend into a Go-exclusive asset and routing surface, removing unrelated public/project-promo content, and refactoring the copied pages into a management-oriented shell while preserving the workflows and contracts operators already use.
 
 ## Phases
 
 **Phase Numbering:**
-- Integer phases (1, 2, 3): Planned milestone work
-- Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
+- Integer phases (6, 7, 8, 9): Planned milestone work
+- Decimal phases (6.1, 6.2): Urgent insertions (marked with INSERTED)
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [x] **Phase 1: Compatibility Baseline** - Freeze the migration contract, parity matrix, and shared data/runtime rules. (completed 2026-04-05)
-- [x] **Phase 2: Native Registration Runtime** - Remove Python from the registration critical path while preserving task behavior. (completed 2026-04-05)
-- [x] **Phase 3: Management APIs** - Move current admin and management domains to Go behind the existing UI. (completed 2026-04-05)
-- [ ] **Phase 4: Payment and Team Domains** - Migrate the remaining Python-only product workflows with compatible runtime semantics.
-- [ ] **Phase 5: Cutover and Decommission** - Switch production backend ownership to Go and retire Python responsibilities safely.
+- [ ] **Phase 6: Go Frontend Isolation Baseline** - Create the copied Go-owned frontend workspace, route mounts, and compatibility guardrails without touching the legacy frontend.
+- [ ] **Phase 7: Admin Shell and Brand Cleanup** - Build the management-system shell, navigation, shared page chrome, and content cleanup for the new frontend.
+- [ ] **Phase 8: Core Management Pages** - Refactor the highest-traffic operator pages into the new shell while preserving their current actions and contracts.
+- [ ] **Phase 9: Workflow Pages and Rollout Readiness** - Finish the remaining workflow pages, fallback wiring, and parity verification for the new frontend rollout.
 
 ## Phase Details
 
-### Phase 1: Compatibility Baseline
-**Goal**: Freeze the remaining Python-to-Go migration contract so later phases can move domains without breaking current clients or stored data.
-**Depends on**: Nothing (first phase)
-**Requirements**: [COMP-01, COMP-02, DATA-01, OPS-01]
-**Canonical refs**: `.planning/codebase/ARCHITECTURE.md`, `.planning/codebase/STRUCTURE.md`, `src/web/routes/__init__.py`, `backend-go/internal/http/router.go`, `src/database/models.py`, `src/database/team_models.py`, `backend-go/db/migrations/0002_init_accounts_registration.sql`, `backend-go/db/migrations/0003_extend_registration_service_configs.sql`
-**UI hint**: no
+### Phase 6: Go Frontend Isolation Baseline
+**Goal**: Establish a Go-owned copy of the frontend assets and entrypoints so the new admin console can evolve independently while the existing Python frontend stays untouched.
+**Depends on**: Phase 5
+**Requirements**: [ISO-01, ISO-02]
+**Canonical refs**: `templates/`, `static/css/style.css`, `static/js/`, `src/web/app.py`, `backend-go/internal/http/router.go`, `backend-go/cmd/api/main.go`
+**UI hint**: yes
 **Success Criteria** (what must be TRUE):
-  1. The remaining Python-only route surface and client dependencies are captured in a parity matrix with explicit Go ownership targets.
-  2. Shared data contracts are documented for migrated and not-yet-migrated domains, including how PostgreSQL replaces or adapts legacy Python data semantics.
-  3. Migration safety rails exist before domain cutover begins, including compatibility fixtures, operational checks, and a clear auth/runtime boundary decision.
+  1. A dedicated Go-owned frontend directory structure exists for copied templates, static assets, and shared layout helpers without mutating the legacy frontend files in place.
+  2. The Go runtime has clear route and asset mount points for the new admin console that stay separated from the existing `/api/*` surface and legacy frontend entrypoints.
+  3. Baseline verification proves the legacy frontend still runs unchanged and the new Go frontend can boot independently.
 **Plans**: 3 plans
 
 Plans:
-- [x] 01-01: Build the Python-versus-Go route and client parity matrix
-- [x] 01-02: Define the shared schema and runtime compatibility contract
-- [x] 01-03: Add migration harness, compatibility fixtures, and cutover safety checks
+- [ ] 06-01: Establish the Go frontend directory structure, asset-copy strategy, and admin route mount points
+- [ ] 06-02: Port shared login, layout, asset-version, and shell helpers into Go-owned frontend infrastructure
+- [ ] 06-03: Add baseline verification that the legacy frontend remains untouched and the new Go frontend boots independently
 
-### Phase 2: Native Registration Runtime
-**Goal**: Complete Go ownership of registration execution, task lifecycle, and upload side effects so Python is no longer required on the registration critical path.
-**Depends on**: Phase 1
-**Requirements**: [RUN-01, RUN-02, RUN-03, COMP-03]
-**Canonical refs**: `src/web/routes/registration.py`, `src/web/task_manager.py`, `src/core/register.py`, `backend-go/internal/registration/`, `backend-go/internal/nativerunner/`, `backend-go/cmd/worker/main.go`
-**UI hint**: no
+### Phase 7: Admin Shell and Brand Cleanup
+**Goal**: Replace the current public/open-source page framing with a management-oriented shell, shared navigation, and cleaner operator-facing content.
+**Depends on**: Phase 6
+**Requirements**: [SHELL-01, SHELL-02, SHELL-03]
+**Canonical refs**: `templates/index.html`, `templates/accounts.html`, `templates/settings.html`, `templates/logs.html`, `templates/partials/site_notice.html`, `static/css/style.css`
+**UI hint**: yes
 **Success Criteria** (what must be TRUE):
-  1. Registration start, batch, and Outlook batch flows complete through Go-owned execution without requiring the Python runner bridge on the critical path.
-  2. Existing clients can inspect, pause, resume, cancel, and observe task and batch progress through Go with compatible status and log behavior.
-  3. Account persistence and CPA/Sub2API/TM upload side effects remain compatible with current workflow semantics.
+  1. The new frontend exposes a consistent admin shell with grouped navigation and shared page chrome across modules.
+  2. Project statement text, GitHub/Telegram/sponsorship links, and unrelated public-facing copy are removed from the new shared shell and headers.
+  3. Shared design tokens, layout primitives, and responsive behavior support desktop-first operator workflows without breaking mobile usability.
+**Plans**: 3 plans
+
+Plans:
+- [ ] 07-01: Design the management-oriented navigation, module grouping, and shared admin shell structure
+- [ ] 07-02: Replace legacy project notice and public-facing copy in the new shared templates and page headers
+- [ ] 07-03: Build shared styling, components, and responsive layout behavior for the new admin shell
+
+### Phase 8: Core Management Pages
+**Goal**: Move the highest-value operator pages into the new shell while preserving their current forms, actions, and API/websocket contracts.
+**Depends on**: Phase 7
+**Requirements**: [PAGE-01, PAGE-02]
+**Canonical refs**: `templates/index.html`, `templates/accounts.html`, `templates/accounts_overview.html`, `templates/email_services.html`, `templates/settings.html`, `templates/logs.html`, `static/js/app.js`, `static/js/accounts.js`, `static/js/accounts_overview.js`, `static/js/email_services.js`, `static/js/settings.js`, `static/js/logs.js`
+**UI hint**: yes
+**Success Criteria** (what must be TRUE):
+  1. Registration, account management, account overview, and email-service pages work inside the new shell with their current core actions intact.
+  2. Settings and logs pages work inside the new shell with current filters, forms, and management actions intact.
+  3. Shared page migration does not introduce route drift, broken asset loading, or incompatible frontend-to-API interactions.
 **Plans**: 4 plans
 
 Plans:
-- [x] 02-01: Close native registration preparation and worker critical-path parity
-- [x] 02-02: Complete task, batch, Outlook, and polling runtime-semantics compatibility
-- [x] 02-03: Finalize Go-owned account persistence and auto-upload side effects
-- [x] 02-04: Align task and batch websocket runtime semantics
+- [ ] 08-01: Refactor the registration/home and account pages into the new admin shell
+- [ ] 08-02: Refactor account overview and email-service pages with a management-first information hierarchy
+- [ ] 08-03: Refactor settings and logs pages with clearer operator controls and denser admin layouts
+- [ ] 08-04: Verify the migrated core pages preserve their current JavaScript actions, form flows, and API contracts
 
-### Phase 3: Management APIs
-**Goal**: Migrate the current account, settings, email-service, upload-config, proxy, and log management surfaces to Go while preserving the current UI contract.
-**Depends on**: Phase 2
-**Requirements**: [MGMT-01, MGMT-02, CUT-01]
-**Canonical refs**: `src/web/routes/accounts.py`, `src/web/routes/settings.py`, `src/web/routes/email.py`, `src/web/routes/logs.py`, `src/web/routes/upload/cpa_services.py`, `src/web/routes/upload/sub2api_services.py`, `src/web/routes/upload/tm_services.py`, `static/js/accounts.js`, `static/js/settings.js`, `static/js/email_services.js`, `static/js/logs.js`, `backend-go/internal/accounts/`
+### Phase 9: Workflow Pages and Rollout Readiness
+**Goal**: Complete the remaining workflow pages and make the new frontend safe to roll out with parity checks and fallback rules.
+**Depends on**: Phase 8
+**Requirements**: [PAGE-03, ROLL-01, ROLL-02]
+**Canonical refs**: `templates/payment.html`, `templates/card_pool.html`, `templates/auto_team.html`, `templates/login.html`, `static/js/payment.js`, `static/js/auto_team.js`, `backend-go/internal/http/router.go`, `src/web/app.py`
 **UI hint**: yes
 **Success Criteria** (what must be TRUE):
-  1. Existing account-management workflows operate against Go-owned APIs with current CRUD, import/export, refresh, validate, and upload behavior.
-  2. Existing configuration and admin APIs behave compatibly for settings, email services, upload services, proxies, and logs.
-  3. Current templates and static JavaScript can target these migrated Go domains without a frontend rewrite.
-**Plans**: 8 plans
+  1. Payment, card-pool, and team workflows operate inside the new shell without losing their current operational behavior.
+  2. Operators can access the new frontend while still retaining the untouched legacy frontend as an explicit fallback during rollout.
+  3. Page parity, API/websocket compatibility, and rollout-readiness evidence exist before the new frontend is positioned as the preferred operator UI.
+**Plans**: 4 plans
 
 Plans:
-- [x] 03-01-PLAN.md — Migrate accounts workflows, compatibility DTOs, and account action endpoints
-- [x] 03-02-PLAN.md — Migrate settings, proxies, and database-admin compatibility APIs
-- [x] 03-03-PLAN.md — Migrate email-services management APIs and Outlook admin actions
-- [x] 03-04-PLAN.md — Migrate CPA/Sub2API/TM upload-config management APIs
-- [x] 03-05-PLAN.md — Migrate app log browsing, cleanup, and clear APIs
-- [x] 03-06-PLAN.md — Wire management domains into Go API and verify current UI contract parity
-- [x] 03-07-PLAN.md — Restore Python-compatible `/accounts-overview` refresh semantics and regression coverage
-- [x] 03-08-PLAN.md — Wire `UploadAccountStore` into live Sub2API upload bootstrap and add bootstrap-level tests
-
-### Phase 4: Payment and Team Domains
-**Goal**: Migrate the remaining Python-only payment/bind-card and team workflows to Go with compatible runtime and persistence behavior.
-**Depends on**: Phase 3
-**Requirements**: [PAY-01, TEAM-01]
-**Canonical refs**: `src/web/routes/payment.py`, `src/web/routes/team.py`, `src/web/routes/team_tasks.py`, `src/database/team_models.py`, `static/js/payment.js`, `static/js/auto_team.js`, `backend-go/internal/uploader/`
-**UI hint**: yes
-**Success Criteria** (what must be TRUE):
-  1. Payment, bind-card, and subscription-sync flows run through Go-owned APIs with current task, session, and side-effect semantics.
-  2. Team discovery, sync, invite, membership, and team-task workflows run through Go-owned APIs with compatible persisted data and operator behavior.
-  3. Remaining Python-only runtime semantics in these domains are either migrated or isolated behind explicit transition adapters.
-**Plans**: 6 plans
-
-Plans:
-- [x] 04-01-PLAN.md — Build the Go payment slice for bind-card tasks, session/bootstrap, and subscription-sync compatibility
-- [x] 04-02-PLAN.md — Build the Go team slice for discovery, sync, invite, membership, and accepted-task compatibility
-- [x] 04-03-PLAN.md — Mount payment/team into the Go API and verify phase-wide runtime and operator parity
-- [ ] 04-04-PLAN.md — Close live payment runtime seams with explicit transition adapters and bootstrap-level constructor tests
-- [ ] 04-05-PLAN.md — Close live Team gateway/executor seams and accepted-task execution wiring
-- [ ] 04-06-PLAN.md — Wire the new runtime helpers into `cmd/api` and refresh bootstrap-oriented Phase 4 regression coverage
-
-### Phase 5: Cutover and Decommission
-**Goal**: Cut production backend ownership over to Go, verify compatibility end to end, and retire Python backend responsibilities safely.
-**Depends on**: Phase 4
-**Requirements**: [CUT-02]
-**Canonical refs**: `webui.py`, `src/web/app.py`, `scripts/docker/start-webui.sh`, `backend-go/cmd/api/main.go`, `backend-go/cmd/worker/main.go`, `docker-compose.yml`
-**UI hint**: no
-**Success Criteria** (what must be TRUE):
-  1. Production can route backend traffic to Go for all in-scope flows with rollback instructions documented and tested.
-  2. Python backend responsibilities are removed from the production critical path, or any temporary leftovers are explicitly isolated with a follow-up owner.
-  3. Compatibility evidence exists for API, data, and key operator workflows before final migration sign-off.
-**Plans**: 2 plans
-
-Plans:
-- [ ] 05-01: Execute staged cutover, rollback, and parity verification
-- [ ] 05-02: Retire Python backend responsibilities from the production path
+- [ ] 09-01: Refactor payment, card-pool, and team pages into the new admin shell
+- [ ] 09-02: Finalize login, shared auth flow, and cross-page polish for the Go admin frontend
+- [ ] 09-03: Add rollout and fallback wiring so the untouched legacy frontend remains available during adoption
+- [ ] 09-04: Verify page parity, API/websocket compatibility, and production-ready handoff for the new frontend
 
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
+Phases execute in numeric order: 6 -> 7 -> 8 -> 9
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Compatibility Baseline | 3/3 | Complete    | 2026-04-05 |
-| 2. Native Registration Runtime | 4/4 | Complete    | 2026-04-05 |
-| 3. Management APIs | 8/8 | Complete    | 2026-04-05 |
-| 4. Payment and Team Domains | 3/6 | Gaps found | - |
-| 5. Cutover and Decommission | 0/2 | Not started | - |
+| 6. Go Frontend Isolation Baseline | 0/3 | Not started | - |
+| 7. Admin Shell and Brand Cleanup | 0/3 | Not started | - |
+| 8. Core Management Pages | 0/4 | Not started | - |
+| 9. Workflow Pages and Rollout Readiness | 0/4 | Not started | - |

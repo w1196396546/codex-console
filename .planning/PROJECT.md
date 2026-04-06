@@ -2,11 +2,21 @@
 
 ## What This Is
 
-Codex Console is an existing brownfield account-management and registration console whose current product behavior mostly lives in the Python FastAPI/Jinja stack in `webui.py` and `src/`. `backend-go/` already provides a partial Go control plane with PostgreSQL/Redis, jobs, accounts, and native registration components. This project initializes only the remaining migration work needed to replace the Python backend responsibilities with Go while preserving today's API surface, stored data contracts, and critical business behavior.
+Codex Console has completed the Go-backend cutover for the backend critical path. The next milestone extends that brownfield migration into the operator-facing frontend by creating a Go-exclusive admin console from a copied frontend asset set, keeping the current Python/Jinja frontend untouched, and refactoring the experience toward a management-system workflow without changing the core capabilities operators already use.
 
 ## Core Value
 
-The Go backend can take over the current Codex Console backend responsibilities without forcing existing clients, persisted data, or critical registration, payment, and team workflows to change behavior.
+The Go runtime can own the operator console end to end while preserving the registration, account, payment, team, logs, and settings workflows operators already depend on.
+
+## Current Milestone: v1.1 Go Admin Frontend Refactor
+
+**Goal:** Introduce a Go-exclusive management frontend that keeps core workflows intact, leaves the legacy frontend untouched, and removes unrelated public/project-promo content from the new shell.
+
+**Target features:**
+- Go-owned copy of templates/static assets and route entrypoints for the admin UI
+- Management-oriented navigation, layout, page chrome, and content cleanup
+- Page-by-page migration of current operational workflows into the new shell
+- Rollout and fallback rules that keep the legacy frontend available during transition
 
 ## Requirements
 
@@ -16,46 +26,53 @@ The Go backend can take over the current Codex Console backend responsibilities 
 - ✓ The Go backend already owns PostgreSQL/Redis-backed jobs, registration start/batch APIs, task and batch websocket streaming, and worker orchestration through `backend-go/cmd/api/main.go`, `backend-go/cmd/worker/main.go`, `backend-go/internal/jobs/`, and `backend-go/internal/registration/`.
 - ✓ The Go backend already persists core `accounts`, `email_services`, `settings`, `cpa_services`, `sub2api_services`, and `tm_services` state in PostgreSQL through `backend-go/db/migrations/0002_init_accounts_registration.sql`, `backend-go/db/migrations/0003_extend_registration_service_configs.sql`, `backend-go/internal/accounts/`, and `backend-go/internal/uploader/`.
 - ✓ A native Go registration runner already exists and is wired into the Go worker through `backend-go/internal/nativerunner/` and `backend-go/cmd/worker/main.go`, even though migration coverage is still incomplete.
+- ✓ By the end of `v1.0`, the default backend ownership path is Go-first (`go-api` + `go-worker`), while the Python frontend remains only as an explicit compatibility/presentation shell where retained.
 
 ### Active
 
-- [ ] Finish the remaining Go API and domain migration for Python-only backend surfaces that current templates and scripts still call directly.
-- [ ] Remove critical-path dependence on the Python runtime while preserving route semantics, payload shapes, status values, and side effects.
-- [ ] Keep stored data contracts compatible across accounts, settings, upload configs, proxies, bind-card data, logs, and team data during migration.
-- [ ] Cut the current frontend clients over to the Go backend, then retire Python backend responsibilities from production usage.
+- [ ] Create a Go-owned copy of the current frontend assets and page entrypoints without editing the existing Python frontend in place.
+- [ ] Refactor the new Go frontend into a management-system shell with clearer navigation, denser operator workflows, and shared page chrome.
+- [ ] Remove legacy project statements, GitHub/Telegram/sponsorship links, and unrelated public-facing copy from the new Go frontend.
+- [ ] Preserve current route, action, and data behavior so registration, account, payment, team, logs, email-service, and settings workflows continue to work in the new shell.
 
 ### Out of Scope
 
-- Frontend redesign or template/JavaScript rewrite - migration should preserve the current operator-facing UI first.
-- Product feature expansion unrelated to migration - the goal is parity, not net-new capabilities.
-- Intentional API redesign or schema simplification - compatibility is a hard constraint for this initiative.
-- Security-hardening-only work that does not unblock migration - capture later unless it is required for Go cutover.
+- Editing or replacing the existing Python frontend in place - it must remain available untouched as a fallback/reference during this milestone.
+- Backend API or stored-data redesign - this milestone is a presentation-layer refactor on top of the completed Go backend.
+- Net-new business capabilities unrelated to current operator workflows - keep scope on UX, shell, and information-architecture refactor rather than product expansion.
+- Full SPA/framework rewrite if it delays page parity - prefer a brownfield-friendly Go delivery model that preserves current behaviors first.
 
 ## Context
 
-- The repository is brownfield and currently split across Python and Go runtimes.
-- Python still exposes most `/api/*` routes plus all HTML pages through `src/web/app.py` and `src/web/routes/`.
-- Go currently covers registration, jobs, websocket task/batch streaming, Outlook batch support, and paginated account listing, but not the full management, payment, logs, settings, upload-service, proxy, or team surfaces.
-- Existing frontend assets in `templates/` and `static/js/` already encode route expectations, so migration must preserve those contracts or introduce a transparent compatibility layer.
-- Python and Go currently use different persistence/runtime patterns (`SQLite + SQLAlchemy + in-memory task manager` versus `PostgreSQL + Redis + sqlc + Asynq`), so the remaining work is semantic migration, not just code translation.
+- The repository remains brownfield: backend ownership is now Go-first, while the operator-facing HTML pages still live in Python `templates/` and `static/` and are mounted by `src/web/app.py`.
+- The current frontend is server-rendered HTML plus shared CSS (`static/css/style.css`) and page-specific vanilla JS (`static/js/*.js`); page copy, navigation, and shared notice chrome are repeated across templates.
+- The existing frontend contains project declaration text, GitHub/Telegram/support links, and "OpenAI 注册系统" positioning that the user explicitly does not want carried into the Go-specific frontend.
+- `backend-go/` currently owns the APIs and worker runtime, but does not yet own a dedicated admin UI asset tree, template rendering layer, or static asset mount for the console pages.
+- The current page set includes login, registration, accounts, accounts overview, email services, payment, card pool, auto team, logs, and settings; these workflows must stay functionally intact while the UI shell changes.
+- The new milestone is explicitly about copying the current frontend into a Go-exclusive workspace, then refactoring the new copy toward a management-system experience rather than touching the legacy frontend directly.
 
 ## Constraints
 
-- **Compatibility**: Keep current API paths, HTTP methods, JSON fields, status values, and websocket semantics compatible - the existing frontend and automation surface already depends on them.
-- **Data Contract**: Preserve current persisted record shapes and migration paths - breaking existing fields would invalidate live data and current operational workflows.
-- **Brownfield Scope**: Only plan remaining migration work - already migrated Go foundations are baseline, not a fresh greenfield roadmap.
-- **Execution Safety**: Python may remain as a bounded transition aid temporarily, but the final state cannot depend on Python on the critical backend path.
-- **Operational Parity**: Registration, payment/bind-card, team, logs, and admin workflows must keep current business behavior so operators do not need a new playbook just because the implementation moved to Go.
+- **Legacy Preservation**: The existing Python frontend under `templates/` and `static/` must remain untouched as part of this refactor - the user explicitly wants a copied Go-specific frontend instead of in-place edits.
+- **Workflow Parity**: Registration, account, email-service, payment, team, logs, and settings behaviors must stay functionally intact - the UI shell can change, but the operator playbook cannot be broken.
+- **Content Cleanup**: Project notices, GitHub/Telegram/sponsorship links, and unrelated public-facing introduction copy must be removed from the new Go frontend.
+- **Go Alignment**: The new frontend should be delivered through Go-owned routes/assets so the operator console continues moving toward single-runtime ownership.
+- **Brownfield Safety**: Refactor page by page with clear rollback/fallback options instead of replacing the entire UI in one unsafe step.
+- **Admin UX Direction**: Favor a management-system information architecture, denser controls, and clearer operational hierarchy over the current open-source/public project framing.
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Use a domain-by-domain strangler migration instead of a big-bang rewrite | The repo already has partial Go coverage; controlled cutover reduces parity drift and rollback risk | - Pending |
-| Treat API, data, and workflow compatibility as release blockers | The current templates, scripts, and operators are tightly coupled to existing behavior | - Pending |
-| Count current Go jobs, registration, accounts, and uploader foundations as validated baseline | The user explicitly asked to plan only the remaining migration work | - Pending |
-| Keep the current frontend/UI in place during backend migration | Rewriting UI at the same time would hide backend parity gaps and expand scope | - Pending |
-| Remove Python from the production critical path only after parity evidence exists | Cutting over early would turn migration unknowns into user-facing regressions | - Pending |
+| Use a domain-by-domain strangler migration instead of a big-bang rewrite | The repo already has partial Go coverage; controlled cutover reduces parity drift and rollback risk | ✓ Confirmed |
+| Treat API, data, and workflow compatibility as release blockers | The current templates, scripts, and operators are tightly coupled to existing behavior | ✓ Confirmed |
+| Count current Go jobs, registration, accounts, and uploader foundations as validated baseline | The user explicitly asked to plan only the remaining migration work | ✓ Confirmed |
+| Keep the current frontend/UI in place during backend migration | Rewriting UI at the same time would hide backend parity gaps and expand scope | ✓ Confirmed |
+| Remove Python from the production critical path only after parity evidence exists | Cutting over early would turn migration unknowns into user-facing regressions | ✓ Confirmed |
+| Start frontend work as a new milestone after the Go backend cutover is complete | The backend migration goal is already achieved; frontend refactor should build on that stable baseline rather than reopen backend scope | — Pending |
+| Build the new admin frontend from a Go-owned copy of the current frontend assets | The user explicitly does not want the existing frontend modified in place | — Pending |
+| Treat shell/navigation/content cleanup as first-class requirements, not cosmetic polish | The request is about making the Go frontend feel like a management system and removing unrelated project branding/content | — Pending |
+| Preserve current workflows and contracts while allowing page chrome and layout to change | The milestone is a frontend/operator-experience refactor, not a business-flow redesign | — Pending |
 
 ## Evolution
 
@@ -75,4 +92,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-05 after initialization*
+*Last updated: 2026-04-06 after v1.1 milestone initialization*

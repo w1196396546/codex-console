@@ -1,42 +1,42 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-status: verifying
-stopped_at: Completed 04-03-PLAN.md
-last_updated: "2026-04-05T16:24:56.021Z"
-last_activity: 2026-04-05
+milestone: v1.1
+milestone_name: go-admin-frontend-refactor
+status: initialized
+stopped_at: Milestone v1.1 initialized
+last_updated: "2026-04-06T07:56:09Z"
+last_activity: 2026-04-06
 progress:
-  total_phases: 5
-  completed_phases: 4
-  total_plans: 18
-  completed_plans: 18
-  percent: 100
+  total_phases: 4
+  completed_phases: 0
+  total_plans: 14
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-05)
+See: .planning/PROJECT.md (updated 2026-04-06)
 
-**Core value:** The Go backend can take over the current Codex Console backend responsibilities without forcing existing clients, persisted data, or critical registration, payment, and team workflows to change behavior.
-**Current focus:** Phase 04 — Payment and Team Domains
+**Core value:** The Go runtime can own the operator console end to end while preserving the registration, account, payment, team, logs, and settings workflows operators already depend on.
+**Current focus:** Phase 06 — Go Frontend Isolation Baseline
 
 ## Current Position
 
-Phase: 04 (Payment and Team Domains) — EXECUTING
-Plan: 3 of 3
-Status: Phase complete — ready for verification
-Last activity: 2026-04-05
+Phase: 06 (Go Frontend Isolation Baseline) — NOT STARTED
+Plan: 0 of 3 complete
+Status: Milestone initialized; ready for `/gsd-discuss-phase 6` or `/gsd-plan-phase 6`
+Last activity: 2026-04-06
 
-Progress: [███████░░░] 75%
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 19
+- Total plans completed: 0
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -44,30 +44,15 @@ Progress: [███████░░░] 75%
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 1 | 3 | - | - |
-| 2 | 4 | - | - |
-| 3 | 8 | - | - |
+| 6 | 0 | - | - |
+| 7 | 0 | - | - |
+| 8 | 0 | - | - |
+| 9 | 0 | - | - |
 
 **Recent Trend:**
 
 - Last 5 plans: -
-- Trend: Stable
-
-| Phase 02 P01 | 10m | 2 tasks | 14 files |
-| Phase 02 P02 | 15m | 1 tasks | 13 files |
-| Phase 02 P03 | 16m | 2 tasks | 8 files |
-| Phase 02 P04 | 6min | 2 tasks | 5 files |
-| Phase 03-management-apis P05 | 907 | 2 tasks | 8 files |
-| Phase 03 P04 | 16m | 2 tasks | 7 files |
-| Phase 03 P03 | 15m | 2 tasks | 8 files |
-| Phase 03-management-apis P02 | 16m | 2 tasks | 9 files |
-| Phase 03 P01 | 37m | 2 tasks | 7 files |
-| Phase 03-management-apis P06 | 637 | 2 tasks | 5 files |
-| Phase 03-management-apis P08 | 496 | 2 tasks | 4 files |
-| Phase 03-management-apis P07 | 297 | 2 tasks | 3 files |
-| Phase 04 P01 | 1192 | 2 tasks | 10 files |
-| Phase 04 P02 | 13min | 2 tasks | 11 files |
-| Phase 04 P03 | 5min | 2 tasks | 5 files |
+- Trend: Milestone not started
 
 ## Accumulated Context
 
@@ -76,6 +61,10 @@ Progress: [███████░░░] 75%
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
+- [Milestone v1.1]: Build the new admin frontend from a Go-owned copy of the current frontend assets instead of editing the legacy Python frontend in place.
+- [Milestone v1.1]: Remove shared project statement, GitHub/Telegram/sponsorship links, and unrelated public-facing copy from the new frontend shell.
+- [Milestone v1.1]: Favor a management-system information architecture and denser operator workflow layout rather than preserving the current public/open-source framing.
+- [Milestone v1.1]: Preserve existing workflow and contract semantics; this milestone changes shell, layout, and content rather than backend APIs or stored data.
 - Phase 0: Plan only the remaining migration delta; existing Go foundations are baseline.
 - Phase 0: API, data, and workflow compatibility are the governing release constraint.
 - Phase 0: Frontend rewrite is out of scope for this migration milestone.
@@ -123,14 +112,14 @@ None yet.
 
 ### Blockers/Concerns
 
-- Python and Go backend capabilities are still split across registration, management, payment, and team domains.
-- Current templates/static JS already encode route expectations, so parity drift will block cutover.
-- Phase 2 staging validation is deferred: real single/batch/outlook native registration, live pause/resume/cancel websocket timing, and live CPA/Sub2API/TM side effects still need external-environment verification before final cutover.
-- Phase 3 human validation is deferred: real accounts-overview refresh, real PostgreSQL database tools, and real external provider management actions still need staging/operator verification before final cutover.
-- Phase 4 real payment/team operator validation remains deferred; live payment adapters and team gateway/executor wiring must be validated before any Phase 5 cutover.
+- Go currently owns the backend critical path, but it does not yet own a dedicated frontend asset/template delivery pipeline for the operator console.
+- Current templates and static JavaScript are tightly coupled to existing routes, shared chrome, and `style.css`, so copy-vs-drift management will be a recurring risk.
+- The legacy frontend must remain untouched and available, which means rollout/fallback wiring is part of the milestone scope rather than an afterthought.
+- The new frontend must avoid route/API/websocket drift while still changing navigation, layout, copy, and shared page structure.
+- Chi static-file mounts and admin route grouping should avoid middleware combinations that conflict with `http.FileServer` behavior during rollout.
 
 ## Session Continuity
 
-Last session: 2026-04-05T16:24:31.480Z
-Stopped at: Completed 04-03-PLAN.md
+Last session: 2026-04-06T07:56:09Z
+Stopped at: Milestone v1.1 initialized
 Resume file: None

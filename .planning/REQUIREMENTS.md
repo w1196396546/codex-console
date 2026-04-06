@@ -1,87 +1,73 @@
-# Requirements: Codex Console Go Migration
+# Requirements: Codex Console Go Migration (v1.1 Go Admin Frontend Refactor)
 
-**Defined:** 2026-04-05
-**Core Value:** The Go backend can take over the current Codex Console backend responsibilities without forcing existing clients, persisted data, or critical registration, payment, and team workflows to change behavior.
+**Defined:** 2026-04-06
+**Core Value:** The Go runtime can own the operator console end to end while preserving the registration, account, payment, team, logs, and settings workflows operators already depend on.
 
 ## v1 Requirements
 
-### Compatibility
+### Isolation
 
-- [ ] **COMP-01**: Existing clients can call every remaining Python-only backend capability through a Go-owned route using the same path and HTTP method.
-- [ ] **COMP-02**: Existing clients receive compatible JSON field names, status values, and error semantics from migrated Go endpoints.
-- [x] **COMP-03**: Existing polling and websocket consumers receive compatible task and batch progress semantics from Go-owned backend flows.
+- [ ] **ISO-01**: The new Go admin frontend is built from a dedicated copy of templates and static assets so the existing Python frontend remains untouched and still runnable.
+- [ ] **ISO-02**: The Go runtime can serve the new admin frontend through Go-owned routes/assets without reintroducing Python onto the operator critical path.
 
-### Data Contracts
+### Shell
 
-- [ ] **DATA-01**: Existing persisted records for accounts, settings, upload services, proxies, bind-card tasks, app logs, and team entities remain readable and writable after Go takeover without manual reshaping.
+- [ ] **SHELL-01**: Operators land in a management-oriented shell with grouped navigation, clearer module hierarchy, and consistent shared layout across pages.
+- [ ] **SHELL-02**: The new shared shell removes project declaration text, GitHub/Telegram/sponsorship links, and unrelated public-facing copy from page chrome and headers.
+- [ ] **SHELL-03**: Shared design tokens, layout primitives, and responsive behavior support desktop-first admin workflows while remaining usable on common mobile widths.
 
-### Runtime
+### Pages
 
-- [x] **RUN-01**: Registration start, batch, and Outlook batch flows execute on Go-owned runtime logic without requiring the Python runner bridge on the critical path.
-- [x] **RUN-02**: Existing clients can list, inspect, pause, resume, cancel, and clean up registration tasks and batches through Go with current behavior.
-- [x] **RUN-03**: Registration side effects continue to persist accounts and trigger CPA, Sub2API, and TM uploads with current semantics.
+- [ ] **PAGE-01**: Operators can complete registration, account management, account overview, and email-service workflows from the new frontend with their current core actions intact.
+- [ ] **PAGE-02**: Operators can complete settings and logs workflows from the new frontend with their current forms, filters, and management actions intact.
+- [ ] **PAGE-03**: Operators can complete payment, card-pool, and team workflows from the new frontend with their current task, session, and operational behaviors intact.
 
-### Management
+### Rollout
 
-- [x] **MGMT-01**: Operators can manage accounts through Go-owned APIs with current CRUD, import/export, refresh, validate, and upload workflows.
-- [x] **MGMT-02**: Operators can manage settings, email services, upload-service configs, proxies, and logs through Go-owned APIs with current behavior.
-
-### Domain Flows
-
-- [x] **PAY-01**: Operators can run payment, bind-card, and subscription-sync workflows through Go-owned APIs with current task and session semantics.
-- [x] **TEAM-01**: Operators can run team discovery, sync, invite, membership, and team-task workflows through Go-owned APIs with current behavior.
-
-### Cutover
-
-- [x] **CUT-01**: Current templates and static JavaScript can target the Go backend for migrated domains without requiring a UI rewrite.
-- [ ] **CUT-02**: Production deployment can disable Python backend responsibilities with rollback instructions and parity verification evidence in place.
-- [ ] **OPS-01**: Go backend operational controls are sufficient to replace Python backend duties safely in production for all migrated domains.
+- [ ] **ROLL-01**: The new frontend keeps current API paths, request/response shapes, and websocket behaviors compatible across migrated pages during rollout.
+- [ ] **ROLL-02**: Operators can adopt the new frontend page by page or module by module without losing access to the untouched legacy frontend as fallback.
 
 ## v2 Requirements
 
-### Hardening
-
-- **HARD-01**: Secrets are encrypted at rest and sensitive admin endpoints are fully hardened after the migration milestone.
-- **HARD-02**: Retry, compensation, and failure-recovery policies are expanded beyond current migration parity needs.
-
 ### Consolidation
 
-- **CONS-01**: Frontend delivery is consolidated away from the Python/Jinja runtime if a later milestone wants a single-runtime stack.
-- **CONS-02**: Legacy schema cleanup removes transitional compatibility-only fields and adapters after migration risk is gone.
+- **CONS-03**: The legacy Python frontend can be formally retired only after the Go admin frontend has full parity evidence and operator sign-off.
+- **CONS-04**: Shared frontend primitives are extracted into a durable design system only after the page migration is stable.
+
+### Expansion
+
+- **EXP-01**: New analytics, dashboards, or role-based admin capabilities are added only after the shell/page parity milestone is complete.
+- **EXP-02**: Any future SPA or framework migration is evaluated separately after the copied Go frontend proves its value.
 
 ## Out of Scope
 
 | Feature | Reason |
 |---------|--------|
-| Frontend redesign or full SPA rewrite | Not required to replace the backend safely and would hide parity regressions |
-| Net-new product capabilities unrelated to migration | The scope is remaining migration work only |
-| Intentional API redesign | Existing clients and operators already depend on the current contract |
-| Schema cleanup before parity is complete | It mixes migration risk with redesign risk |
+| Editing the existing Python frontend in place | The user explicitly wants a copied Go-specific frontend and a preserved legacy fallback |
+| Backend API or schema redesign | This milestone is about the operator-facing frontend shell, not changing backend contracts |
+| Net-new business workflows | Scope is current page parity plus shell/layout/content refactor |
+| Full SPA/framework rewrite | Higher risk and unnecessary before the copied Go frontend reaches parity |
 
 ## Traceability
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| COMP-01 | Phase 1 | Pending |
-| COMP-02 | Phase 1 | Pending |
-| DATA-01 | Phase 1 | Pending |
-| OPS-01 | Phase 1 | Pending |
-| RUN-01 | Phase 2 | Complete |
-| RUN-02 | Phase 2 | Complete |
-| RUN-03 | Phase 2 | Complete |
-| COMP-03 | Phase 2 | Complete |
-| MGMT-01 | Phase 3 | Complete |
-| MGMT-02 | Phase 3 | Complete |
-| CUT-01 | Phase 3 | Complete |
-| PAY-01 | Phase 4 | Complete |
-| TEAM-01 | Phase 4 | Complete |
-| CUT-02 | Phase 5 | Pending |
+| ISO-01 | Phase 6 | Pending |
+| ISO-02 | Phase 6 | Pending |
+| SHELL-01 | Phase 7 | Pending |
+| SHELL-02 | Phase 7 | Pending |
+| SHELL-03 | Phase 7 | Pending |
+| PAGE-01 | Phase 8 | Pending |
+| PAGE-02 | Phase 8 | Pending |
+| PAGE-03 | Phase 9 | Pending |
+| ROLL-01 | Phase 9 | Pending |
+| ROLL-02 | Phase 9 | Pending |
 
 **Coverage:**
-- v1 requirements: 14 total
-- Mapped to phases: 14
+- v1 requirements: 10 total
+- Mapped to phases: 10
 - Unmapped: 0 ✓
 
 ---
-*Requirements defined: 2026-04-05*
-*Last updated: 2026-04-05 after initial definition*
+*Requirements defined: 2026-04-06*
+*Last updated: 2026-04-06 after v1.1 milestone definition*

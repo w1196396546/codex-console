@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
+	"github.com/dou-jiang/codex-console/backend-go/internal/adminui"
 	"github.com/dou-jiang/codex-console/backend-go/internal/emailservices"
 	"github.com/dou-jiang/codex-console/backend-go/internal/logs"
 	"github.com/dou-jiang/codex-console/backend-go/internal/payment"
@@ -103,6 +104,35 @@ func TestRouterMountsPhaseFourRoutes(t *testing.T) {
 
 			if rec.Code == http.StatusNotFound {
 				t.Fatalf("expected %s %s to be mounted after Phase 4 wiring, got 404", tc.method, tc.path)
+			}
+		})
+	}
+}
+
+func TestRouterMountsAdminUIRoutes(t *testing.T) {
+	handler, err := adminui.NewHandler(adminui.HandlerOptions{})
+	if err != nil {
+		t.Fatalf("new admin ui handler: %v", err)
+	}
+	router := NewRouter(nil, handler)
+
+	tests := []struct {
+		name       string
+		path       string
+		wantAbsent bool
+	}{
+		{name: "login", path: "/go-admin/login"},
+		{name: "home redirect", path: "/go-admin/"},
+		{name: "static asset", path: "/go-admin/static/css/style.css"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			router.ServeHTTP(rec, req)
+			if rec.Code == http.StatusNotFound {
+				t.Fatalf("expected %s to be mounted, got 404", tc.path)
 			}
 		})
 	}

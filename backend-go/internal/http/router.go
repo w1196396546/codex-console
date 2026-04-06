@@ -6,6 +6,7 @@ import (
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
 	accountshttp "github.com/dou-jiang/codex-console/backend-go/internal/accounts/http"
+	"github.com/dou-jiang/codex-console/backend-go/internal/adminui"
 	"github.com/dou-jiang/codex-console/backend-go/internal/emailservices"
 	emailserviceshttp "github.com/dou-jiang/codex-console/backend-go/internal/emailservices/http"
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
@@ -52,6 +53,10 @@ type accountsRouteService interface {
 	ListAccounts(ctx context.Context, req accounts.ListAccountsRequest) (accounts.AccountListResponse, error)
 }
 
+type adminUIRouteHandler interface {
+	RegisterRoutes(r chi.Router)
+}
+
 type paymentRouteService interface {
 	GetRandomBillingProfile(ctx context.Context, country string, proxy string) (payment.RandomBillingResponse, error)
 	GetAccountSessionDiagnostic(ctx context.Context, accountID int, probe bool, proxy string) (payment.SessionDiagnosticResponse, error)
@@ -78,6 +83,7 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 	var registrationStatsService registrationStatsRouteService
 	var outlookService outlookRouteService
 	var accountsService accountsRouteService
+	var adminUIHandler adminUIRouteHandler
 	var settingsService *settings.Service
 	var emailServicesService *emailservices.Service
 	var uploaderService *uploader.Service
@@ -112,6 +118,14 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 		case accountsRouteService:
 			if accountsService == nil {
 				accountsService = value
+			}
+		case *adminui.Handler:
+			if adminUIHandler == nil {
+				adminUIHandler = value
+			}
+		case adminUIRouteHandler:
+			if adminUIHandler == nil {
+				adminUIHandler = value
 			}
 		case *settings.Service:
 			if settingsService == nil {
@@ -152,7 +166,7 @@ func NewRouter(jobService *jobs.Service, dependencies ...any) *chi.Mux {
 		}
 	}
 
-	return newRouter(jobService, registrationService, batchService, availableServices, registrationStatsService, outlookService, accountsService, settingsService, emailServicesService, uploaderService, logsService, paymentService, teamService, teamTaskService, taskSocketHandler, batchSocketHandler)
+	return newRouter(jobService, registrationService, batchService, availableServices, registrationStatsService, outlookService, accountsService, adminUIHandler, settingsService, emailServicesService, uploaderService, logsService, paymentService, teamService, teamTaskService, taskSocketHandler, batchSocketHandler)
 }
 
 func NewRouterWithTaskSocket(
@@ -160,7 +174,7 @@ func NewRouterWithTaskSocket(
 	registrationService *registration.Service,
 	taskSocketHandler taskSocketRouteHandler,
 ) *chi.Mux {
-	return newRouter(jobService, registrationService, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, taskSocketHandler, nil)
+	return newRouter(jobService, registrationService, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, taskSocketHandler, nil)
 }
 
 func newRouter(
@@ -171,6 +185,7 @@ func newRouter(
 	registrationStatsService registrationStatsRouteService,
 	outlookService outlookRouteService,
 	accountsService accountsRouteService,
+	adminUIHandler adminUIRouteHandler,
 	settingsService *settings.Service,
 	emailServicesService *emailservices.Service,
 	uploaderService *uploader.Service,
@@ -186,6 +201,9 @@ func newRouter(
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	if adminUIHandler != nil {
+		adminUIHandler.RegisterRoutes(r)
+	}
 	if accountsService != nil {
 		accountshttp.NewHandler(accountsService).RegisterRoutes(r)
 	}

@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>自动进team - OpenAI 注册系统</title>
+    <link rel="stylesheet" href="/go-admin/static/css/style.css?v={{ static_version }}">
+</head>
+<body>
+    {% include "partials/site_notice.html" %}
+    <div class="container">
+        <nav class="navbar">
+            <div class="nav-brand">
+                <h1>OpenAI 注册系统</h1>
+            </div>
+            <div class="nav-links">
+                <a href="/go-admin/" class="nav-link">注册</a>
+                <a href="/go-admin/accounts" class="nav-link">账号管理</a>
+                <a href="/go-admin/accounts-overview" class="nav-link">账号总览</a>
+                <a href="/go-admin/email-services" class="nav-link">邮箱服务</a>
+                <a href="/go-admin/payment" class="nav-link">支付</a>
+                <a href="/go-admin/card-pool" class="nav-link">卡池</a>
+                <a href="/go-admin/auto-team" class="nav-link active">自动进team</a>
+                <a href="/go-admin/logs" class="nav-link">后台日志</a>
+                <a href="/go-admin/settings" class="nav-link">设置</a>
+                <a href="/go-admin/logout" class="nav-link">退出</a>
+            </div>
+            <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">🌙</button>
+        </nav>
+
+        <main class="main-content team-page" data-team-shell>
+            <section class="page-header team-page-header">
+                <div>
+                    <h2>自动进 Team</h2>
+                    <p class="subtitle">围绕 Team overview、详情和任务中心，快速完成发现母号与批量同步。</p>
+                </div>
+                <div class="team-header-actions">
+                    <button type="button" class="btn btn-primary" data-action="discover-owner">发现母号</button>
+                    <button type="button" class="btn btn-secondary" data-action="sync-batch">批量同步</button>
+                </div>
+            </section>
+
+            <section class="team-toolbar card">
+                <div class="team-toolbar-field">
+                    <label for="team-owner-filter">母号 ID</label>
+                    <input id="team-owner-filter" type="number" min="1" placeholder="例如 1001" data-role="owner-filter">
+                </div>
+                <div class="team-toolbar-field">
+                    <label for="team-status-filter">Team 状态</label>
+                    <select id="team-status-filter" data-role="status-filter">
+                        <option value="">全部状态</option>
+                        <option value="active">active</option>
+                        <option value="paused">paused</option>
+                        <option value="expired">expired</option>
+                    </select>
+                </div>
+                <div class="team-toolbar-field team-toolbar-search">
+                    <label for="team-search-filter">搜索 Team</label>
+                    <input id="team-search-filter" type="search" placeholder="Team 名称或 upstream ID" data-role="search-filter">
+                </div>
+                <div class="team-toolbar-actions">
+                    <button type="button" class="btn btn-secondary" data-action="refresh">刷新视图</button>
+                </div>
+            </section>
+
+            <section class="team-shell" aria-label="Team 工作台">
+                <article class="team-panel card" data-panel="overview">
+                    <div class="team-panel-heading">
+                        <div>
+                            <p class="eyebrow">Team Overview</p>
+                            <h3>可操作 Team 列表</h3>
+                        </div>
+                        <span class="team-status-chip" data-role="teams-status">待加载</span>
+                    </div>
+                    <div class="team-metric-grid">
+                        <div class="team-metric-card">
+                            <span>总 Team 数</span>
+                            <strong data-role="metric-total-teams">0</strong>
+                        </div>
+                        <div class="team-metric-card">
+                            <span>可用席位</span>
+                            <strong data-role="metric-total-seats">0</strong>
+                        </div>
+                        <div class="team-metric-card">
+                            <span>活跃任务</span>
+                            <strong data-role="metric-active-tasks">0</strong>
+                        </div>
+                    </div>
+                    <div class="team-list" data-role="team-list" aria-live="polite">
+                        <div class="team-empty-state">还没有 Team 数据，先点“发现母号”或“刷新视图”。</div>
+                    </div>
+                </article>
+
+                <article class="team-panel card" data-panel="detail">
+                    <div class="team-panel-heading">
+                        <div>
+                            <p class="eyebrow">Team Detail</p>
+                            <h3 data-role="team-detail-title">请选择一个 Team</h3>
+                        </div>
+                        <span class="team-status-chip muted" data-role="team-detail-status">未选择</span>
+                    </div>
+                    <div class="team-detail-grid">
+                        <div class="team-detail-item">
+                            <span>Owner</span>
+                            <strong data-role="detail-owner-email">-</strong>
+                        </div>
+                        <div class="team-detail-item">
+                            <span>母号 ID</span>
+                            <strong data-role="detail-owner-id">-</strong>
+                        </div>
+                        <div class="team-detail-item">
+                            <span>成员状态</span>
+                            <strong data-role="detail-members">-</strong>
+                        </div>
+                        <div class="team-detail-item">
+                            <span>同步状态</span>
+                            <strong data-role="detail-sync-status">-</strong>
+                        </div>
+                        <div class="team-detail-item">
+                            <span>最近同步</span>
+                            <strong data-role="detail-last-sync">-</strong>
+                        </div>
+                        <div class="team-detail-item">
+                            <span>剩余席位</span>
+                            <strong data-role="detail-seats">-</strong>
+                        </div>
+                    </div>
+                    <div class="team-detail-callout" data-role="team-detail-callout">
+                        当前还没有选中的 Team。左侧列表会展示 owner、席位和同步健康度，点击任意 Team 可在这里查看详情。
+                    </div>
+                    <section class="team-membership-section">
+                        <div class="team-membership-header">
+                            <div>
+                                <p class="eyebrow">Memberships</p>
+                                <h3>成员动作台</h3>
+                            </div>
+                            <div class="team-membership-toolbar">
+                                <div class="team-tab-list" role="tablist" aria-label="成员视图切换">
+                                    <button type="button" class="team-tab is-active" data-team-tab="active">活跃成员</button>
+                                    <button type="button" class="team-tab" data-team-tab="invited">邀请中</button>
+                                    <button type="button" class="team-tab" data-team-tab="external">外部成员</button>
+                                </div>
+                                <div class="team-membership-actions">
+                                    <span class="team-status-chip muted" data-role="invite-availability">请选择 Team</span>
+                                    <button type="button" class="btn btn-secondary" data-action="open-invite-modal">批量邀请</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="team-membership-list" data-role="membership-list">
+                            <div class="team-empty-state">请选择一个 Team 查看成员关系与可执行动作。</div>
+                        </div>
+                    </section>
+                </article>
+
+                <article class="team-panel card" data-panel="task-center">
+                    <div class="team-panel-heading">
+                        <div>
+                            <p class="eyebrow">Task Center</p>
+                            <h3>异步任务与刷新状态</h3>
+                        </div>
+                        <span class="team-status-chip muted" data-role="task-live-status">空闲</span>
+                    </div>
+                    <div class="task-live-card">
+                        <div>
+                            <span class="task-live-label">当前任务</span>
+                            <strong data-role="task-current-uuid">暂无运行中的任务</strong>
+                        </div>
+                        <p data-role="task-current-summary">当 discover / sync-batch 被 accepted 后，这里会监听 WebSocket 并在完成后刷新 Team 列表。</p>
+                    </div>
+                    <div class="task-list" data-role="task-list">
+                        <div class="team-empty-state">还没有 Team 任务记录。</div>
+                    </div>
+                </article>
+            </section>
+        </main>
+    </div>
+
+    <div class="modal" data-role="invite-modal" hidden>
+        <div class="modal-content team-invite-modal">
+            <div class="modal-header">
+                <div>
+                    <h3>批量邀请</h3>
+                    <p class="subtitle" data-role="invite-modal-title">请选择 Team 后再发起邀请。</p>
+                </div>
+                <button type="button" class="modal-close" data-action="close-invite-modal">&times;</button>
+            </div>
+            <div class="modal-body team-invite-modal-body">
+                <div class="team-detail-callout" data-role="invite-feedback">
+                    支持批量邀请本地账号 ID，或直接填写邮箱列表。
+                </div>
+                <div class="team-invite-mode-switch">
+                    <button type="button" class="team-tab is-active" data-invite-mode="accounts">邀请账号</button>
+                    <button type="button" class="team-tab" data-invite-mode="emails">邀请邮箱</button>
+                </div>
+                <section class="team-invite-pane" data-role="invite-pane-accounts">
+                    <label class="team-invite-label" for="invite-account-ids">本地账号 ID</label>
+                    <textarea id="invite-account-ids" class="team-invite-textarea" data-role="invite-account-ids" placeholder="支持逗号、空格或换行分隔，例如：1001,1002,1003"></textarea>
+                    <div class="team-invite-options">
+                        <label><input type="checkbox" data-role="invite-skip-existing" checked> 跳过已存在关系</label>
+                        <label><input type="checkbox" data-role="invite-resend-invited"> 对 invited 关系允许重发</label>
+                    </div>
+                </section>
+                <section class="team-invite-pane" data-role="invite-pane-emails" hidden>
+                    <label class="team-invite-label" for="invite-emails">邮箱列表</label>
+                    <textarea id="invite-emails" class="team-invite-textarea" data-role="invite-emails" placeholder="每行一个邮箱，或使用逗号分隔"></textarea>
+                </section>
+            </div>
+            <div class="modal-footer team-invite-footer">
+                <button type="button" class="btn btn-secondary" data-action="close-invite-modal">取消</button>
+                <button type="button" class="btn btn-primary" data-action="submit-invite">提交邀请</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/go-admin/static/js/utils.js?v={{ static_version }}"></script>
+    <script src="/go-admin/static/js/auto_team.js?v={{ static_version }}"></script>
+</body>
+</html>

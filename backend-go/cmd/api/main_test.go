@@ -9,8 +9,38 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dou-jiang/codex-console/backend-go/internal/adminui"
+	"github.com/dou-jiang/codex-console/backend-go/internal/settings"
 	"github.com/dou-jiang/codex-console/backend-go/internal/uploader"
 )
+
+func TestAPIHandlerMountsAdminUI(t *testing.T) {
+	handler, err := adminui.NewHandler(adminui.HandlerOptions{
+		BasePath: "/go-admin",
+		Settings: apiAdminUISettingsReader{
+			repo: fakeAdminUISettingsRepository{
+				items: map[string]settings.SettingRecord{
+					adminui.DefaultAccessPasswordKey: {Key: adminui.DefaultAccessPasswordKey, Value: "admin123"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new admin ui handler: %v", err)
+	}
+
+	server := httptest.NewServer(newAPIHandler(nil, handler))
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/go-admin/login")
+	if err != nil {
+		t.Fatalf("get go-admin login: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 response, got %d", resp.StatusCode)
+	}
+}
 
 func TestAPISub2APIUploadServiceInjectsUploadAccountStore(t *testing.T) {
 	serviceID := 55
@@ -219,6 +249,20 @@ func (f *fakeAPIUploadAccountStore) MarkSub2APIUploaded(_ context.Context, ids [
 
 type fakeAPIUploadSender struct {
 	results []uploader.UploadResult
+}
+
+type fakeAdminUISettingsRepository struct {
+	items map[string]settings.SettingRecord
+}
+
+func (f fakeAdminUISettingsRepository) GetSettings(_ context.Context, keys []string) (map[string]settings.SettingRecord, error) {
+	result := make(map[string]settings.SettingRecord, len(keys))
+	for _, key := range keys {
+		if item, ok := f.items[key]; ok {
+			result[key] = item
+		}
+	}
+	return result, nil
 }
 
 func (f *fakeAPIUploadSender) Kind() uploader.UploadKind {

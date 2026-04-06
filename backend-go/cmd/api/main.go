@@ -4,9 +4,11 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
+	"github.com/dou-jiang/codex-console/backend-go/internal/adminui"
 	"github.com/dou-jiang/codex-console/backend-go/internal/config"
 	"github.com/dou-jiang/codex-console/backend-go/internal/emailservices"
 	internalhttp "github.com/dou-jiang/codex-console/backend-go/internal/http"
@@ -61,6 +63,13 @@ func main() {
 		Repository:    settingsRepository,
 		DatabaseAdmin: settings.NewPostgresDatabaseAdmin(deps.Postgres, deps.Config.DatabaseURL, ""),
 	})
+	adminUIHandler, err := adminui.NewHandler(adminui.HandlerOptions{
+		BasePath: adminui.DefaultBasePath,
+		Settings: apiAdminUISettingsReader{repo: settingsRepository},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 	emailServicesService := emailservices.NewService(emailservices.NewPostgresRepository(deps.Postgres), nil)
 	uploaderService := newAPIUploaderService(uploader.NewPostgresConfigRepository(deps.Postgres), accountsRepository)
 	logsService := logs.NewService(logs.NewPostgresRepository(deps.Postgres))
@@ -73,7 +82,7 @@ func main() {
 
 	if err := http.ListenAndServe(
 		deps.Config.HTTPAddr,
-		newAPIHandler(jobService, registrationService, batchService, availableServices, statsService, outlookService, accountsService, settingsService, emailServicesService, uploaderService, logsService, paymentService, teamService, teamTaskService, taskSocketHandler, batchSocketHandler),
+		newAPIHandler(jobService, registrationService, batchService, availableServices, statsService, outlookService, accountsService, adminUIHandler, settingsService, emailServicesService, uploaderService, logsService, paymentService, teamService, teamTaskService, taskSocketHandler, batchSocketHandler),
 	); err != nil {
 		log.Fatal(err)
 	}
@@ -90,6 +99,29 @@ func newAPIUploaderService(repository uploader.AdminRepository, accountStore upl
 	}
 	serviceOpts = append(serviceOpts, opts...)
 	return uploader.NewService(repository, serviceOpts...)
+}
+
+type apiAdminUISettingsSource interface {
+	GetSettings(ctx context.Context, keys []string) (map[string]settings.SettingRecord, error)
+}
+
+type apiAdminUISettingsReader struct {
+	repo apiAdminUISettingsSource
+}
+
+func (r apiAdminUISettingsReader) GetSettings(ctx context.Context, keys []string) (map[string]settings.SettingRecord, error) {
+	if r.repo == nil {
+		return map[string]settings.SettingRecord{}, nil
+	}
+	items, err := r.repo.GetSettings(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	if record, ok := items[adminui.DefaultAccessPasswordKey]; ok {
+		record.Value = strings.TrimSpace(record.Value)
+		items[adminui.DefaultAccessPasswordKey] = record
+	}
+	return items, nil
 }
 
 func bootstrapAPI(parent context.Context) (apiDependencies, error) {

@@ -119,23 +119,64 @@ def filter_sensitive_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return filtered
 
 
-def service_to_response(service: EmailServiceModel) -> EmailServiceResponse:
+def _normalize_service_email(service: EmailServiceModel) -> str:
+    """规范化邮箱服务邮箱地址，供批量状态匹配使用。"""
+    return str((service.config or {}).get("email") or service.name or "").strip().lower()
+
+
+def _build_outlook_registration_lookup(
+    db,
+    services: List[EmailServiceModel],
+) -> Dict[str, int]:
+    """批量查询 Outlook 邮箱对应的账号注册状态。"""
+    normalized_emails = sorted(
+        {
+            _normalize_service_email(service)
+            for service in services
+            if service.service_type == "outlook" and _normalize_service_email(service)
+        }
+    )
+    if not normalized_emails:
+        return {}
+
+    accounts = (
+        db.query(AccountModel.id, AccountModel.email)
+        .filter(func.lower(AccountModel.email).in_(normalized_emails))
+        .all()
+    )
+    return {
+        str(email or "").strip().lower(): account_id
+        for account_id, email in accounts
+        if email
+    }
+
+
+def service_to_response(
+    service: EmailServiceModel,
+    registration_lookup: Optional[Dict[str, int]] = None,
+) -> EmailServiceResponse:
     """?????????"""
     registration_status = None
     registered_account_id = None
     if service.service_type == "outlook":
-        email = str((service.config or {}).get("email") or service.name or "").strip()
-        normalized_email = email.lower()
-        if email:
-            with get_db() as db:
-                account = (
-                    db.query(AccountModel)
-                    .filter(func.lower(AccountModel.email) == normalized_email)
-                    .first()
-                )
-            if account:
+        normalized_email = _normalize_service_email(service)
+        if normalized_email:
+            account_id = None
+            if registration_lookup is None:
+                with get_db() as db:
+                    account = (
+                        db.query(AccountModel.id)
+                        .filter(func.lower(AccountModel.email) == normalized_email)
+                        .first()
+                    )
+                if account:
+                    account_id = account.id
+            else:
+                account_id = registration_lookup.get(normalized_email)
+
+            if account_id is not None:
                 registration_status = "registered"
-                registered_account_id = account.id
+                registered_account_id = account_id
             else:
                 registration_status = "unregistered"
 
@@ -152,6 +193,18 @@ def service_to_response(service: EmailServiceModel) -> EmailServiceResponse:
         created_at=service.created_at.isoformat() if service.created_at else None,
         updated_at=service.updated_at.isoformat() if service.updated_at else None,
     )
+
+
+def build_email_service_responses(
+    db,
+    services: List[EmailServiceModel],
+) -> List[EmailServiceResponse]:
+    """在同一个数据库会话里批量构造邮箱服务响应。"""
+    registration_lookup = _build_outlook_registration_lookup(db, services)
+    return [
+        service_to_response(service, registration_lookup=registration_lookup)
+        for service in services
+    ]
 
 
 # ============== API Endpoints ==============
@@ -344,7 +397,7 @@ async def list_email_services(
 
         return EmailServiceListResponse(
             total=len(services),
-            services=[service_to_response(s) for s in services]
+            services=build_email_service_responses(db, services)
         )
 
 

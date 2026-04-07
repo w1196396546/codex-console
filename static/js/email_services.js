@@ -94,14 +94,46 @@ const CUSTOM_SUBTYPE_LABELS = {
     imap: '📧 IMAP 邮箱（Gmail/QQ/163等）'
 };
 
+const CUSTOM_SERVICE_TYPE_TO_SUBTYPE = {
+    moe_mail: 'moemail',
+    yyds_mail: 'yydsmail',
+    temp_mail: 'tempmail',
+    duck_mail: 'duckmail',
+    luckmail: 'luckmail',
+    freemail: 'freemail',
+    imap_mail: 'imap',
+};
+
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
-    loadStats();
-    loadOutlookServices();
-    loadCustomServices();
-    loadTempmailConfig();
+    loadPageData();
     initEventListeners();
 });
+
+async function loadPageData() {
+    try {
+        const [servicesData, settings] = await Promise.all([
+            api.get('/email-services'),
+            api.get('/settings'),
+        ]);
+        const services = servicesData.services || [];
+
+        await Promise.all([
+            loadStats(services, settings),
+            loadOutlookServices(services),
+            loadCustomServices(services),
+            loadTempmailConfig(settings),
+        ]);
+    } catch (error) {
+        console.error('加载邮箱服务页面数据失败:', error);
+        await Promise.all([
+            loadStats(),
+            loadOutlookServices(),
+            loadCustomServices(),
+            loadTempmailConfig(),
+        ]);
+    }
+}
 
 // 事件监听
 function initEventListeners() {
@@ -218,9 +250,36 @@ function switchEditSubType(subType) {
 }
 
 // 加载统计信息
-async function loadStats() {
+async function loadStats(services = null, settings = null) {
     try {
-        const data = await api.get('/email-services/stats');
+        let data = null;
+        if (Array.isArray(services) && settings) {
+            const typeCounts = services.reduce((acc, service) => {
+                acc[service.service_type] = (acc[service.service_type] || 0) + 1;
+                if (service.enabled) {
+                    acc.enabled_count += 1;
+                }
+                return acc;
+            }, { enabled_count: 0 });
+
+            data = {
+                outlook_count: typeCounts.outlook || 0,
+                custom_count: typeCounts.moe_mail || 0,
+                yyds_mail_count: typeCounts.yyds_mail || 0,
+                temp_mail_count: typeCounts.temp_mail || 0,
+                duck_mail_count: typeCounts.duck_mail || 0,
+                freemail_count: typeCounts.freemail || 0,
+                imap_mail_count: typeCounts.imap_mail || 0,
+                luckmail_count: typeCounts.luckmail || 0,
+                enabled_count: typeCounts.enabled_count || 0,
+                tempmail_available: Boolean(
+                    settings.tempmail?.enabled
+                    || (settings.yyds_mail?.enabled && settings.yyds_mail?.has_api_key)
+                ),
+            };
+        } else {
+            data = await api.get('/email-services/stats');
+        }
         elements.outlookCount.textContent = data.outlook_count || 0;
         elements.customCount.textContent = (data.custom_count || 0) + (data.yyds_mail_count || 0) + (data.temp_mail_count || 0) + (data.duck_mail_count || 0) + (data.luckmail_count || 0) + (data.freemail_count || 0) + (data.imap_mail_count || 0);
         elements.tempmailStatus.textContent = data.tempmail_available ? '可用' : '不可用';
@@ -231,10 +290,14 @@ async function loadStats() {
 }
 
 // 加载 Outlook 服务
-async function loadOutlookServices() {
+async function loadOutlookServices(services = null) {
     try {
-        const data = await api.get('/email-services?service_type=outlook');
-        outlookServices = data.services || [];
+        if (Array.isArray(services)) {
+            outlookServices = services.filter(service => service.service_type === 'outlook');
+        } else {
+            const data = await api.get('/email-services?service_type=outlook');
+            outlookServices = data.services || [];
+        }
 
         if (outlookServices.length === 0) {
             elements.outlookTable.innerHTML = `
@@ -357,26 +420,35 @@ function getCustomServiceAddress(service) {
 }
 
 // 加载自定义邮箱服务（moe_mail + temp_mail + duck_mail + luckmail + freemail + imap_mail 合并）
-async function loadCustomServices() {
+async function loadCustomServices(services = null) {
     try {
-        const [r1, r2, r3, r4, r5, r6, r7] = await Promise.all([
-            api.get('/email-services?service_type=moe_mail'),
-            api.get('/email-services?service_type=yyds_mail'),
-            api.get('/email-services?service_type=temp_mail'),
-            api.get('/email-services?service_type=duck_mail'),
-            api.get('/email-services?service_type=luckmail'),
-            api.get('/email-services?service_type=freemail'),
-            api.get('/email-services?service_type=imap_mail')
-        ]);
-        customServices = [
-            ...(r1.services || []).map(s => ({ ...s, _subType: 'moemail' })),
-            ...(r2.services || []).map(s => ({ ...s, _subType: 'yydsmail' })),
-            ...(r3.services || []).map(s => ({ ...s, _subType: 'tempmail' })),
-            ...(r4.services || []).map(s => ({ ...s, _subType: 'duckmail' })),
-            ...(r5.services || []).map(s => ({ ...s, _subType: 'luckmail' })),
-            ...(r6.services || []).map(s => ({ ...s, _subType: 'freemail' })),
-            ...(r7.services || []).map(s => ({ ...s, _subType: 'imap' }))
-        ];
+        if (Array.isArray(services)) {
+            customServices = services
+                .filter(service => Object.prototype.hasOwnProperty.call(CUSTOM_SERVICE_TYPE_TO_SUBTYPE, service.service_type))
+                .map(service => ({
+                    ...service,
+                    _subType: CUSTOM_SERVICE_TYPE_TO_SUBTYPE[service.service_type],
+                }));
+        } else {
+            const [r1, r2, r3, r4, r5, r6, r7] = await Promise.all([
+                api.get('/email-services?service_type=moe_mail'),
+                api.get('/email-services?service_type=yyds_mail'),
+                api.get('/email-services?service_type=temp_mail'),
+                api.get('/email-services?service_type=duck_mail'),
+                api.get('/email-services?service_type=luckmail'),
+                api.get('/email-services?service_type=freemail'),
+                api.get('/email-services?service_type=imap_mail')
+            ]);
+            customServices = [
+                ...(r1.services || []).map(s => ({ ...s, _subType: 'moemail' })),
+                ...(r2.services || []).map(s => ({ ...s, _subType: 'yydsmail' })),
+                ...(r3.services || []).map(s => ({ ...s, _subType: 'tempmail' })),
+                ...(r4.services || []).map(s => ({ ...s, _subType: 'duckmail' })),
+                ...(r5.services || []).map(s => ({ ...s, _subType: 'luckmail' })),
+                ...(r6.services || []).map(s => ({ ...s, _subType: 'freemail' })),
+                ...(r7.services || []).map(s => ({ ...s, _subType: 'imap' }))
+            ];
+        }
 
         if (customServices.length === 0) {
             elements.customTable.innerHTML = `
@@ -433,20 +505,20 @@ async function loadCustomServices() {
 }
 
 // 加载临时邮箱配置
-async function loadTempmailConfig() {
+async function loadTempmailConfig(settings = null) {
     try {
-        const settings = await api.get('/settings');
-        if (settings.tempmail) {
-            elements.tempmailApi.value = settings.tempmail.api_url || settings.tempmail.base_url || '';
-            elements.tempmailEnabled.checked = settings.tempmail.enabled !== false;
+        const resolvedSettings = settings || await api.get('/settings');
+        if (resolvedSettings.tempmail) {
+            elements.tempmailApi.value = resolvedSettings.tempmail.api_url || resolvedSettings.tempmail.base_url || '';
+            elements.tempmailEnabled.checked = resolvedSettings.tempmail.enabled !== false;
         }
-        if (settings.yyds_mail) {
-            elements.yydsMailApi.value = settings.yyds_mail.api_url || settings.yyds_mail.base_url || '';
-            elements.yydsMailDomain.value = settings.yyds_mail.default_domain || '';
-            elements.yydsMailEnabled.checked = settings.yyds_mail.enabled === true;
+        if (resolvedSettings.yyds_mail) {
+            elements.yydsMailApi.value = resolvedSettings.yyds_mail.api_url || resolvedSettings.yyds_mail.base_url || '';
+            elements.yydsMailDomain.value = resolvedSettings.yyds_mail.default_domain || '';
+            elements.yydsMailEnabled.checked = resolvedSettings.yyds_mail.enabled === true;
             elements.yydsMailApiKey.value = '';
-            elements.yydsMailApiKey.dataset.hasKey = settings.yyds_mail.has_api_key ? 'true' : 'false';
-            elements.yydsMailApiKey.placeholder = settings.yyds_mail.has_api_key ? '已设置，留空保持不变' : 'AC-your_api_key';
+            elements.yydsMailApiKey.dataset.hasKey = resolvedSettings.yyds_mail.has_api_key ? 'true' : 'false';
+            elements.yydsMailApiKey.placeholder = resolvedSettings.yyds_mail.has_api_key ? '已设置，留空保持不变' : 'AC-your_api_key';
         }
     } catch (error) {
         // 忽略错误
@@ -479,8 +551,7 @@ async function handleOutlookImport() {
 
         if (result.success > 0) {
             toast.success(`成功导入 ${result.success} 个账户`);
-            loadOutlookServices();
-            loadStats();
+            loadPageData();
             elements.outlookImportData.value = '';
         }
     } catch (error) {
@@ -573,8 +644,7 @@ async function handleAddCustom(e) {
         toast.success('服务添加成功');
         elements.addCustomModal.classList.remove('active');
         e.target.reset();
-        loadCustomServices();
-        loadStats();
+        loadPageData();
     } catch (error) {
         toast.error('添加失败: ' + error.message);
     }
@@ -585,9 +655,7 @@ async function toggleService(id, enabled) {
     try {
         await api.patch(`/email-services/${id}`, { enabled });
         toast.success(enabled ? '已启用' : '已禁用');
-        loadOutlookServices();
-        loadCustomServices();
-        loadStats();
+        loadPageData();
     } catch (error) {
         toast.error('操作失败: ' + error.message);
     }
@@ -613,9 +681,7 @@ async function deleteService(id, name) {
         toast.success('已删除');
         selectedOutlook.delete(id);
         selectedCustom.delete(id);
-        loadOutlookServices();
-        loadCustomServices();
-        loadStats();
+        loadPageData();
     } catch (error) {
         toast.error('删除失败: ' + error.message);
     }
@@ -633,8 +699,7 @@ async function handleBatchDeleteOutlook() {
         });
         toast.success(`成功删除 ${result.deleted || selectedOutlook.size} 个账户`);
         selectedOutlook.clear();
-        loadOutlookServices();
-        loadStats();
+        loadPageData();
     } catch (error) {
         toast.error('删除失败: ' + error.message);
     }
@@ -901,8 +966,7 @@ async function handleEditCustom(e) {
         await api.patch(`/email-services/${id}`, updateData);
         toast.success('服务更新成功');
         elements.editCustomModal.classList.remove('active');
-        loadCustomServices();
-        loadStats();
+        loadPageData();
     } catch (error) {
         toast.error('更新失败: ' + error.message);
     }
@@ -957,8 +1021,7 @@ async function handleEditOutlook(e) {
         await api.patch(`/email-services/${id}`, updateData);
         toast.success('账户更新成功');
         elements.editOutlookModal.classList.remove('active');
-        loadOutlookServices();
-        loadStats();
+        loadPageData();
     } catch (error) {
         toast.error('更新失败: ' + error.message);
     }

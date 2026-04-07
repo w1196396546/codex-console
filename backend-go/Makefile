@@ -13,6 +13,12 @@ guard-backend-go-base-url:
 test:
 	go test ./...
 
+test-migrations:
+	go test ./db/migrations -v
+
+test-migrations-pg:
+	go test ./db/migrations -run TestGooseMigratesLegacySchemaWithRealPostgres -v
+
 test-e2e: guard-backend-go-base-url
 	go test ./tests/e2e -v
 
@@ -25,6 +31,9 @@ migrate-up: guard-goose guard-database-url
 verify-phase1: guard-backend-go-base-url
 	go test ./...
 	BACKEND_GO_BASE_URL="$(BACKEND_GO_BASE_URL)" go test ./tests/e2e -v
+
+verify-phase5:
+	bash ../scripts/verify_phase5_cutover.sh
 
 run-api:
 	go run ./cmd/api

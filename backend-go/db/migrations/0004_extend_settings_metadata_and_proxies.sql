@@ -59,6 +59,7 @@ ALTER TABLE proxies ADD COLUMN IF NOT EXISTS last_used TIMESTAMPTZ;
 ALTER TABLE proxies ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE proxies ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
+-- +goose StatementBegin
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -86,6 +87,7 @@ BEGIN
     END IF;
 END
 $$;
+-- +goose StatementEnd
 
 UPDATE proxies SET name = '' WHERE name IS NULL;
 ALTER TABLE proxies ALTER COLUMN name SET NOT NULL;

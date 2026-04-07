@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const defaultTimeout = 30 * time.Second
@@ -19,10 +21,12 @@ type Headers map[string]string
 type FlowRequestKind string
 
 const (
-	FlowRequestKindRegisterPassword FlowRequestKind = "register_password"
-	FlowRequestKindSendEmailOTP     FlowRequestKind = "send_email_otp"
-	FlowRequestKindVerifyEmailOTP   FlowRequestKind = "verify_email_otp"
-	FlowRequestKindCreateAccount    FlowRequestKind = "create_account"
+	FlowRequestKindRegisterPassword  FlowRequestKind = "register_password"
+	FlowRequestKindSendEmailOTP      FlowRequestKind = "send_email_otp"
+	FlowRequestKindVerifyEmailOTP    FlowRequestKind = "verify_email_otp"
+	FlowRequestKindCreateAccount     FlowRequestKind = "create_account"
+	FlowRequestKindAuthorizeContinue FlowRequestKind = "authorize_continue"
+	FlowRequestKindPasswordVerify    FlowRequestKind = "password_verify"
 )
 
 type RequestHeadersInput struct {
@@ -63,6 +67,7 @@ type Client struct {
 	userAgent              string
 	defaultHeaders         Headers
 	requestHeadersProvider RequestHeadersProvider
+	deviceID               string
 }
 
 func NewClient(options Options) (*Client, error) {
@@ -90,6 +95,7 @@ func NewClient(options Options) (*Client, error) {
 		userAgent:              strings.TrimSpace(options.UserAgent),
 		defaultHeaders:         cloneHeaders(options.DefaultHeaders),
 		requestHeadersProvider: options.RequestHeadersProvider,
+		deviceID:               uuid.NewString(),
 	}, nil
 }
 
@@ -119,6 +125,7 @@ func (c *Client) Do(ctx context.Context, request Request) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
+	c.ensureDeviceCookie(targetURL)
 
 	httpRequest, err := http.NewRequestWithContext(ctx, method, targetURL.String(), request.Body)
 	if err != nil {
@@ -235,4 +242,34 @@ func (c *Client) flowRequestHeaders(ctx context.Context, input RequestHeadersInp
 		return nil, fmt.Errorf("resolve %s headers: %w", input.Kind, err)
 	}
 	return cloneHeaders(headers), nil
+}
+
+func (c *Client) ensureDeviceCookie(targetURL *url.URL) {
+	if c == nil || c.httpClient == nil || c.httpClient.Jar == nil || targetURL == nil {
+		return
+	}
+
+	deviceID := strings.TrimSpace(c.deviceID)
+	if deviceID == "" {
+		return
+	}
+
+	c.httpClient.Jar.SetCookies(targetURL, []*http.Cookie{{
+		Name:  "oai-did",
+		Value: deviceID,
+		Path:  "/",
+	}})
+}
+
+func (c *Client) resetSession() error {
+	if c == nil || c.httpClient == nil {
+		return nil
+	}
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return fmt.Errorf("reset auth cookie jar: %w", err)
+	}
+	c.httpClient.Jar = jar
+	return nil
 }

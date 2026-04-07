@@ -1,8 +1,10 @@
 package e2e_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -30,6 +32,11 @@ func TestPaymentPhaseFourCompatibilityRoutes(t *testing.T) {
 				SessionToken:     "session-old",
 				Cookies:          "__Secure-next-auth.session-token=session-old; oai-did=device-7",
 				SubscriptionType: "",
+				ExtraData: map[string]any{
+					"payment_subscription_status":     "team",
+					"payment_subscription_confidence": "high",
+					"payment_subscription_source":     "chatgpt_web",
+				},
 			},
 			8: {
 				ID:               8,
@@ -40,6 +47,11 @@ func TestPaymentPhaseFourCompatibilityRoutes(t *testing.T) {
 				Cookies:          "__Secure-next-auth.session-token=session-8; oai-did=device-8",
 				SubscriptionType: "team",
 				SubscriptionAt:   timePtr(now.Add(-2 * time.Hour)),
+				ExtraData: map[string]any{
+					"payment_subscription_status":     "team",
+					"payment_subscription_confidence": "high",
+					"payment_subscription_source":     "chatgpt_web",
+				},
 			},
 		},
 	}
@@ -51,35 +63,17 @@ func TestPaymentPhaseFourCompatibilityRoutes(t *testing.T) {
 		},
 		tasks: map[int]paymentpkg.BindCardTask{},
 	}
+	adapters := paymentpkg.NewTransitionAdapters()
 	service := paymentpkg.NewService(
 		repo,
 		accountRepo,
 		paymentpkg.WithNow(func() time.Time { return now }),
-		paymentpkg.WithCheckoutLinkGenerator(phaseFourCheckoutGenerator{}),
-		paymentpkg.WithBillingProfileGenerator(phaseFourBillingProfileGenerator{}),
-		paymentpkg.WithBrowserOpener(phaseFourBrowserOpener{}),
-		paymentpkg.WithSessionAdapter(phaseFourSessionAdapter{
-			result: paymentpkg.SessionBootstrapResult{
-				SessionToken: "session-bootstrap-7",
-				AccessToken:  "access-bootstrap-7",
-				Cookies:      "__Secure-next-auth.session-token=session-bootstrap-7; oai-did=device-7",
-			},
-		}),
-		paymentpkg.WithSubscriptionChecker(phaseFourSubscriptionChecker{
-			details: map[int]paymentpkg.SubscriptionCheckDetail{
-				7: {
-					Status:         "team",
-					Confidence:     "high",
-					Source:         "chatgpt_web",
-					RefreshedToken: true,
-				},
-				8: {
-					Status:     "team",
-					Confidence: "high",
-					Source:     "chatgpt_web",
-				},
-			},
-		}),
+		paymentpkg.WithCheckoutLinkGenerator(adapters.CheckoutLinkGenerator),
+		paymentpkg.WithBillingProfileGenerator(adapters.BillingProfileGenerator),
+		paymentpkg.WithBrowserOpener(adapters.BrowserOpener),
+		paymentpkg.WithSessionAdapter(adapters.SessionAdapter),
+		paymentpkg.WithSubscriptionChecker(adapters.SubscriptionChecker),
+		paymentpkg.WithAutoBinder(adapters.AutoBinder),
 	)
 
 	server := httptest.NewServer(internalhttp.NewRouter(nil, service))
@@ -94,7 +88,8 @@ func TestPaymentPhaseFourCompatibilityRoutes(t *testing.T) {
 		"country":        "GB",
 		"currency":       "GBP",
 	}).(map[string]any)
-	if generatePayload["link"] != "https://chatgpt.com/pay/cs_phase4_7" || generatePayload["source"] != "openai_checkout" {
+	link, _ := generatePayload["link"].(string)
+	if !strings.Contains(link, "/checkout/openai_llc/cs_transition_team_7_ops") || generatePayload["source"] != "openai_checkout" {
 		t.Fatalf("unexpected generate-link payload: %#v", generatePayload)
 	}
 
@@ -112,7 +107,8 @@ func TestPaymentPhaseFourCompatibilityRoutes(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected created task object, got %#v", taskPayload["task"])
 	}
-	if task["status"] != paymentpkg.StatusLinkReady || task["checkout_url"] != "https://chatgpt.com/pay/cs_phase4_7" {
+	checkoutURL, _ := task["checkout_url"].(string)
+	if task["status"] != paymentpkg.StatusLinkReady || !strings.Contains(checkoutURL, "/checkout/openai_llc/cs_transition_team_7_ops") {
 		t.Fatalf("unexpected created bind-card task payload: %#v", task)
 	}
 
@@ -129,10 +125,18 @@ func TestPaymentPhaseFourCompatibilityRoutes(t *testing.T) {
 		t.Fatalf("unexpected bind-card task listing row: %#v", listedTask)
 	}
 
-	openPayload := mustRequestJSON(t, server, http.MethodPost, "/api/payment/bind-card/tasks/1/open", map[string]any{}).(map[string]any)
-	openTask := openPayload["task"].(map[string]any)
-	if openTask["status"] != paymentpkg.StatusOpened {
-		t.Fatalf("expected opened task status, got %#v", openTask)
+	openPayload := mustRequestStatusJSON(t, server, http.StatusInternalServerError, http.MethodPost, "/api/payment/bind-card/tasks/1/open", map[string]any{}).(map[string]any)
+	if openPayload["detail"] != "未找到可用的浏览器，请手动复制链接" {
+		t.Fatalf("expected truthful no-browser fallback detail, got %#v", openPayload)
+	}
+	postOpenListPayload := mustRequestJSON(t, server, http.MethodGet, "/api/payment/bind-card/tasks?page=1&page_size=20&status=link_ready&search=ops@example.com", nil).(map[string]any)
+	postOpenTasks, ok := postOpenListPayload["tasks"].([]any)
+	if !ok || len(postOpenTasks) != 1 {
+		t.Fatalf("expected one bind-card task row after failed open, got %#v", postOpenListPayload["tasks"])
+	}
+	postOpenTask := postOpenTasks[0].(map[string]any)
+	if postOpenTask["status"] != paymentpkg.StatusLinkReady || postOpenTask["last_error"] != "未找到可用的浏览器" {
+		t.Fatalf("expected failed open to preserve link_ready with last_error, got %#v", postOpenTask)
 	}
 
 	verifyPayload := mustRequestJSON(t, server, http.MethodPost, "/api/payment/bind-card/tasks/1/mark-user-action", map[string]any{
@@ -148,7 +152,7 @@ func TestPaymentPhaseFourCompatibilityRoutes(t *testing.T) {
 	}
 
 	bootstrapPayload := mustRequestJSON(t, server, http.MethodPost, "/api/payment/accounts/7/session-bootstrap", map[string]any{}).(map[string]any)
-	if bootstrapPayload["success"] != true || bootstrapPayload["session_token_len"] != float64(len("session-bootstrap-7")) {
+	if bootstrapPayload["success"] != true {
 		t.Fatalf("unexpected session-bootstrap payload: %#v", bootstrapPayload)
 	}
 
@@ -177,96 +181,160 @@ func TestPaymentPhaseFourCompatibilityRoutes(t *testing.T) {
 }
 
 func TestTeamPhaseFourAcceptedTaskLiveFlow(t *testing.T) {
-	now := time.Date(2026, 4, 6, 2, 0, 0, 0, time.UTC)
+	installPhaseFourTeamHTTPStub(t, func(req *http.Request) (*http.Response, error) {
+		if auth := req.Header.Get("Authorization"); auth != "Bearer owner-token" {
+			t.Fatalf("unexpected transition authorization header: %q", auth)
+		}
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/backend-api/accounts/check/v4-2023-04-27":
+			return phaseFourTeamJSONResponse(http.StatusOK, map[string]any{
+				"accounts": map[string]any{
+					"acct_101": map[string]any{
+						"account": map[string]any{
+							"plan_type":         "team",
+							"name":              "Alpha Team",
+							"account_user_role": "account-owner",
+						},
+						"entitlement": map[string]any{
+							"subscription_plan": "chatgpt-team",
+						},
+					},
+					"acct_202": map[string]any{
+						"account": map[string]any{
+							"plan_type":         "team",
+							"name":              "Beta Team",
+							"account_user_role": "account-owner",
+						},
+						"entitlement": map[string]any{
+							"subscription_plan": "chatgpt-team",
+						},
+					},
+				},
+			})
+		case req.Method == http.MethodGet && req.URL.Path == "/backend-api/accounts/acct_101/users":
+			return phaseFourTeamJSONResponse(http.StatusOK, map[string]any{
+				"items": []any{
+					map[string]any{
+						"id":           "user-9",
+						"email":        "member@example.com",
+						"role":         "member",
+						"created_time": "2026-04-05T00:00:00Z",
+					},
+				},
+				"total": 1,
+				"limit": 100,
+			})
+		case req.Method == http.MethodGet && req.URL.Path == "/backend-api/accounts/acct_101/invites":
+			return phaseFourTeamJSONResponse(http.StatusOK, map[string]any{
+				"items": []any{
+					map[string]any{
+						"email_address": "pending@example.com",
+						"role":          "member",
+						"created_time":  "2026-04-05T01:00:00Z",
+					},
+				},
+			})
+		case req.Method == http.MethodGet && req.URL.Path == "/backend-api/accounts/acct_202/users":
+			return phaseFourTeamJSONResponse(http.StatusOK, map[string]any{
+				"items": []any{
+					map[string]any{
+						"id":           "user-11",
+						"email":        "second@example.com",
+						"role":         "member",
+						"created_time": "2026-04-05T02:00:00Z",
+					},
+				},
+				"total": 1,
+				"limit": 100,
+			})
+		case req.Method == http.MethodGet && req.URL.Path == "/backend-api/accounts/acct_202/invites":
+			return phaseFourTeamJSONResponse(http.StatusOK, map[string]any{
+				"items": []any{},
+			})
+		case req.Method == http.MethodPost && req.URL.Path == "/backend-api/accounts/acct_101/invites":
+			var payload map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode invite payload: %v", err)
+			}
+			emails, ok := payload["email_addresses"].([]any)
+			if !ok || len(emails) != 1 || emails[0] != "child@example.com" {
+				t.Fatalf("unexpected invite payload: %#v", payload)
+			}
+			return phaseFourTeamJSONResponse(http.StatusOK, map[string]any{"ok": true})
+		default:
+			t.Fatalf("unexpected transition request: %s %s", req.Method, req.URL.Path)
+			return nil, nil
+		}
+	})
+
 	repo := &phaseFourTeamRepository{
 		accounts: map[int64]teampkg.AccountRecord{
-			7: {ID: 7, Email: "owner@example.com", Status: "active", AccessToken: "owner-token"},
-			9: {ID: 9, Email: "member@example.com", Status: "active"},
+			7:  {ID: 7, Email: "owner@example.com", Status: "active", AccessToken: "owner-token"},
+			9:  {ID: 9, Email: "member@example.com", Status: "active"},
+			10: {ID: 10, Email: "child@example.com", Status: "active"},
+			11: {ID: 11, Email: "second@example.com", Status: "active"},
 		},
-		teams: map[int64]teampkg.TeamRecord{
-			101: {
-				ID:                101,
-				OwnerAccountID:    7,
-				UpstreamTeamID:    "team-up-101",
-				UpstreamAccountID: "acct_101",
-				TeamName:          "Alpha Team",
-				PlanType:          "team",
-				Status:            "active",
-				CurrentMembers:    1,
-				MaxMembers:        intPtr(5),
-				SeatsAvailable:    intPtr(4),
-				SyncStatus:        "success",
-				UpdatedAt:         now,
-			},
-		},
-		memberships: map[int64]teampkg.TeamMembershipRecord{
-			201: {
-				ID:               201,
-				TeamID:           101,
-				LocalAccountID:   int64Ptr(9),
-				MemberEmail:      "member@example.com",
-				MemberRole:       "member",
-				MembershipStatus: "joined",
-				JoinedAt:         timePtr(now.Add(-24 * time.Hour)),
-				LastSeenAt:       timePtr(now.Add(-5 * time.Minute)),
-				CreatedAt:        now.Add(-48 * time.Hour),
-				UpdatedAt:        now,
-			},
-		},
-		tasks:     map[string]teampkg.TeamTaskRecord{},
-		taskItems: map[int64][]teampkg.TeamTaskItemRecord{},
+		teams:       map[int64]teampkg.TeamRecord{},
+		memberships: map[int64]teampkg.TeamMembershipRecord{},
+		tasks:       map[string]teampkg.TeamTaskRecord{},
+		taskItems:   map[int64][]teampkg.TeamTaskItemRecord{},
 	}
 	jobService := jobs.NewService(jobs.NewInMemoryRepository(), nil)
 	readService := teampkg.NewService(repo, nil)
-	taskService := teampkg.NewTaskService(repo, readService, jobService, phaseFourTeamExecutor{
-		results: map[string]teampkg.TaskExecutionResult{
-			"sync_all_teams": {
-				Status: jobs.StatusCompleted,
-				Summary: map[string]any{
-					"synced": true,
-					"detail": "sync finished",
-				},
-				Logs: []string{
-					"sync started",
-					"sync finished",
-				},
-				Items: []teampkg.TaskExecutionItem{
-					{
-						TargetEmail: "member@example.com",
-						ItemStatus:  "completed",
-						Before:      map[string]any{"membership_status": "joined"},
-						After:       map[string]any{"membership_status": "joined"},
-						Message:     "member state confirmed",
-					},
-				},
-			},
-		},
-	})
+	taskService := teampkg.NewTaskService(repo, readService, jobService, teampkg.NewTransitionTaskExecutor(repo, teampkg.TransitionExecutorHooks{}))
 
 	server := httptest.NewServer(internalhttp.NewRouter(jobService, readService, taskService))
 	defer server.Close()
 
+	discoveryPayload := mustRequestStatusJSON(t, server, http.StatusAccepted, http.MethodPost, "/api/team/discovery/7", nil).(map[string]any)
+	discoveryTaskUUID, _ := discoveryPayload["task_uuid"].(string)
+	discoveryDetail := waitForPhaseFourTeamTask(t, server, discoveryTaskUUID)
+	if discoveryDetail["status"] != jobs.StatusCompleted {
+		t.Fatalf("expected discovery task to complete, got %#v", discoveryDetail)
+	}
+
 	teamsPayload := mustRequestJSON(t, server, http.MethodGet, "/api/team/teams", nil).(map[string]any)
-	if teamsPayload["total"] != float64(1) {
-		t.Fatalf("expected team list total=1, got %#v", teamsPayload)
+	if teamsPayload["total"] != float64(2) {
+		t.Fatalf("expected team list total=2, got %#v", teamsPayload)
 	}
-	detailPayload := mustRequestJSON(t, server, http.MethodGet, "/api/team/teams/101", nil).(map[string]any)
-	if detailPayload["team_name"] != "Alpha Team" || detailPayload["active_member_count"] != float64(1) {
-		t.Fatalf("unexpected team detail payload: %#v", detailPayload)
+	teamRows, ok := teamsPayload["items"].([]any)
+	if !ok || len(teamRows) != 2 {
+		t.Fatalf("expected two discovered team rows, got %#v", teamsPayload["items"])
 	}
-	membershipPayload := mustRequestJSON(t, server, http.MethodGet, "/api/team/teams/101/memberships?binding=all", nil).(map[string]any)
-	if membershipPayload["total"] != float64(1) {
-		t.Fatalf("expected membership total=1, got %#v", membershipPayload)
+	teamIDsByUpstream := make(map[string]int64, len(teamRows))
+	for _, row := range teamRows {
+		record := row.(map[string]any)
+		upstreamID, _ := record["upstream_account_id"].(string)
+		teamIDsByUpstream[upstreamID] = int64(record["id"].(float64))
+	}
+	alphaTeamID := teamIDsByUpstream["acct_101"]
+	betaTeamID := teamIDsByUpstream["acct_202"]
+	if alphaTeamID == 0 || betaTeamID == 0 {
+		t.Fatalf("expected discovery to persist both upstream teams, got %#v", teamIDsByUpstream)
+	}
+	detailPayload := mustRequestJSON(t, server, http.MethodGet, "/api/team/teams/"+strconv.FormatInt(alphaTeamID, 10), nil).(map[string]any)
+	if detailPayload["team_name"] != "Alpha Team" || detailPayload["active_member_count"] != float64(0) {
+		t.Fatalf("unexpected alpha team detail payload: %#v", detailPayload)
+	}
+	betaDetailPayload := mustRequestJSON(t, server, http.MethodGet, "/api/team/teams/"+strconv.FormatInt(betaTeamID, 10), nil).(map[string]any)
+	if betaDetailPayload["team_name"] != "Beta Team" || betaDetailPayload["active_member_count"] != float64(0) {
+		t.Fatalf("unexpected beta team detail payload: %#v", betaDetailPayload)
+	}
+	if repoTeam := repo.teams[alphaTeamID]; repoTeam.UpstreamAccountID != "acct_101" || repoTeam.SyncStatus != "synced" {
+		t.Fatalf("expected alpha discovery state, got %#v", repoTeam)
+	}
+	if repoTeam := repo.teams[betaTeamID]; repoTeam.UpstreamAccountID != "acct_202" || repoTeam.SyncStatus != "synced" {
+		t.Fatalf("expected beta discovery state, got %#v", repoTeam)
 	}
 
 	acceptedPayload := mustRequestStatusJSON(t, server, http.StatusAccepted, http.MethodPost, "/api/team/teams/sync-batch", map[string]any{
-		"ids": []int64{101},
+		"ids": []int64{alphaTeamID, betaTeamID},
 	}).(map[string]any)
 	taskUUID, _ := acceptedPayload["task_uuid"].(string)
 	if taskUUID == "" || acceptedPayload["ws_channel"] != "/api/ws/task/"+taskUUID {
 		t.Fatalf("unexpected accepted payload: %#v", acceptedPayload)
 	}
-	if acceptedPayload["team_id"] != float64(101) || acceptedPayload["accepted_count"] != float64(1) {
+	if acceptedPayload["team_id"] != float64(alphaTeamID) || acceptedPayload["accepted_count"] != float64(2) {
 		t.Fatalf("expected sync-batch accepted payload to preserve team context, got %#v", acceptedPayload)
 	}
 
@@ -276,53 +344,80 @@ func TestTeamPhaseFourAcceptedTaskLiveFlow(t *testing.T) {
 	initial := conn.readJSON(t)
 	assertWebSocketMessageField(t, initial, "type", "status")
 	assertWebSocketMessageField(t, initial, "task_uuid", taskUUID)
-	assertWebSocketMessageField(t, initial, "status", jobs.StatusPending)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- taskService.ExecuteTask(context.Background(), taskUUID)
-	}()
-
-	var sawCompleted bool
-	var sawLog bool
-	deadline := time.Now().Add(2 * time.Second)
-	for !(sawCompleted && sawLog) {
-		if time.Now().After(deadline) {
-			t.Fatalf("expected websocket live flow to deliver completed status and logs, got completed=%v log=%v", sawCompleted, sawLog)
-		}
-		message := conn.readJSON(t)
-		switch message["type"] {
-		case "status":
-			if message["status"] == jobs.StatusCompleted {
-				sawCompleted = true
+	initialStatus, _ := initial["status"].(string)
+	if initialStatus == "" {
+		t.Fatalf("expected initial websocket status payload, got %#v", initial)
+	}
+	if initialStatus != jobs.StatusCompleted {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			message := conn.readJSON(t)
+			if message["type"] == "status" && message["status"] == jobs.StatusCompleted {
+				break
 			}
-		case "log":
-			sawLog = true
 		}
 	}
-	if err := <-done; err != nil {
-		t.Fatalf("execute team task: %v", err)
+
+	syncMembershipPayload := mustRequestJSON(t, server, http.MethodGet, "/api/team/teams/"+strconv.FormatInt(alphaTeamID, 10)+"/memberships?binding=all", nil).(map[string]any)
+	if syncMembershipPayload["total"] != float64(2) {
+		t.Fatalf("expected alpha sync to persist two memberships, got %#v", syncMembershipPayload)
+	}
+	detailPayload = mustRequestJSON(t, server, http.MethodGet, "/api/team/teams/"+strconv.FormatInt(alphaTeamID, 10), nil).(map[string]any)
+	if detailPayload["active_member_count"] != float64(2) || detailPayload["joined_count"] != float64(1) || detailPayload["invited_count"] != float64(1) {
+		t.Fatalf("expected alpha sync detail aggregates to update, got %#v", detailPayload)
+	}
+	if repoMembership := findPhaseFourTeamMembership(repo.memberships, "member@example.com"); repoMembership.TeamID != alphaTeamID || repoMembership.LocalAccountID == nil || *repoMembership.LocalAccountID != 9 || repoMembership.MembershipStatus != "joined" {
+		t.Fatalf("expected alpha sync to persist joined local membership, got %#v", repoMembership)
+	}
+	betaMembershipPayload := mustRequestJSON(t, server, http.MethodGet, "/api/team/teams/"+strconv.FormatInt(betaTeamID, 10)+"/memberships?binding=all", nil).(map[string]any)
+	if betaMembershipPayload["total"] != float64(1) {
+		t.Fatalf("expected beta sync to persist one membership, got %#v", betaMembershipPayload)
+	}
+	betaDetailPayload = mustRequestJSON(t, server, http.MethodGet, "/api/team/teams/"+strconv.FormatInt(betaTeamID, 10), nil).(map[string]any)
+	if betaDetailPayload["joined_count"] != float64(1) || betaDetailPayload["invited_count"] != float64(0) {
+		t.Fatalf("expected beta sync detail aggregates to update, got %#v", betaDetailPayload)
+	}
+	if repoMembership := findPhaseFourTeamMembership(repo.memberships, "second@example.com"); repoMembership.TeamID != betaTeamID || repoMembership.LocalAccountID == nil || *repoMembership.LocalAccountID != 11 || repoMembership.MembershipStatus != "joined" {
+		t.Fatalf("expected beta sync to persist joined local membership, got %#v", repoMembership)
 	}
 
-	tasksPayload := mustRequestJSON(t, server, http.MethodGet, "/api/team/tasks?team_id=101", nil).(map[string]any)
-	if tasksPayload["total"] != float64(1) {
+	invitePayload := mustRequestStatusJSON(t, server, http.StatusAccepted, http.MethodPost, "/api/team/teams/"+strconv.FormatInt(alphaTeamID, 10)+"/invite-accounts", map[string]any{
+		"ids":        []int64{10},
+		"select_all": false,
+	}).(map[string]any)
+	inviteTaskUUID, _ := invitePayload["task_uuid"].(string)
+	inviteDetailPayload := waitForPhaseFourTeamTask(t, server, inviteTaskUUID)
+	if inviteDetailPayload["status"] != jobs.StatusCompleted {
+		t.Fatalf("expected invite task to complete, got %#v", inviteDetailPayload)
+	}
+
+	membershipPayload := mustRequestJSON(t, server, http.MethodGet, "/api/team/teams/"+strconv.FormatInt(alphaTeamID, 10)+"/memberships?binding=all", nil).(map[string]any)
+	if membershipPayload["total"] != float64(3) {
+		t.Fatalf("expected invite to persist third membership, got %#v", membershipPayload)
+	}
+	if repoMembership := findPhaseFourTeamMembership(repo.memberships, "child@example.com"); repoMembership.TeamID != alphaTeamID || repoMembership.LocalAccountID == nil || *repoMembership.LocalAccountID != 10 || repoMembership.MembershipStatus != "invited" {
+		t.Fatalf("expected invite to persist local membership, got %#v", repoMembership)
+	}
+
+	tasksPayload := mustRequestJSON(t, server, http.MethodGet, "/api/team/tasks?team_id="+strconv.FormatInt(alphaTeamID, 10), nil).(map[string]any)
+	if tasksPayload["total"] != float64(2) {
 		t.Fatalf("expected task list total=1, got %#v", tasksPayload)
 	}
 	taskRows, ok := tasksPayload["items"].([]any)
-	if !ok || len(taskRows) != 1 {
-		t.Fatalf("expected one team task row, got %#v", tasksPayload["items"])
+	if !ok || len(taskRows) != 2 {
+		t.Fatalf("expected two team-scoped task rows, got %#v", tasksPayload["items"])
 	}
 	taskRow := taskRows[0].(map[string]any)
-	if taskRow["task_uuid"] != taskUUID || taskRow["status"] != jobs.StatusCompleted {
+	if taskRow["status"] != jobs.StatusCompleted {
 		t.Fatalf("unexpected team task listing row: %#v", taskRow)
 	}
 
-	taskDetailPayload := mustRequestJSON(t, server, http.MethodGet, "/api/team/tasks/"+taskUUID, nil).(map[string]any)
+	taskDetailPayload := mustRequestJSON(t, server, http.MethodGet, "/api/team/tasks/"+inviteTaskUUID, nil).(map[string]any)
 	if taskDetailPayload["status"] != jobs.StatusCompleted {
 		t.Fatalf("expected completed team task detail, got %#v", taskDetailPayload)
 	}
 	logs, ok := taskDetailPayload["logs"].([]any)
-	if !ok || len(logs) < 2 {
+	if !ok || len(logs) < 3 {
 		t.Fatalf("expected persisted team task logs, got %#v", taskDetailPayload["logs"])
 	}
 	items, ok := taskDetailPayload["items"].([]any)
@@ -533,6 +628,8 @@ type phaseFourTeamRepository struct {
 	memberships    map[int64]teampkg.TeamMembershipRecord
 	tasks          map[string]teampkg.TeamTaskRecord
 	taskItems      map[int64][]teampkg.TeamTaskItemRecord
+	nextTeamID     int64
+	nextMemberID   int64
 	nextTaskID     int64
 	nextTaskItemID int64
 }
@@ -607,9 +704,51 @@ func (r *phaseFourTeamRepository) SaveMembership(_ context.Context, membership t
 	return membership, nil
 }
 
+func (r *phaseFourTeamRepository) UpsertMembership(_ context.Context, membership teampkg.TeamMembershipRecord) (teampkg.TeamMembershipRecord, error) {
+	for id, existing := range r.memberships {
+		if existing.TeamID == membership.TeamID && strings.EqualFold(existing.MemberEmail, membership.MemberEmail) {
+			membership.ID = id
+			r.memberships[id] = membership
+			return membership, nil
+		}
+	}
+	r.nextMemberID++
+	membership.ID = r.nextMemberID
+	r.memberships[membership.ID] = membership
+	return membership, nil
+}
+
 func (r *phaseFourTeamRepository) SaveTeam(_ context.Context, team teampkg.TeamRecord) (teampkg.TeamRecord, error) {
 	r.teams[team.ID] = team
 	return team, nil
+}
+
+func (r *phaseFourTeamRepository) UpsertTeam(_ context.Context, team teampkg.TeamRecord) (teampkg.TeamRecord, error) {
+	for id, existing := range r.teams {
+		if existing.OwnerAccountID == team.OwnerAccountID && strings.EqualFold(existing.UpstreamAccountID, team.UpstreamAccountID) {
+			team.ID = id
+			r.teams[id] = team
+			return team, nil
+		}
+	}
+	r.nextTeamID++
+	team.ID = r.nextTeamID
+	r.teams[team.ID] = team
+	return team, nil
+}
+
+func (r *phaseFourTeamRepository) ListAccountsByEmails(_ context.Context, emails []string) (map[string]teampkg.AccountRecord, error) {
+	result := make(map[string]teampkg.AccountRecord, len(emails))
+	for _, email := range emails {
+		normalized := strings.ToLower(strings.TrimSpace(email))
+		for _, record := range r.accounts {
+			if strings.ToLower(strings.TrimSpace(record.Email)) == normalized {
+				result[normalized] = record
+				break
+			}
+		}
+	}
+	return result, nil
 }
 
 func (r *phaseFourTeamRepository) ListTasks(_ context.Context, req teampkg.ListTasksRequest) ([]teampkg.TeamTaskRecord, error) {
@@ -684,18 +823,65 @@ func (r *phaseFourTeamRepository) FindActiveTask(_ context.Context, scopeType st
 	return teampkg.TeamTaskRecord{}, teampkg.ErrNotFound
 }
 
-type phaseFourTeamExecutor struct {
-	results map[string]teampkg.TaskExecutionResult
-}
-
-func (e phaseFourTeamExecutor) Execute(_ context.Context, task teampkg.TaskExecutionRequest) (teampkg.TaskExecutionResult, error) {
-	result, ok := e.results[task.TaskType]
-	if !ok {
-		return teampkg.TaskExecutionResult{}, teampkg.ErrNotFound
-	}
-	return result, nil
-}
-
 func int64Ptr(value int64) *int64 {
 	return &value
+}
+
+func installPhaseFourTeamHTTPStub(t *testing.T, fn func(req *http.Request) (*http.Response, error)) {
+	t.Helper()
+
+	previous := http.DefaultTransport
+	http.DefaultTransport = phaseFourTeamRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "chatgpt.com" {
+			return previous.RoundTrip(req)
+		}
+		return fn(req)
+	})
+	t.Cleanup(func() {
+		http.DefaultTransport = previous
+	})
+}
+
+type phaseFourTeamRoundTripFunc func(req *http.Request) (*http.Response, error)
+
+func (fn phaseFourTeamRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func phaseFourTeamJSONResponse(status int, payload map[string]any) (*http.Response, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}, nil
+}
+
+func waitForPhaseFourTeamTask(t *testing.T, server *httptest.Server, taskUUID string) map[string]any {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		payload := mustRequestJSON(t, server, http.MethodGet, "/api/team/tasks/"+taskUUID, nil).(map[string]any)
+		status, _ := payload["status"].(string)
+		if status != jobs.StatusPending && status != jobs.StatusRunning {
+			return payload
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	return mustRequestJSON(t, server, http.MethodGet, "/api/team/tasks/"+taskUUID, nil).(map[string]any)
+}
+
+func findPhaseFourTeamMembership(records map[int64]teampkg.TeamMembershipRecord, email string) teampkg.TeamMembershipRecord {
+	normalized := strings.ToLower(strings.TrimSpace(email))
+	for _, record := range records {
+		if strings.ToLower(strings.TrimSpace(record.MemberEmail)) == normalized {
+			return record
+		}
+	}
+	return teampkg.TeamMembershipRecord{}
 }

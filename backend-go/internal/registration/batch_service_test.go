@@ -78,21 +78,22 @@ func TestStartBatchPreservesCompatibilityFieldsInEachPayload(t *testing.T) {
 
 	emailServiceID := 77
 	resp, err := svc.StartBatch(context.Background(), registration.BatchStartRequest{
-		Count:              2,
-		EmailServiceType:   "outlook",
-		Proxy:              "http://proxy.internal:8080",
-		EmailServiceID:     &emailServiceID,
-		EmailServiceConfig: map[string]any{"domain": "example.com"},
-		IntervalMin:        5,
-		IntervalMax:        30,
-		Concurrency:        4,
-		Mode:               "parallel",
-		AutoUploadCPA:      true,
-		CPAServiceIDs:      []int{1, 2},
-		AutoUploadSub2API:  true,
-		Sub2APIServiceIDs:  []int{3},
-		AutoUploadTM:       true,
-		TMServiceIDs:       []int{4, 5},
+		Count:                   2,
+		EmailServiceType:        "outlook",
+		ChatGPTRegistrationMode: "access_token_only",
+		Proxy:                   "http://proxy.internal:8080",
+		EmailServiceID:          &emailServiceID,
+		EmailServiceConfig:      map[string]any{"domain": "example.com"},
+		IntervalMin:             5,
+		IntervalMax:             30,
+		Concurrency:             4,
+		Mode:                    "parallel",
+		AutoUploadCPA:           true,
+		CPAServiceIDs:           []int{1, 2},
+		AutoUploadSub2API:       true,
+		Sub2APIServiceIDs:       []int{3},
+		AutoUploadTM:            true,
+		TMServiceIDs:            []int{4, 5},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -111,6 +112,9 @@ func TestStartBatchPreservesCompatibilityFieldsInEachPayload(t *testing.T) {
 
 		if payload.IntervalMin != 5 || payload.IntervalMax != 30 || payload.Concurrency != 4 || payload.Mode != "parallel" {
 			t.Fatalf("expected batch scheduling fields preserved, got %+v", payload)
+		}
+		if payload.ChatGPTRegistrationMode != "access_token_only" {
+			t.Fatalf("expected registration mode preserved, got %+v", payload)
 		}
 		if payload.EmailServiceID == nil || *payload.EmailServiceID != emailServiceID {
 			t.Fatalf("expected email_service_id=%d, got %+v", emailServiceID, payload.EmailServiceID)

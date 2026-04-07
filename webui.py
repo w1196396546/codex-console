@@ -91,6 +91,7 @@ def setup_application():
     logger.info("数据库初始化完成，地基已经打好")
     logger.info(f"数据目录已安顿好: {data_dir}")
     logger.info(f"日志目录也已就位: {logs_dir}")
+    logger.info("Phase 5 提示：当前 Python Web UI 仅作为兼容/展示壳保留，目标生产后端路径是 Go API + Go worker")
 
     logger.info("应用程序设置完成，齿轮已经咔哒一声卡上了")
     return settings
@@ -119,6 +120,7 @@ def start_webui():
     logger = logging.getLogger(__name__)
     logger.info(f"Web UI 已就位，请走这边: http://{settings.webui_host}:{settings.webui_port}")
     logger.info(f"调试模式: {settings.debug}")
+    logger.info("Phase 5 提示：此进程不应再被视为生产后端关键路径；最终 cutover 以后端 Go runtime 为准")
 
     # 启动服务器
     uvicorn.run(**uvicorn_config)

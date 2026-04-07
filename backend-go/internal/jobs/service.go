@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/hibiken/asynq"
 )
@@ -54,6 +56,12 @@ type appendLogsRepository interface {
 	AppendJobLog(ctx context.Context, jobID string, level string, message string) error
 }
 
+type AppLogSink interface {
+	AppendAppLog(ctx context.Context, level string, logger string, message string) error
+}
+
+type ServiceOption func(*Service)
+
 type ListJobsParams struct {
 	JobType    string
 	ScopeTypes []string
@@ -70,12 +78,27 @@ type ListJobsResult struct {
 type Service struct {
 	repository Repository
 	queue      Queue
+	appLogSink AppLogSink
 }
 
-func NewService(repository Repository, queue Queue) *Service {
-	return &Service{
+func NewService(repository Repository, queue Queue, opts ...ServiceOption) *Service {
+	service := &Service{
 		repository: repository,
 		queue:      queue,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(service)
+		}
+	}
+	return service
+}
+
+func WithAppLogSink(sink AppLogSink) ServiceOption {
+	return func(service *Service) {
+		if service != nil {
+			service.appLogSink = sink
+		}
 	}
 }
 
@@ -172,7 +195,11 @@ func (s *Service) MarkCompleted(ctx context.Context, jobID string, result map[st
 
 func (s *Service) AppendLog(ctx context.Context, jobID string, level string, message string) error {
 	if appendRepo, ok := s.repository.(appendLogsRepository); ok {
-		return appendRepo.AppendJobLog(ctx, jobID, level, message)
+		if err := appendRepo.AppendJobLog(ctx, jobID, level, message); err != nil {
+			return err
+		}
+		s.mirrorAppLog(ctx, jobID, level, message)
+		return nil
 	}
 
 	_, err := s.repository.GetJob(ctx, jobID)
@@ -214,4 +241,27 @@ func validateCreateJobParams(params CreateJobParams) error {
 	}
 
 	return nil
+}
+
+func (s *Service) mirrorAppLog(ctx context.Context, jobID string, level string, message string) {
+	if s == nil || s.appLogSink == nil {
+		return
+	}
+
+	trimmedMessage := strings.TrimSpace(message)
+	if trimmedMessage == "" {
+		return
+	}
+
+	normalizedLevel := strings.ToUpper(strings.TrimSpace(level))
+	if normalizedLevel == "" {
+		normalizedLevel = "INFO"
+	}
+
+	_ = s.appLogSink.AppendAppLog(
+		ctx,
+		normalizedLevel,
+		"jobs.runtime",
+		fmt.Sprintf("[%s] %s", strings.TrimSpace(jobID), trimmedMessage),
+	)
 }

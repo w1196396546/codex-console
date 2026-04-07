@@ -111,18 +111,19 @@ func TestStartOutlookBatch(t *testing.T) {
 	service := registration.NewOutlookService(outlookFakeRepository{}, batchService)
 
 	response, err := service.StartOutlookBatch(context.Background(), registration.OutlookBatchStartRequest{
-		ServiceIDs:        []int{101, 202},
-		Proxy:             "http://proxy.internal:8080",
-		IntervalMin:       5,
-		IntervalMax:       30,
-		Concurrency:       3,
-		Mode:              "pipeline",
-		AutoUploadCPA:     true,
-		CPAServiceIDs:     []int{7, 8},
-		AutoUploadSub2API: true,
-		Sub2APIServiceIDs: []int{9},
-		AutoUploadTM:      true,
-		TMServiceIDs:      []int{10, 11},
+		ServiceIDs:              []int{101, 202},
+		ChatGPTRegistrationMode: "access_token_only",
+		Proxy:                   "http://proxy.internal:8080",
+		IntervalMin:             5,
+		IntervalMax:             30,
+		Concurrency:             3,
+		Mode:                    "pipeline",
+		AutoUploadCPA:           true,
+		CPAServiceIDs:           []int{7, 8},
+		AutoUploadSub2API:       true,
+		Sub2APIServiceIDs:       []int{9},
+		AutoUploadTM:            true,
+		TMServiceIDs:            []int{10, 11},
 	})
 	if err != nil {
 		t.Fatalf("unexpected start error: %v", err)
@@ -154,6 +155,9 @@ func TestStartOutlookBatch(t *testing.T) {
 	if payloadOne.IntervalMin != 5 || payloadOne.IntervalMax != 30 || payloadOne.Concurrency != 3 || payloadOne.Mode != "pipeline" {
 		t.Fatalf("expected first payload scheduling fields, got %+v", payloadOne)
 	}
+	if payloadOne.ChatGPTRegistrationMode != "access_token_only" {
+		t.Fatalf("expected first payload registration mode, got %+v", payloadOne)
+	}
 	if !payloadOne.AutoUploadCPA || !reflect.DeepEqual(payloadOne.CPAServiceIDs, []int{7, 8}) {
 		t.Fatalf("expected first payload CPA upload fields, got %+v", payloadOne)
 	}
@@ -173,6 +177,9 @@ func TestStartOutlookBatch(t *testing.T) {
 	}
 	if payloadTwo.IntervalMin != 5 || payloadTwo.IntervalMax != 30 || payloadTwo.Concurrency != 3 || payloadTwo.Mode != "pipeline" {
 		t.Fatalf("expected second payload scheduling fields, got %+v", payloadTwo)
+	}
+	if payloadTwo.ChatGPTRegistrationMode != "access_token_only" {
+		t.Fatalf("expected second payload registration mode, got %+v", payloadTwo)
 	}
 
 	status, err := service.GetOutlookBatch(context.Background(), response.BatchID, 0)

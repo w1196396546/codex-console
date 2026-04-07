@@ -68,16 +68,17 @@ func TestStartRegistrationPreservesCompatibilityFieldsInPayload(t *testing.T) {
 
 	emailServiceID := 42
 	req := registration.StartRequest{
-		EmailServiceType:   "outlook",
-		Proxy:              "http://proxy.internal:8080",
-		EmailServiceID:     &emailServiceID,
-		EmailServiceConfig: map[string]any{"domain": "example.com"},
-		AutoUploadCPA:      true,
-		CPAServiceIDs:      []int{11, 22},
-		AutoUploadSub2API:  true,
-		Sub2APIServiceIDs:  []int{33},
-		AutoUploadTM:       true,
-		TMServiceIDs:       []int{44, 55},
+		EmailServiceType:        "outlook",
+		ChatGPTRegistrationMode: "access_token_only",
+		Proxy:                   "http://proxy.internal:8080",
+		EmailServiceID:          &emailServiceID,
+		EmailServiceConfig:      map[string]any{"domain": "example.com"},
+		AutoUploadCPA:           true,
+		CPAServiceIDs:           []int{11, 22},
+		AutoUploadSub2API:       true,
+		Sub2APIServiceIDs:       []int{33},
+		AutoUploadTM:            true,
+		TMServiceIDs:            []int{44, 55},
 	}
 
 	if _, err := svc.StartRegistration(context.Background(), req); err != nil {
@@ -91,6 +92,9 @@ func TestStartRegistrationPreservesCompatibilityFieldsInPayload(t *testing.T) {
 
 	if decoded.Proxy != req.Proxy {
 		t.Fatalf("expected proxy %q, got %q", req.Proxy, decoded.Proxy)
+	}
+	if decoded.ChatGPTRegistrationMode != req.ChatGPTRegistrationMode {
+		t.Fatalf("expected registration mode %q, got %q", req.ChatGPTRegistrationMode, decoded.ChatGPTRegistrationMode)
 	}
 	if decoded.EmailServiceID == nil || *decoded.EmailServiceID != emailServiceID {
 		t.Fatalf("expected email_service_id=%d, got %+v", emailServiceID, decoded.EmailServiceID)

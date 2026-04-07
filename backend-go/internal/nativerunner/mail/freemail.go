@@ -30,6 +30,7 @@ type Freemail struct {
 	httpClient   *http.Client
 	pollInterval time.Duration
 	domains      []string
+	codeTracker  *otpCodeTracker
 }
 
 func NewFreemail(config FreemailConfig) *Freemail {
@@ -50,6 +51,7 @@ func NewFreemail(config FreemailConfig) *Freemail {
 		localPart:    strings.TrimSpace(config.LocalPart),
 		httpClient:   httpClient,
 		pollInterval: pollInterval,
+		codeTracker:  newOTPCodeTracker(),
 	}
 }
 
@@ -120,12 +122,12 @@ func (f *Freemail) WaitCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 		pattern = DefaultCodePattern
 	}
 
-	seenMailIDs := make(map[string]struct{})
 	ticker := time.NewTicker(f.pollInterval)
 	defer ticker.Stop()
 
 	for {
-		code, found, err := f.pollCode(ctx, inbox, pattern, seenMailIDs)
+		f.codeTracker.prepare(otpInboxStateKey(inbox), inbox.OTPSentAt)
+		code, found, err := f.pollCode(ctx, inbox, pattern, nil)
 		if err != nil {
 			return "", err
 		}
@@ -169,6 +171,12 @@ func (f *Freemail) pollCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 		pattern = DefaultCodePattern
 	}
 
+	minReceivedAt := time.Time{}
+	if !inbox.OTPSentAt.IsZero() {
+		minReceivedAt = inbox.OTPSentAt.Add(-defaultIMAPOTPTimeSkew)
+	}
+	inboxKey := otpInboxStateKey(inbox)
+
 	params := url.Values{}
 	params.Set("mailbox", strings.TrimSpace(inbox.Email))
 	params.Set("limit", "20")
@@ -179,12 +187,18 @@ func (f *Freemail) pollCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 		Subject          string `json:"subject"`
 		Preview          string `json:"preview"`
 		VerificationCode string `json:"verification_code"`
+		ReceivedAt       any    `json:"received_at"`
 	}
 	if err := f.doJSON(ctx, http.MethodGet, "/api/emails", nil, params, &emails); err != nil {
 		return "", false, fmt.Errorf("list freemail emails: %w", err)
 	}
 
 	for _, email := range emails {
+		receivedAt := parseTempmailMessageTime(email.ReceivedAt)
+		if !receivedAt.IsZero() && !minReceivedAt.IsZero() && receivedAt.Before(minReceivedAt) {
+			continue
+		}
+
 		mailID := strings.TrimSpace(email.ID)
 		if seenMailIDs != nil {
 			if _, ok := seenMailIDs[mailID]; ok {
@@ -195,17 +209,25 @@ func (f *Freemail) pollCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 			}
 		}
 
-		content := strings.Join([]string{email.Sender, email.Subject, email.Preview}, "\n")
-		if !strings.Contains(strings.ToLower(content), "openai") {
-			continue
-		}
+		summaryContent := buildSearchText(email.Sender, email.Subject, flattenMessageText(email.Preview))
+		if strings.Contains(strings.ToLower(summaryContent), "openai") {
+			if code := strings.TrimSpace(email.VerificationCode); code != "" {
+				fingerprint, fallbackCode := otpCodeFingerprint(mailID, receivedAt, summaryContent, code)
+				if f.codeTracker.hasSeen(inboxKey, fingerprint, fallbackCode) {
+					continue
+				}
+				f.codeTracker.markSeen(inboxKey, fingerprint, fallbackCode)
+				return code, true, nil
+			}
 
-		if code := strings.TrimSpace(email.VerificationCode); code != "" {
-			return code, true, nil
-		}
-
-		if code, found := matchCode(pattern, content); found {
-			return code, true, nil
+			if code, found := matchCode(pattern, summaryContent); found {
+				fingerprint, fallbackCode := otpCodeFingerprint(mailID, receivedAt, summaryContent, code)
+				if f.codeTracker.hasSeen(inboxKey, fingerprint, fallbackCode) {
+					continue
+				}
+				f.codeTracker.markSeen(inboxKey, fingerprint, fallbackCode)
+				return code, true, nil
+			}
 		}
 
 		if mailID == "" {
@@ -215,12 +237,49 @@ func (f *Freemail) pollCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 		var detail struct {
 			Content     string `json:"content"`
 			HTMLContent string `json:"html_content"`
+			Raw         any    `json:"raw"`
+			RFC822      any    `json:"rfc822"`
+			ReceivedAt  any    `json:"received_at"`
 		}
 		if err := f.doJSON(ctx, http.MethodGet, "/api/email/"+url.PathEscape(mailID), nil, nil, &detail); err != nil {
 			continue
 		}
 
-		if code, found := matchCode(pattern, detail.Content+"\n"+detail.HTMLContent); found {
+		if receivedAt.IsZero() {
+			receivedAt = parseTempmailMessageTime(detail.ReceivedAt)
+			if !receivedAt.IsZero() && !minReceivedAt.IsZero() && receivedAt.Before(minReceivedAt) {
+				continue
+			}
+		}
+
+		raw := firstRawMessageContent(detail.Raw, detail.RFC822)
+		detailContent := buildSearchText(
+			flattenMessageText(detail.Content),
+			flattenMessageHTML(detail.HTMLContent),
+			raw.From,
+			raw.Subject,
+			raw.Body,
+		)
+		content := buildSearchText(summaryContent, detailContent)
+		if !strings.Contains(strings.ToLower(content), "openai") {
+			continue
+		}
+
+		if code := strings.TrimSpace(email.VerificationCode); code != "" {
+			fingerprint, fallbackCode := otpCodeFingerprint(mailID, receivedAt, content, code)
+			if f.codeTracker.hasSeen(inboxKey, fingerprint, fallbackCode) {
+				continue
+			}
+			f.codeTracker.markSeen(inboxKey, fingerprint, fallbackCode)
+			return code, true, nil
+		}
+
+		if code, found := matchCode(pattern, content); found {
+			fingerprint, fallbackCode := otpCodeFingerprint(mailID, receivedAt, content, code)
+			if f.codeTracker.hasSeen(inboxKey, fingerprint, fallbackCode) {
+				continue
+			}
+			f.codeTracker.markSeen(inboxKey, fingerprint, fallbackCode)
 			return code, true, nil
 		}
 	}

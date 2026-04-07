@@ -70,7 +70,7 @@ func TestLogsMigrationCreatesWritableAppLogsTableOnRealPostgres(t *testing.T) {
 	pool := mustOpenPool(t, ctx, schemaDatabaseURL)
 	defer pool.Close()
 
-	assertLatestGooseVersion(t, ctx, pool, 6)
+	assertLatestGooseVersion(t, ctx, pool, 8)
 	assertIndexExists(t, ctx, pool, "app_logs", "app_logs_created_sort_idx")
 	assertIndexExists(t, ctx, pool, "app_logs", "app_logs_level_created_sort_idx")
 	assertIndexExists(t, ctx, pool, "app_logs", "app_logs_logger_created_sort_idx")

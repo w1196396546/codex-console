@@ -96,6 +96,23 @@
 - 支持打包为 Windows/Linux/macOS 可执行文件
 - 更适配当前 OpenAI 注册与登录链路
 
+## 后端切换说明（Phase 5）
+
+当前仓库的最终目标后端拓扑已经不是单进程 Python Web UI，而是：
+
+- Go API：`backend-go/cmd/api`
+- Go worker：`backend-go/cmd/worker`
+- PostgreSQL：Go 持久化真值源
+- Redis：队列、租约与 worker 运行时依赖
+
+`webui.py`、当前 `docker-compose.yml` 和 Python/Jinja 页面仍可作为兼容 UI / 本地观察壳使用，但 Phase 5 的 cutover 目标是不再让它们承担生产后端关键路径。
+
+回滚原则：
+
+1. 在 `scripts/verify_phase5_cutover.sh` 和 live operator checks 完成之前，保留 Python 兼容启动路径。
+2. 如果 Go cutover 验证失败，先停止 Go API / Go worker，再回到既有 Python Web UI 启动路径。
+3. 在 rollback 路径没有被写清楚并验证前，不移除 Python 入口或残余 bridge。
+
 ## 环境要求
 
 - Python 3.10+
@@ -132,7 +149,48 @@ cp .env.example .env
 
 `命令行参数 > 环境变量(.env) > 数据库设置 > 默认值`
 
-## 启动 Web UI
+## Go 后端切流路径（推荐）
+
+当你准备验证或执行 Go backend cutover 时，优先使用下面这条路径，而不是直接把 Python Web UI 当成最终生产后端：
+
+```bash
+cd backend-go
+cp .env.example .env
+set -a
+source .env
+set +a
+
+make migrate-up
+make run-api
+```
+
+另开一个终端启动 worker：
+
+```bash
+cd backend-go
+set -a
+source .env
+set +a
+
+make run-worker
+```
+
+然后回到仓库根目录跑 Phase 5 验证入口：
+
+```bash
+bash scripts/verify_phase5_cutover.sh
+```
+
+或者直接在 `backend-go/` 下执行：
+
+```bash
+cd backend-go
+make verify-phase5
+```
+
+如果你仍需要页面、noVNC 或现有模板进行本地观察，可以继续启动下面的 Python Web UI 兼容壳，但它不应再被视为最终生产后端路径。
+
+## 启动 Python Web UI（兼容壳 / 本地使用）
 
 ```bash
 # 默认启动（127.0.0.1:8000）
@@ -167,20 +225,42 @@ codex-console.exe --access-password mypassword
 
 [http://127.0.0.1:8000](http://127.0.0.1:8000)
 
-## Docker 部署
+补充说明：
 
-### 使用 docker-compose
+- 这一节描述的是当前 Python Web UI 的兼容启动方式，不是 Phase 5 的最终 Go backend cutover 形态。
+- 如果你正在做最终后端切换，请优先参考上面的“Go 后端切流路径（推荐）”以及 `scripts/verify_phase5_cutover.sh`。
+
+## Docker Compose（默认 Go backend，兼容壳可选）
+
+### 默认启动 Go backend cutover 拓扑
 
 ```bash
 docker-compose up -d
 ```
 
-你可以在 `docker-compose.yml` 中修改环境变量，比如端口和访问密码。  
-如果需要看“全自动绑卡”的可视化浏览器，打开：
+默认会启动：
+
+- `postgres`
+- `redis`
+- `go-api`
+- `go-worker`
+
+这样启动后，Go backend 会监听：
+
+- API: `http://127.0.0.1:18080`
+
+如果需要继续打开 Python Web UI 兼容壳和 noVNC 观察浏览器，使用：
+
+```bash
+docker-compose --profile compat-ui up -d
+```
+
+你可以在 `docker-compose.yml` 中修改环境变量，比如 Go API 端口、数据库账号和 Python 兼容壳访问密码。  
+如果启用了 `compat-ui` profile，需要看的“全自动绑卡”可视化浏览器入口是：
 
 - noVNC: `http://127.0.0.1:6080`
 
-### 使用 docker run
+### 使用 docker run（Python 兼容壳）
 
 ```bash
 docker run -d \
@@ -209,6 +289,8 @@ docker run -d \
 注意:
 
 `-v $(pwd)/data:/app/data` 很重要，这会把数据库和账号数据持久化到宿主机。否则容器一重启，数据也可能跟着表演消失术。
+
+这条 `docker run` 路径当前仍然启动 Python Web UI 壳与 noVNC 观察环境，不是默认 Go backend cutover 路径。更推荐优先使用上面的 `docker-compose` 默认拓扑来启动 Go API + Go worker。
 
 ## 使用远程 PostgreSQL
 
@@ -267,5 +349,3 @@ dist/codex-console-windows-X64.exe
 本项目仅供学习、研究和技术交流使用，请遵守相关平台和服务条款，不要用于违规、滥用或非法用途。
 
 因使用本项目产生的任何风险和后果，由使用者自行承担。
-
-

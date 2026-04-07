@@ -91,8 +91,11 @@ func TestRouterMountsPhaseFourRoutes(t *testing.T) {
 		method string
 		path   string
 	}{
+		{name: "payment generate-link path", method: http.MethodPost, path: "/api/payment/generate-link"},
 		{name: "payment session bootstrap path", method: http.MethodGet, path: "/api/payment/accounts/1/session-bootstrap"},
 		{name: "team list path", method: http.MethodPost, path: "/api/team/teams"},
+		{name: "team sync-batch path", method: http.MethodPost, path: "/api/team/teams/sync-batch"},
+		{name: "team task list path", method: http.MethodPost, path: "/api/team/tasks"},
 	}
 
 	for _, tc := range tests {

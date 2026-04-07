@@ -127,6 +127,7 @@ def _reserve_available_outlook_service(db, task_uuid: str):
 class RegistrationTaskCreate(BaseModel):
     """创建注册任务请求"""
     email_service_type: str = "tempmail"
+    chatgpt_registration_mode: str = "refresh_token"
     proxy: Optional[str] = None
     email_service_config: Optional[dict] = None
     email_service_id: Optional[int] = None
@@ -142,12 +143,14 @@ class BatchRegistrationRequest(BaseModel):
     """批量注册请求"""
     count: int = 1
     email_service_type: str = "tempmail"
+    chatgpt_registration_mode: str = "refresh_token"
     proxy: Optional[str] = None
     email_service_config: Optional[dict] = None
     email_service_id: Optional[int] = None
     interval_min: int = 5
     interval_max: int = 30
     concurrency: int = 1
+    token_completion_concurrency: Optional[int] = None
     mode: str = "pipeline"
     auto_upload_cpa: bool = False
     cpa_service_ids: List[int] = []
@@ -218,6 +221,7 @@ class OutlookBatchRegistrationRequest(BaseModel):
     interval_min: int = 5
     interval_max: int = 30
     concurrency: int = 1
+    token_completion_concurrency: Optional[int] = None
     mode: str = "pipeline"
     auto_upload_cpa: bool = False
     cpa_service_ids: List[int] = []
@@ -451,7 +455,7 @@ def _safe_update_registration_task(
         return None
 
 
-def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None, token_completion_concurrency: int = 1):
+def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None, token_completion_concurrency: int = 1, chatgpt_registration_mode: str = "refresh_token"):
     """
     在线程池中执行的同步注册任务
 
@@ -654,11 +658,16 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 "task_uuid": task_uuid,
                 "check_cancelled": raise_if_cancelled,
             }
+            extra_config = {}
             if requested_token_completion_concurrency > 1 or token_completion_max_concurrency > 0:
-                engine_kwargs["extra_config"] = {
+                extra_config.update({
                     "token_completion_concurrency": requested_token_completion_concurrency,
                     "token_completion_max_concurrency": token_completion_max_concurrency,
-                }
+                })
+            if chatgpt_registration_mode:
+                extra_config["chatgpt_registration_mode"] = str(chatgpt_registration_mode).strip()
+            if extra_config:
+                engine_kwargs["extra_config"] = extra_config
 
             engine = RegistrationEngine(
                 **engine_kwargs,
@@ -693,7 +702,18 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 update_proxy_usage(db, proxy_id)
 
                 # 保存到数据库
-                engine.save_to_database(result)
+                saved_to_database = engine.save_to_database(result)
+                if not saved_to_database:
+                    save_error = "保存到数据库失败，任务未标记完成"
+                    _finalize_task_record(
+                        db,
+                        task_uuid,
+                        status="failed",
+                        error_message=save_error,
+                    )
+                    task_manager.update_status(task_uuid, "failed", error=save_error)
+                    logger.error(f"注册任务落库失败: {task_uuid}, 邮箱: {result.email}")
+                    return
 
                 if callable(marker) and result.email:
                     try:
@@ -858,7 +878,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 pass
 
 
-async def run_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None, token_completion_concurrency: int = 1):
+async def run_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None, token_completion_concurrency: int = 1, chatgpt_registration_mode: str = "refresh_token"):
     """
     异步执行注册任务
 
@@ -892,6 +912,7 @@ async def run_registration_task(task_uuid: str, email_service_type: str, proxy: 
             auto_upload_tm,
             tm_service_ids or [],
             token_completion_concurrency,
+            chatgpt_registration_mode,
         )
     except Exception as e:
         logger.error(f"线程池执行异常: {task_uuid}, 错误: {e}")
@@ -953,6 +974,32 @@ def _create_registration_log_callback(task_uuid: str, log_prefix: str = "", batc
     return callback
 
 
+def _resolve_batch_token_completion_concurrency(
+    *,
+    batch_concurrency: int,
+    requested_token_completion_concurrency: Optional[int],
+    settings,
+) -> int:
+    """解析批量任务中的 token completion 并发。"""
+    resolved_batch_concurrency = max(1, int(batch_concurrency or 1))
+    token_completion_max_concurrency = max(
+        0,
+        int(getattr(settings, "registration_token_completion_max_concurrency", 0) or 0),
+    )
+
+    if requested_token_completion_concurrency is not None:
+        resolved = max(1, int(requested_token_completion_concurrency or 1))
+        if token_completion_max_concurrency > 0:
+            resolved = min(resolved, token_completion_max_concurrency)
+        return resolved
+
+    if token_completion_max_concurrency > 0:
+        return min(resolved_batch_concurrency, token_completion_max_concurrency)
+
+    # 未显式配置时采用保守自动值，避免在高并发批量下无感知退成 1。
+    return min(resolved_batch_concurrency, 2)
+
+
 def _make_batch_helpers(batch_id: str):
     """返回 add_batch_log 和 update_batch_status 辅助函数"""
     def add_batch_log(msg: str):
@@ -982,6 +1029,8 @@ async def run_batch_parallel(
     sub2api_service_ids: List[int] = None,
     auto_upload_tm: bool = False,
     tm_service_ids: List[int] = None,
+    token_completion_concurrency: Optional[int] = None,
+    chatgpt_registration_mode: str = "refresh_token",
 ):
     """
     并行模式：所有任务同时提交，Semaphore 控制最大并发数
@@ -990,7 +1039,13 @@ async def run_batch_parallel(
     add_batch_log, update_batch_status = _make_batch_helpers(batch_id)
     semaphore = asyncio.Semaphore(concurrency)
     counter_lock = asyncio.Lock()
+    resolved_token_completion_concurrency = _resolve_batch_token_completion_concurrency(
+        batch_concurrency=concurrency,
+        requested_token_completion_concurrency=token_completion_concurrency,
+        settings=get_settings(),
+    )
     add_batch_log(f"[系统] 并行模式启动，并发数: {concurrency}，总任务: {len(task_uuids)}")
+    add_batch_log(f"[系统] Token 收尾并发: {resolved_token_completion_concurrency}")
 
     async def _run_one(idx: int, uuid: str):
         prefix = f"[任务{idx + 1}]"
@@ -1012,7 +1067,8 @@ async def run_batch_parallel(
                 auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids or [],
                 auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids or [],
                 auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids or [],
-                token_completion_concurrency=concurrency,
+                token_completion_concurrency=resolved_token_completion_concurrency,
+                chatgpt_registration_mode=chatgpt_registration_mode,
             )
         with get_db() as db:
             t = crud.get_registration_task(db, uuid)
@@ -1060,6 +1116,8 @@ async def run_batch_pipeline(
     sub2api_service_ids: List[int] = None,
     auto_upload_tm: bool = False,
     tm_service_ids: List[int] = None,
+    token_completion_concurrency: Optional[int] = None,
+    chatgpt_registration_mode: str = "refresh_token",
 ):
     """
     流水线模式：每隔 interval 秒启动一个新任务，Semaphore 限制最大并发数
@@ -1069,7 +1127,13 @@ async def run_batch_pipeline(
     semaphore = asyncio.Semaphore(concurrency)
     counter_lock = asyncio.Lock()
     running_tasks_list = []
+    resolved_token_completion_concurrency = _resolve_batch_token_completion_concurrency(
+        batch_concurrency=concurrency,
+        requested_token_completion_concurrency=token_completion_concurrency,
+        settings=get_settings(),
+    )
     add_batch_log(f"[系统] 流水线模式启动，并发数: {concurrency}，总任务: {len(task_uuids)}")
+    add_batch_log(f"[系统] Token 收尾并发: {resolved_token_completion_concurrency}")
 
     async def _run_and_release(idx: int, uuid: str, pfx: str):
         try:
@@ -1079,7 +1143,8 @@ async def run_batch_pipeline(
                 auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids or [],
                 auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids or [],
                 auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids or [],
-                token_completion_concurrency=concurrency,
+                token_completion_concurrency=resolved_token_completion_concurrency,
+                chatgpt_registration_mode=chatgpt_registration_mode,
             )
             with get_db() as db:
                 t = crud.get_registration_task(db, uuid)
@@ -1153,6 +1218,8 @@ async def run_batch_registration(
     sub2api_service_ids: List[int] = None,
     auto_upload_tm: bool = False,
     tm_service_ids: List[int] = None,
+    token_completion_concurrency: Optional[int] = None,
+    chatgpt_registration_mode: str = "refresh_token",
 ):
     """根据 mode 分发到并行或流水线执行"""
     if mode == "parallel":
@@ -1162,6 +1229,8 @@ async def run_batch_registration(
             auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids,
             auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids,
             auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids,
+            token_completion_concurrency=token_completion_concurrency,
+            chatgpt_registration_mode=chatgpt_registration_mode,
         )
     else:
         await run_batch_pipeline(
@@ -1171,6 +1240,8 @@ async def run_batch_registration(
             auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids,
             auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids,
             auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids,
+            token_completion_concurrency=token_completion_concurrency,
+            chatgpt_registration_mode=chatgpt_registration_mode,
         )
 
 
@@ -1215,14 +1286,15 @@ async def start_registration(
         request.proxy,
         request.email_service_config,
         request.email_service_id,
-        "",
-        "",
-        request.auto_upload_cpa,
-        request.cpa_service_ids,
-        request.auto_upload_sub2api,
-        request.sub2api_service_ids,
-        request.auto_upload_tm,
-        request.tm_service_ids,
+        log_prefix="",
+        batch_id="",
+        auto_upload_cpa=request.auto_upload_cpa,
+        cpa_service_ids=request.cpa_service_ids,
+        auto_upload_sub2api=request.auto_upload_sub2api,
+        sub2api_service_ids=request.sub2api_service_ids,
+        auto_upload_tm=request.auto_upload_tm,
+        tm_service_ids=request.tm_service_ids,
+        chatgpt_registration_mode=request.chatgpt_registration_mode,
     )
 
     return task_to_response(task)
@@ -1259,6 +1331,9 @@ async def start_batch_registration(
 
     if not 1 <= request.concurrency <= 50:
         raise HTTPException(status_code=400, detail="并发数必须在 1-50 之间")
+
+    if request.token_completion_concurrency is not None and not 1 <= request.token_completion_concurrency <= 50:
+        raise HTTPException(status_code=400, detail="Token 收尾并发必须在 1-50 之间")
 
     if request.mode not in ("parallel", "pipeline"):
         raise HTTPException(status_code=400, detail="模式必须为 parallel 或 pipeline")
@@ -1308,14 +1383,16 @@ async def start_batch_registration(
         request.email_service_id,
         request.interval_min,
         request.interval_max,
-        request.concurrency,
-        request.mode,
-        request.auto_upload_cpa,
-        request.cpa_service_ids,
-        request.auto_upload_sub2api,
-        request.sub2api_service_ids,
-        request.auto_upload_tm,
-        request.tm_service_ids,
+        concurrency=request.concurrency,
+        mode=request.mode,
+        auto_upload_cpa=request.auto_upload_cpa,
+        cpa_service_ids=request.cpa_service_ids,
+        auto_upload_sub2api=request.auto_upload_sub2api,
+        sub2api_service_ids=request.sub2api_service_ids,
+        auto_upload_tm=request.auto_upload_tm,
+        tm_service_ids=request.tm_service_ids,
+        token_completion_concurrency=request.token_completion_concurrency,
+        chatgpt_registration_mode=request.chatgpt_registration_mode,
     )
 
     return BatchRegistrationResponse(
@@ -1850,18 +1927,34 @@ async def get_outlook_accounts_for_registration():
             EmailServiceModel.enabled == True
         ).order_by(EmailServiceModel.priority.asc()).all()
 
+        emails_by_service_id: Dict[int, str] = {}
+        for service in outlook_services:
+            config = service.config or {}
+            email = config.get("email") or service.name
+            emails_by_service_id[service.id] = email
+
+        unique_emails = list(dict.fromkeys(email for email in emails_by_service_id.values() if email))
+        existing_accounts_by_email = {}
+        if unique_emails:
+            existing_accounts_by_email = {
+                row.email: row
+                for row in db.query(
+                    Account.id,
+                    Account.email,
+                    Account.refresh_token,
+                ).filter(
+                    Account.email.in_(unique_emails)
+                ).all()
+            }
+
         accounts = []
         registered_count = 0
         unregistered_count = 0
 
         for service in outlook_services:
             config = service.config or {}
-            email = config.get("email") or service.name
-
-            # 检查是否已注册（查询 accounts 表）
-            existing_account = db.query(Account).filter(
-                Account.email == email
-            ).first()
+            email = emails_by_service_id.get(service.id) or service.name
+            existing_account = existing_accounts_by_email.get(email)
 
             is_registered = existing_account is not None
             has_refresh_token = _has_refresh_token(existing_account)
@@ -1906,6 +1999,7 @@ async def run_outlook_batch_registration(
     sub2api_service_ids: List[int] = None,
     auto_upload_tm: bool = False,
     tm_service_ids: List[int] = None,
+    token_completion_concurrency: Optional[int] = None,
 ):
     """
     异步执行 Outlook 批量注册任务，复用通用并发逻辑
@@ -1955,6 +2049,7 @@ async def run_outlook_batch_registration(
         sub2api_service_ids=sub2api_service_ids,
         auto_upload_tm=auto_upload_tm,
         tm_service_ids=tm_service_ids,
+        token_completion_concurrency=token_completion_concurrency,
     )
 
 
@@ -1980,6 +2075,9 @@ async def start_outlook_batch_registration(
 
     if not 1 <= request.concurrency <= 50:
         raise HTTPException(status_code=400, detail="并发数必须在 1-50 之间")
+
+    if request.token_completion_concurrency is not None and not 1 <= request.token_completion_concurrency <= 50:
+        raise HTTPException(status_code=400, detail="Token 收尾并发必须在 1-50 之间")
 
     if request.mode not in ("parallel", "pipeline"):
         raise HTTPException(status_code=400, detail="模式必须为 parallel 或 pipeline")
@@ -2023,14 +2121,15 @@ async def start_outlook_batch_registration(
         request.proxy,
         request.interval_min,
         request.interval_max,
-        request.concurrency,
-        request.mode,
-        request.auto_upload_cpa,
-        request.cpa_service_ids,
-        request.auto_upload_sub2api,
-        request.sub2api_service_ids,
-        request.auto_upload_tm,
-        request.tm_service_ids,
+        concurrency=request.concurrency,
+        mode=request.mode,
+        auto_upload_cpa=request.auto_upload_cpa,
+        cpa_service_ids=request.cpa_service_ids,
+        auto_upload_sub2api=request.auto_upload_sub2api,
+        sub2api_service_ids=request.sub2api_service_ids,
+        auto_upload_tm=request.auto_upload_tm,
+        tm_service_ids=request.tm_service_ids,
+        token_completion_concurrency=request.token_completion_concurrency,
     )
 
     return OutlookBatchRegistrationResponse(

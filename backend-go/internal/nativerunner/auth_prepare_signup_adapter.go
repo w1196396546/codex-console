@@ -66,6 +66,27 @@ func (p authSignupPreparer) PrepareSignup(ctx context.Context, email string) (Si
 	if err != nil {
 		return SignupPreparation{}, err
 	}
+	pageType := strings.TrimSpace(prepared.PageType)
+	if isDirectExistingAccountPreparation(pageType) {
+		return SignupPreparation{
+			CSRFToken:          prepared.CSRFToken,
+			AuthorizeURL:       prepared.AuthorizeURL,
+			FinalURL:           prepared.FinalURL,
+			FinalPath:          prepared.FinalPath,
+			ContinueURL:        prepared.ContinueURL,
+			PageType:           "existing_account_detected",
+			RegisterStatusCode: prepared.RegisterStatusCode,
+			SendOTPStatusCode:  prepared.SendOTPStatusCode,
+		}, nil
+	}
+	if pageType != "create_account_password" && pageType != "password" {
+		return SignupPreparation{}, fmt.Errorf(
+			"prepare signup did not reach password registration stage: page_type=%s final_url=%s final_path=%s",
+			pageType,
+			strings.TrimSpace(prepared.FinalURL),
+			strings.TrimSpace(prepared.FinalPath),
+		)
+	}
 
 	password, err := p.passwordGenerator()
 	if err != nil {
@@ -79,8 +100,9 @@ func (p authSignupPreparer) PrepareSignup(ctx context.Context, email string) (Si
 	if err != nil {
 		return SignupPreparation{}, err
 	}
-	if strings.TrimSpace(result.PageType) != stageEmailOTPVerification {
-		return SignupPreparation{}, fmt.Errorf("unexpected signup stage after sending otp: %s", strings.TrimSpace(result.PageType))
+	pageType = strings.TrimSpace(result.PageType)
+	if pageType != stageEmailOTPVerification && !isExistingAccountPageType(pageType) {
+		return SignupPreparation{}, fmt.Errorf("unexpected signup stage after sending otp: %s", pageType)
 	}
 
 	return SignupPreparation{
@@ -89,7 +111,7 @@ func (p authSignupPreparer) PrepareSignup(ctx context.Context, email string) (Si
 		FinalURL:           result.FinalURL,
 		FinalPath:          result.FinalPath,
 		ContinueURL:        result.ContinueURL,
-		PageType:           result.PageType,
+		PageType:           pageType,
 		RegisterStatusCode: result.RegisterStatusCode,
 		SendOTPStatusCode:  result.SendOTPStatusCode,
 		Password:           password,
@@ -108,4 +130,13 @@ func defaultAuthSignupPasswordGenerator() (string, error) {
 	}
 
 	return "Aa1!" + string(buffer), nil
+}
+
+func isDirectExistingAccountPreparation(pageType string) bool {
+	switch strings.TrimSpace(pageType) {
+	case "email_otp_verification", "login_password", "existing_account_detected", "user_exists":
+		return true
+	default:
+		return false
+	}
 }

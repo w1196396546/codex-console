@@ -37,6 +37,7 @@ type LuckMail struct {
 	preferredDomain string
 	httpClient      *http.Client
 	pollInterval    time.Duration
+	codeTracker     *otpCodeTracker
 }
 
 func NewLuckMail(config LuckMailConfig) *LuckMail {
@@ -73,6 +74,7 @@ func NewLuckMail(config LuckMailConfig) *LuckMail {
 		preferredDomain: strings.TrimSpace(strings.TrimPrefix(config.PreferredDomain, "@")),
 		httpClient:      httpClient,
 		pollInterval:    pollInterval,
+		codeTracker:     newOTPCodeTracker(),
 	}
 }
 
@@ -115,6 +117,7 @@ func (l *LuckMail) Create(ctx context.Context) (Inbox, error) {
 }
 
 func (l *LuckMail) GetCode(ctx context.Context, inbox Inbox, pattern *regexp.Regexp) (string, bool, error) {
+	l.codeTracker.prepare(otpInboxStateKey(inbox), inbox.OTPSentAt)
 	return l.pollCode(ctx, inbox, pattern)
 }
 
@@ -139,6 +142,7 @@ func (l *LuckMail) WaitCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 	defer ticker.Stop()
 
 	for {
+		l.codeTracker.prepare(otpInboxStateKey(inbox), inbox.OTPSentAt)
 		code, found, err := l.pollCode(ctx, inbox, pattern)
 		if err != nil {
 			return "", err
@@ -178,18 +182,34 @@ func (l *LuckMail) pollCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 		return "", false, fmt.Errorf("query luckmail code: %w", err)
 	}
 
+	receivedAt := parseLuckMailMessageTime(response)
+	if !inbox.OTPSentAt.IsZero() {
+		minReceivedAt := inbox.OTPSentAt.Add(-defaultIMAPOTPTimeSkew)
+		if !receivedAt.IsZero() && receivedAt.Before(minReceivedAt) {
+			return "", false, nil
+		}
+	}
+
+	inboxKey := otpInboxStateKey(inbox)
+	messageID := luckMailStringField(response, "id", "mail_id", "message_id")
+	content := buildSearchText(
+		luckMailStringField(response, "subject"),
+		flattenMessageText(luckMailStringField(response, "content")),
+		flattenMessageText(luckMailStringField(response, "body")),
+		flattenMessageText(luckMailStringField(response, "mail_content")),
+		flattenMessageText(luckMailStringField(response, "text")),
+		flattenMessageHTML(response["html"]),
+	)
+
 	code := strings.TrimSpace(luckMailStringField(response, "verification_code"))
 	if code == "" {
-		content := strings.Join([]string{
-			luckMailStringField(response, "subject"),
-			luckMailStringField(response, "content"),
-			luckMailStringField(response, "body"),
-			luckMailStringField(response, "mail_content"),
-			luckMailStringField(response, "text"),
-			luckMailStringField(response, "html"),
-		}, "\n")
 		if looksLikeOpenAIVerification(content) {
 			if matched, found := matchCode(pattern, content); found {
+				fingerprint, fallbackCode := otpCodeFingerprint(messageID, receivedAt, content, matched)
+				if l.codeTracker.hasSeen(inboxKey, fingerprint, fallbackCode) {
+					return "", false, nil
+				}
+				l.codeTracker.markSeen(inboxKey, fingerprint, fallbackCode)
 				return matched, true, nil
 			}
 		}
@@ -197,6 +217,11 @@ func (l *LuckMail) pollCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 	}
 
 	if matched, found := matchCode(pattern, code); found {
+		fingerprint, fallbackCode := otpCodeFingerprint(messageID, receivedAt, content, matched)
+		if l.codeTracker.hasSeen(inboxKey, fingerprint, fallbackCode) {
+			return "", false, nil
+		}
+		l.codeTracker.markSeen(inboxKey, fingerprint, fallbackCode)
 		return matched, true, nil
 	}
 
@@ -279,4 +304,38 @@ func luckMailStringField(payload map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func parseLuckMailMessageTime(payload map[string]any) time.Time {
+	for _, key := range []string{
+		"received_at",
+		"receivedAt",
+		"created_at",
+		"createdAt",
+		"date",
+		"updated_at",
+		"updatedAt",
+		"timestamp",
+	} {
+		if value, ok := payload[key]; ok {
+			if parsed := parseLuckMailTimeValue(value); !parsed.IsZero() {
+				return parsed
+			}
+		}
+	}
+	return time.Time{}
+}
+
+func parseLuckMailTimeValue(value any) time.Time {
+	return parseMessageTimeValue(value)
+}
+
+func unixTimeFromNumeric(value int64) time.Time {
+	if value <= 0 {
+		return time.Time{}
+	}
+	if value >= 1_000_000_000_000 {
+		return time.UnixMilli(value).UTC()
+	}
+	return time.Unix(value, 0).UTC()
 }

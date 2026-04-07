@@ -587,6 +587,11 @@ def _bootstrap_session_token_by_abcard_bridge(account: Account, proxy: Optional[
     1) /api/auth/csrf
     2) /api/auth/signin/openai
     3) /api/auth/session
+
+    Phase 5 note:
+    这是 Python compatibility shell 下的 legacy fallback。
+    最终 Go backend cutover 不应把它当成生产关键路径真值源。
+
     Returns:
         (session_token, fresh_access_token, merged_cookies_text)
     """

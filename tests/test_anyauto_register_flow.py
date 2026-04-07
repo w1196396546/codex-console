@@ -510,6 +510,41 @@ def test_run_skips_oauth_completion_when_cooldown_is_active(monkeypatch):
     assert FakeOAuthClient.call_count == 0
 
 
+def test_run_access_token_only_mode_returns_session_result_without_oauth(monkeypatch):
+    FakeChatGPTClient.reuse_result = (
+        True,
+        {
+            "access_token": "session-access-only",
+            "session_token": "session-token-only",
+            "account_id": "acct-session-only",
+            "workspace_id": "ws-session-only",
+        },
+    )
+    FakeChatGPTClient.create_account_refresh_token = ""
+    FakeChatGPTClient.create_account_account_id = ""
+    FakeChatGPTClient.create_account_workspace_id = ""
+    FakeOAuthClient.plans = [
+        {
+            "tokens": {
+                "access_token": "oauth-access-should-not-run",
+                "refresh_token": "refresh-should-not-run",
+            }
+        }
+    ]
+    FakeOAuthClient.call_count = 0
+
+    engine = _build_engine(monkeypatch)
+    engine.extra_config["chatgpt_registration_mode"] = "access_token_only"
+    result = engine.run()
+
+    assert result["success"] is True
+    assert result["access_token"] == "session-access-only"
+    assert result["session_token"] == "session-token-only"
+    assert result["refresh_token"] == ""
+    assert result["metadata"]["chatgpt_registration_mode"] == "access_token_only"
+    assert FakeOAuthClient.call_count == 0
+
+
 def test_oauth_completion_slot_rejects_duplicate_inflight_attempts(monkeypatch):
     engine = _build_engine(monkeypatch, reset_global_window=False)
     email = "dedupe@example.com"
@@ -699,7 +734,7 @@ def test_oauth_completion_allows_parallel_inflight_when_configured(monkeypatch):
     first_entered = threading.Event()
     release = threading.Event()
 
-    def fake_passwordless(self, chatgpt_client, email, skymail_adapter, oauth_config):
+    def fake_passwordless(self, chatgpt_client, email, skymail_adapter, oauth_config, **kwargs):
         with counter_lock:
             in_flight["count"] += 1
             in_flight["max"] = max(in_flight["max"], in_flight["count"])

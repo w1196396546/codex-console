@@ -370,6 +370,55 @@ func TestExecutorPersistsAccountPayloadEvenWhenRunnerReturnsTypedError(t *testin
 	}
 }
 
+func TestExecutorCompletesJobWhenErrorCarriesRetryableTokenPendingPersistence(t *testing.T) {
+	upserter := &fakeAccountUpserter{}
+	executor := NewExecutor(
+		&executorAdmissionLogSink{},
+		admissionTestRunner(func(_ context.Context, _ RunnerRequest, _ func(level string, message string) error) (RunnerOutput, error) {
+			return RunnerOutput{}, &fakeAccountPersistenceCarrierError{
+				err: errors.New("token completion blocked"),
+				req: &accounts.UpsertAccountRequest{
+					Email:        "pending@example.com",
+					EmailService: "outlook",
+					Status:       "token_pending",
+					Source:       "login",
+					AccountID:    "account-pending",
+					WorkspaceID:  "workspace-pending",
+					ExtraData: map[string]any{
+						"account_status_reason": "email_conflict",
+					},
+				},
+			}
+		}),
+		WithAccountPersistence(upserter),
+		WithPreparationDependencies(executorPreparationDependencies()),
+	)
+
+	result, err := executor.Execute(context.Background(), jobs.Job{
+		JobID:   "job-soft-complete-on-token-pending",
+		JobType: JobTypeSingle,
+		Payload: []byte(`{"email_service_type":"outlook"}`),
+	})
+	if err != nil {
+		t.Fatalf("expected token_pending carrier to complete without error, got %v", err)
+	}
+	if len(upserter.requests) != 1 {
+		t.Fatalf("expected one persistence write for token_pending carrier, got %#v", upserter.requests)
+	}
+	if upserter.requests[0].Email != "pending@example.com" || upserter.requests[0].Status != "token_pending" {
+		t.Fatalf("unexpected persisted request for token_pending carrier: %+v", upserter.requests[0])
+	}
+	if result["email"] != "pending@example.com" {
+		t.Fatalf("expected soft-completed result to expose email, got %#v", result)
+	}
+	if result["status"] != "token_pending" {
+		t.Fatalf("expected soft-completed result to expose token_pending status, got %#v", result)
+	}
+	if result["reason"] != "email_conflict" {
+		t.Fatalf("expected soft-completed result to expose reason, got %#v", result)
+	}
+}
+
 type fakeAccountUpserter struct {
 	requests []accounts.UpsertAccountRequest
 	result   accounts.Account
@@ -401,4 +450,30 @@ var errFakeUpsertFailed = accounts.ErrRepositoryNotConfigured
 
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+type fakeAccountPersistenceCarrierError struct {
+	err error
+	req *accounts.UpsertAccountRequest
+}
+
+func (e *fakeAccountPersistenceCarrierError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *fakeAccountPersistenceCarrierError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func (e *fakeAccountPersistenceCarrierError) AccountPersistenceRequest() *accounts.UpsertAccountRequest {
+	if e == nil {
+		return nil
+	}
+	return e.req
 }

@@ -105,6 +105,10 @@ func TestSettingsMigrationAppliesLegacySchemaWithRealPostgres(t *testing.T) {
 
 	seedLegacySchema(t, ctx, legacyPool)
 	mustExec(t, ctx, legacyPool, `
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS description TEXT;
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS category TEXT;
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;

@@ -220,6 +220,7 @@ def test_sync_registration_task_marks_cancelled_when_engine_detects_runtime_canc
             callback_logger=None,
             task_uuid=None,
             check_cancelled=None,
+            extra_config=None,
         ):
             captured["task_uuid"] = task_uuid
             captured["check_cancelled"] = check_cancelled
@@ -266,6 +267,150 @@ def test_sync_registration_task_marks_cancelled_when_engine_detects_runtime_canc
     assert task_status == "cancelled"
 
 
+def test_sync_registration_task_marks_failed_when_save_to_database_returns_false(monkeypatch):
+    manager = _build_manager("registration_task_save_failure.db")
+
+    with manager.session_scope() as session:
+        session.add(
+            RegistrationTask(
+                task_uuid="task-save-failure",
+                status="pending",
+            )
+        )
+
+    @contextmanager
+    def fake_get_db():
+        session = manager.SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    def fake_create(service_type, config):
+        return SimpleNamespace(service_type=service_type, config=config)
+
+    class FakeEngine:
+        def __init__(self, email_service, proxy_url=None, callback_logger=None, task_uuid=None, check_cancelled=None, extra_config=None):
+            self.email_service = email_service
+
+        def run(self):
+            return SimpleNamespace(
+                success=True,
+                email="tester@example.com",
+                error_message="",
+                to_dict=lambda: {"success": True, "email": "tester@example.com"},
+            )
+
+        def save_to_database(self, result):
+            return False
+
+    monkeypatch.setattr(registration_routes, "get_db", fake_get_db)
+    monkeypatch.setattr(
+        registration_routes,
+        "get_settings",
+        lambda: SimpleNamespace(
+            tempmail_enabled=True,
+            tempmail_base_url="https://mail.test",
+            tempmail_timeout=10,
+            tempmail_max_retries=1,
+        ),
+    )
+    monkeypatch.setattr(registration_routes, "get_proxy_for_registration", lambda db: (None, None))
+    monkeypatch.setattr(registration_routes.EmailServiceFactory, "create", fake_create)
+    monkeypatch.setattr(registration_routes, "RegistrationEngine", FakeEngine)
+    monkeypatch.setattr(registration_routes, "update_proxy_usage", lambda db, proxy_id: None)
+    monkeypatch.setattr(
+        registration_routes.task_manager,
+        "create_log_callback",
+        lambda *args, **kwargs: (lambda message: None),
+    )
+
+    registration_routes._run_sync_registration_task(
+        task_uuid="task-save-failure",
+        email_service_type="tempmail",
+        proxy=None,
+        email_service_config=None,
+        email_service_id=None,
+    )
+
+    with manager.session_scope() as session:
+        task = registration_routes.crud.get_registration_task(session, "task-save-failure")
+        task_status = task.status if task is not None else None
+        task_error = task.error_message if task is not None else None
+
+    assert task is not None
+    assert task_status == "failed"
+    assert "保存到数据库失败" in (task_error or "")
+
+
+def test_sync_registration_task_passes_chatgpt_registration_mode_to_engine(monkeypatch):
+    manager = _build_manager("registration_task_mode_passthrough.db")
+
+    with manager.session_scope() as session:
+        session.add(
+            RegistrationTask(
+                task_uuid="task-mode-passthrough",
+                status="pending",
+            )
+        )
+
+    @contextmanager
+    def fake_get_db():
+        session = manager.SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    captured = {}
+
+    def fake_create(service_type, config):
+        return SimpleNamespace(service_type=service_type, config=config)
+
+    class FakeEngine:
+        def __init__(self, email_service, proxy_url=None, callback_logger=None, task_uuid=None, check_cancelled=None, extra_config=None):
+            captured["extra_config"] = dict(extra_config or {})
+
+        def run(self):
+            return SimpleNamespace(
+                success=False,
+                email="",
+                error_message="stop after engine init",
+                to_dict=lambda: {},
+            )
+
+    monkeypatch.setattr(registration_routes, "get_db", fake_get_db)
+    monkeypatch.setattr(
+        registration_routes,
+        "get_settings",
+        lambda: SimpleNamespace(
+            tempmail_enabled=True,
+            tempmail_base_url="https://mail.test",
+            tempmail_timeout=10,
+            tempmail_max_retries=1,
+        ),
+    )
+    monkeypatch.setattr(registration_routes, "get_proxy_for_registration", lambda db: (None, None))
+    monkeypatch.setattr(registration_routes.EmailServiceFactory, "create", fake_create)
+    monkeypatch.setattr(registration_routes, "RegistrationEngine", FakeEngine)
+    monkeypatch.setattr(
+        registration_routes.task_manager,
+        "create_log_callback",
+        lambda *args, **kwargs: (lambda message: None),
+    )
+
+    registration_routes._run_sync_registration_task(
+        task_uuid="task-mode-passthrough",
+        email_service_type="tempmail",
+        proxy=None,
+        email_service_config=None,
+        email_service_id=None,
+        chatgpt_registration_mode="access_token_only",
+    )
+
+    assert captured["extra_config"]["chatgpt_registration_mode"] == "access_token_only"
+
+
 def test_sync_registration_task_blocks_while_paused_until_resumed(monkeypatch):
     manager = _build_manager("registration_task_pause_resume.db")
 
@@ -293,7 +438,7 @@ def test_sync_registration_task_blocks_while_paused_until_resumed(monkeypatch):
         return SimpleNamespace(service_type=service_type, config=config)
 
     class FakeEngine:
-        def __init__(self, email_service, proxy_url=None, callback_logger=None, task_uuid=None, check_cancelled=None):
+        def __init__(self, email_service, proxy_url=None, callback_logger=None, task_uuid=None, check_cancelled=None, extra_config=None):
             self.check_cancelled = check_cancelled
 
         def run(self):
@@ -377,7 +522,7 @@ def test_sync_registration_task_cancel_breaks_pause_wait(monkeypatch):
         return SimpleNamespace(service_type=service_type, config=config)
 
     class FakeEngine:
-        def __init__(self, email_service, proxy_url=None, callback_logger=None, task_uuid=None, check_cancelled=None):
+        def __init__(self, email_service, proxy_url=None, callback_logger=None, task_uuid=None, check_cancelled=None, extra_config=None):
             return None
 
         def run(self):
@@ -494,7 +639,7 @@ def test_sync_registration_task_continues_when_proxy_update_hits_sqlite_lock(mon
         return SimpleNamespace(service_type=service_type, config=config)
 
     class FakeEngine:
-        def __init__(self, email_service, proxy_url=None, callback_logger=None, task_uuid=None, check_cancelled=None):
+        def __init__(self, email_service, proxy_url=None, callback_logger=None, task_uuid=None, check_cancelled=None, extra_config=None):
             self.proxy_url = proxy_url
 
         def run(self):

@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -122,10 +122,14 @@ func (s *PostgresProxySelector) selectFromSettings(ctx context.Context) (ProxySe
 	if parseBoolSetting(settings["proxy.dynamic_enabled"]) && strings.TrimSpace(settings["proxy.dynamic_api_url"]) != "" {
 		proxyURL, dynamicErr := s.fetchDynamicProxy(ctx, settings)
 		if proxyURL != "" {
-			return ProxySelection{
-				Selected: proxyURL,
-				Source:   "dynamic_proxy",
-			}, nil
+			if validateErr := s.validateDynamicProxy(ctx, proxyURL); validateErr == nil {
+				return ProxySelection{
+					Selected: proxyURL,
+					Source:   "dynamic_proxy",
+				}, nil
+			} else {
+				dynamicErr = fmt.Errorf("validate dynamic proxy: %w", validateErr)
+			}
 		}
 
 		if staticProxyURL := buildStaticProxyURL(settings); staticProxyURL != "" {
@@ -161,6 +165,48 @@ func (s *PostgresProxySelector) selectFromSettings(ctx context.Context) (ProxySe
 		Source: "unassigned",
 		Note:   "no proxy configured",
 	}, nil
+}
+
+func (s *PostgresProxySelector) validateDynamicProxy(ctx context.Context, proxyText string) error {
+	proxyText = strings.TrimSpace(proxyText)
+	if proxyText == "" {
+		return nil
+	}
+
+	proxyURL, err := url.Parse(proxyText)
+	if err != nil {
+		return fmt.Errorf("parse proxy url: %w", err)
+	}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = http.ProxyURL(proxyURL)
+	transport.DialContext = (&net.Dialer{
+		Timeout: 2 * time.Second,
+	}).DialContext
+	transport.TLSHandshakeTimeout = 2 * time.Second
+	transport.ResponseHeaderTimeout = 2 * time.Second
+
+	client := &http.Client{
+		Timeout:   3 * time.Second,
+		Transport: transport,
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ipify.org?format=json", nil)
+	if err != nil {
+		return fmt.Errorf("build validation request: %w", err)
+	}
+
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= http.StatusBadRequest {
+		return fmt.Errorf("unexpected status %d", response.StatusCode)
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1024))
+	return nil
 }
 
 func (s *PostgresProxySelector) fetchDynamicProxy(ctx context.Context, settings map[string]string) (string, error) {

@@ -34,7 +34,7 @@ func TestExecutorProvidesRunnerControlFromJobStatus(t *testing.T) {
 	resumeChecked := make(chan struct{}, 1)
 	allowCancelCheck := make(chan struct{})
 
-	executor := NewExecutor(svc, admissionTestRunner(func(ctx context.Context, req RunnerRequest, _ func(level string, message string) error) (map[string]any, error) {
+	executor := NewExecutor(svc, admissionTestRunner(func(ctx context.Context, req RunnerRequest, _ func(level string, message string) error) (RunnerOutput, error) {
 		if req.control == nil {
 			t.Fatal("expected runner control callback")
 		}
@@ -53,8 +53,8 @@ func TestExecutorProvidesRunnerControlFromJobStatus(t *testing.T) {
 		<-allowCancelCheck
 		assertRunnerControlState(t, ctx, req.control, runnerControlStateCancelled)
 
-		return map[string]any{"ok": true}, nil
-	}))
+		return RunnerOutput{Result: map[string]any{"ok": true}}, nil
+	}), WithPreparationDependencies(executorPreparationDependencies()))
 
 	done := make(chan error, 1)
 	go func() {

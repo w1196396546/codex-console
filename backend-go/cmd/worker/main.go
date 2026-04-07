@@ -12,6 +12,7 @@ import (
 	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
 	"github.com/dou-jiang/codex-console/backend-go/internal/config"
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
+	"github.com/dou-jiang/codex-console/backend-go/internal/logs"
 	"github.com/dou-jiang/codex-console/backend-go/internal/nativerunner"
 	postgresplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/postgres"
 	redisplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/redis"
@@ -90,7 +91,7 @@ func bootstrapWorker(parent context.Context) (workerDependencies, error) {
 		Password: cfg.RedisPass,
 		DB:       cfg.RedisDB,
 	})
-	service := jobs.NewService(jobs.NewRepository(pool), queue)
+	service := jobs.NewService(jobs.NewRepository(pool), queue, jobs.WithAppLogSink(logs.NewPostgresRepository(pool)))
 	server := asynq.NewServer(asynq.RedisClientOpt{
 		Addr:     cfg.RedisAddr,
 		Password: cfg.RedisPass,

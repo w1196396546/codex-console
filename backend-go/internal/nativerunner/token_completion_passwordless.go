@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/nativerunner/auth"
 	"github.com/dou-jiang/codex-console/backend-go/internal/nativerunner/mail"
@@ -59,6 +60,7 @@ func (p *authPasswordlessTokenCompletionProvider) CompleteToken(ctx context.Cont
 		if err != nil {
 			return TokenCompletionProviderResult{}, fmt.Errorf("initiate passwordless token completion: %w", err)
 		}
+		preparation = normalizePasswordlessPreparation(preparation)
 		if strings.TrimSpace(preparation.PageType) != stageEmailOTPVerification {
 			return TokenCompletionProviderResult{}, passwordlessInteractiveStepError(
 				"passwordless token completion requires email otp verification before automatic completion",
@@ -70,6 +72,9 @@ func (p *authPasswordlessTokenCompletionProvider) CompleteToken(ctx context.Cont
 		inbox := request.Inbox
 		if strings.TrimSpace(inbox.Email) == "" {
 			inbox.Email = email
+		}
+		if inbox.OTPSentAt.IsZero() {
+			inbox.OTPSentAt = time.Now().UTC()
 		}
 		if request.MailProvider == nil {
 			return TokenCompletionProviderResult{}, passwordlessInteractiveStepError(
@@ -96,11 +101,25 @@ func (p *authPasswordlessTokenCompletionProvider) CompleteToken(ctx context.Cont
 			}
 		}
 
-		verifiedPreparation, err := client.VerifyEmailOTP(ctx, toAuthPrepareSignupResult(preparation), otpCode)
+		verifiedPreparation, err := verifyPreparedEmailOTPWithRetries(ctx, client, request.MailProvider, inbox, toAuthPrepareSignupResult(preparation), otpCode)
 		if err != nil {
 			return TokenCompletionProviderResult{}, fmt.Errorf("verify passwordless email otp: %w", err)
 		}
 		if strings.TrimSpace(verifiedPreparation.PageType) != "about_you" {
+			if shouldDispatchTokenCompletionAfterEmailOTP(verifiedPreparation) {
+				completed, err := client.ContinueCreateAccount(ctx, createAccountResultFromVerifiedPreparation(verifiedPreparation))
+				if err != nil {
+					return TokenCompletionProviderResult{}, fmt.Errorf("continue passwordless existing account flow: %w", err)
+				}
+				if passwordlessInteractivePageType(completed.PageType) {
+					return TokenCompletionProviderResult{}, passwordlessInteractiveStepError(
+						"passwordless token completion requires interactive post-otp step after existing account verification",
+						completed.PageType,
+						firstNonEmptyTrimmed(completed.FinalPath, completed.FinalURL),
+					)
+				}
+				return passwordlessCompletionResult(completed, auth.CreateAccountResult{}), nil
+			}
 			return TokenCompletionProviderResult{}, passwordlessInteractiveStepError(
 				"passwordless token completion requires about_you after email otp verification",
 				verifiedPreparation.PageType,
@@ -135,6 +154,13 @@ func (p *authPasswordlessTokenCompletionProvider) CompleteToken(ctx context.Cont
 		if err != nil {
 			return TokenCompletionProviderResult{}, fmt.Errorf("continue passwordless create account: %w", err)
 		}
+		if passwordlessInteractivePageType(completed.PageType) {
+			return TokenCompletionProviderResult{}, passwordlessInteractiveStepError(
+				"passwordless token completion requires interactive post-signup step after create account",
+				completed.PageType,
+				firstNonEmptyTrimmed(completed.FinalPath, completed.FinalURL, createAccountResult.FinalPath),
+			)
+		}
 
 		return passwordlessCompletionResult(completed, createAccountResult), nil
 	}
@@ -153,13 +179,50 @@ func (p *authPasswordlessTokenCompletionProvider) CompleteToken(ctx context.Cont
 	return passwordlessCompletionResult(completed, auth.CreateAccountResult{}), nil
 }
 
+func normalizePasswordlessPreparation(preparation SignupPreparation) SignupPreparation {
+	if strings.TrimSpace(preparation.PageType) != "existing_account_detected" {
+		return preparation
+	}
+
+	finalTarget := strings.ToLower(firstNonEmptyTrimmed(
+		preparation.FinalPath,
+		preparation.FinalURL,
+		preparation.ContinueURL,
+	))
+	switch {
+	case strings.Contains(finalTarget, "/email-verification"), strings.Contains(finalTarget, "/email-otp"):
+		preparation.PageType = stageEmailOTPVerification
+	case strings.Contains(finalTarget, "/log-in/password"):
+		preparation.PageType = "login_password"
+	}
+	return preparation
+}
+
 func passwordlessCompletionResult(completed auth.ContinueCreateAccountResult, created auth.CreateAccountResult) TokenCompletionProviderResult {
+	refreshToken := firstNonEmptyTrimmed(completed.RefreshToken, created.RefreshToken)
+	refreshTokenSource := firstNonEmptyTrimmed(strings.TrimSpace(completed.RefreshTokenSource))
+	if refreshTokenSource == "" && refreshToken != "" {
+		if strings.TrimSpace(created.RefreshToken) != "" {
+			refreshTokenSource = "create_account"
+		} else if strings.TrimSpace(completed.RefreshToken) != "" {
+			refreshTokenSource = "session"
+		}
+	}
+	source := "login"
+	if strings.TrimSpace(created.AccountID) != "" || strings.TrimSpace(created.WorkspaceID) != "" || strings.TrimSpace(created.RefreshToken) != "" {
+		source = "register"
+	}
 	return TokenCompletionProviderResult{
-		AccessToken:  strings.TrimSpace(completed.AccessToken),
-		RefreshToken: firstNonEmptyTrimmed(completed.RefreshToken, created.RefreshToken),
-		SessionToken: strings.TrimSpace(completed.SessionToken),
-		AccountID:    firstNonEmptyTrimmed(completed.AccountID, created.AccountID),
-		WorkspaceID:  firstNonEmptyTrimmed(completed.WorkspaceID, created.WorkspaceID),
+		AccessToken:        strings.TrimSpace(completed.AccessToken),
+		RefreshToken:       refreshToken,
+		SessionToken:       strings.TrimSpace(completed.SessionToken),
+		AccountID:          firstNonEmptyTrimmed(completed.AccountID, created.AccountID),
+		WorkspaceID:        firstNonEmptyTrimmed(completed.WorkspaceID, created.WorkspaceID),
+		Source:             source,
+		AuthProvider:       strings.TrimSpace(completed.AuthProvider),
+		AccessTokenSource:  "session",
+		SessionTokenSource: "session",
+		RefreshTokenSource: refreshTokenSource,
 	}
 }
 
@@ -172,5 +235,14 @@ func passwordlessInteractiveStepError(message string, pageType string, finalPath
 			strings.TrimSpace(pageType),
 			strings.TrimSpace(finalPath),
 		),
+	}
+}
+
+func passwordlessInteractivePageType(pageType string) bool {
+	switch strings.TrimSpace(pageType) {
+	case "about_you", "add_phone", "email_otp_verification", "create_account_password", "login_password":
+		return true
+	default:
+		return false
 	}
 }

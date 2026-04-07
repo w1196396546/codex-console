@@ -1,6 +1,9 @@
 """
 FastAPI 应用主文件
-轻量级 Web UI，支持注册、账号管理、设置
+轻量级 Web UI，支持注册、账号管理、设置。
+
+Phase 5 之后，这个 Python app 的角色应收敛为兼容展示壳/参考实现，
+而不是生产后端关键路径的真值源。
 """
 
 import logging
@@ -234,6 +237,8 @@ def create_app() -> FastAPI:
         import asyncio
         from ..database.init_db import initialize_database
         from ..core.db_logs import cleanup_database_logs
+
+        logger.info("Phase 5 提示：Python Web UI startup 已进入 compatibility-shell 模式，生产后端 ownership 以 Go runtime 为准")
 
         # 确保数据库已初始化（reload 模式下子进程也需要初始化）
         try:

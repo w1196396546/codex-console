@@ -2,6 +2,7 @@ package mail
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
@@ -21,6 +22,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/text/encoding/ianaindex"
+	"golang.org/x/text/transform"
 )
 
 const defaultIMAPPollInterval = 3 * time.Second
@@ -39,17 +43,21 @@ type IMAPFetcher func(ctx context.Context, inbox Inbox) ([]IMAPMessage, error)
 
 type IMAPExtractor func(messages []IMAPMessage, inbox Inbox, pattern *regexp.Regexp) (string, bool)
 
+type IMAPAccessTokenSource func(ctx context.Context) (string, error)
+
 type IMAPConfig struct {
-	Host         string
-	Port         int
-	Email        string
-	Username     string
-	Password     string
-	UseSSL       bool
-	DialTimeout  time.Duration
-	PollInterval time.Duration
-	Fetcher      IMAPFetcher
-	Extractor    IMAPExtractor
+	Host                    string
+	Port                    int
+	Email                   string
+	Username                string
+	Password                string
+	OAuth2AccessTokenSource IMAPAccessTokenSource
+	ProxyURL                string
+	UseSSL                  bool
+	DialTimeout             time.Duration
+	PollInterval            time.Duration
+	Fetcher                 IMAPFetcher
+	Extractor               IMAPExtractor
 }
 
 type IMAPMessage struct {
@@ -61,18 +69,20 @@ type IMAPMessage struct {
 }
 
 type IMAPMail struct {
-	host         string
-	port         int
-	email        string
-	username     string
-	password     string
-	useSSL       bool
-	dialTimeout  time.Duration
-	pollInterval time.Duration
-	fetcher      IMAPFetcher
-	extractor    IMAPExtractor
-	stateMu      sync.Mutex
-	codeStates   map[string]*imapCodeState
+	host                    string
+	port                    int
+	email                   string
+	username                string
+	password                string
+	oauth2AccessTokenSource IMAPAccessTokenSource
+	proxyURL                string
+	useSSL                  bool
+	dialTimeout             time.Duration
+	pollInterval            time.Duration
+	fetcher                 IMAPFetcher
+	extractor               IMAPExtractor
+	stateMu                 sync.Mutex
+	codeStates              map[string]*imapCodeState
 }
 
 type imapCodeState struct {
@@ -88,16 +98,18 @@ func NewIMAPMail(config IMAPConfig) *IMAPMail {
 	}
 
 	provider := &IMAPMail{
-		host:         strings.TrimSpace(config.Host),
-		port:         config.Port,
-		email:        strings.TrimSpace(config.Email),
-		username:     strings.TrimSpace(config.Username),
-		password:     config.Password,
-		useSSL:       config.UseSSL,
-		dialTimeout:  config.DialTimeout,
-		pollInterval: pollInterval,
-		extractor:    config.Extractor,
-		codeStates:   make(map[string]*imapCodeState),
+		host:                    strings.TrimSpace(config.Host),
+		port:                    config.Port,
+		email:                   strings.TrimSpace(config.Email),
+		username:                strings.TrimSpace(config.Username),
+		password:                config.Password,
+		oauth2AccessTokenSource: config.OAuth2AccessTokenSource,
+		proxyURL:                strings.TrimSpace(config.ProxyURL),
+		useSSL:                  config.UseSSL,
+		dialTimeout:             config.DialTimeout,
+		pollInterval:            pollInterval,
+		extractor:               config.Extractor,
+		codeStates:              make(map[string]*imapCodeState),
 	}
 	if provider.username == "" {
 		provider.username = provider.email
@@ -240,14 +252,27 @@ func (i *IMAPMail) fetchMessages(ctx context.Context, inbox Inbox) ([]IMAPMessag
 		return nil, err
 	}
 
-	client, err := newIMAPClient(ctx, address, strings.TrimSpace(i.host), i.useSSL, i.effectiveDialTimeout())
+	client, err := newIMAPClient(ctx, address, strings.TrimSpace(i.host), i.useSSL, i.effectiveDialTimeout(), i.proxyURL)
 	if err != nil {
 		return nil, err
 	}
 	defer client.close()
 
-	if err := client.login(username, password); err != nil {
-		return nil, err
+	if i.oauth2AccessTokenSource != nil {
+		accessToken, err := i.oauth2AccessTokenSource(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(accessToken) == "" {
+			return nil, errors.New("imap mail oauth2 access token is required")
+		}
+		if err := client.authenticateXOAUTH2(username, accessToken); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := client.login(username, password); err != nil {
+			return nil, err
+		}
 	}
 	defer client.logout()
 
@@ -309,7 +334,7 @@ func (i *IMAPMail) connectionSettings(inbox Inbox) (address string, username str
 	if strings.TrimSpace(password) == "" {
 		password = inbox.Token
 	}
-	if strings.TrimSpace(password) == "" {
+	if i.oauth2AccessTokenSource == nil && strings.TrimSpace(password) == "" {
 		return "", "", "", errors.New("imap mail password is required")
 	}
 
@@ -330,27 +355,28 @@ type imapClient struct {
 	nextTag int
 }
 
-func newIMAPClient(ctx context.Context, address string, serverName string, useSSL bool, timeout time.Duration) (*imapClient, error) {
-	dialer := &net.Dialer{Timeout: timeout}
-
-	var (
-		conn net.Conn
-		err  error
-	)
-	if useSSL {
-		tlsDialer := &tls.Dialer{
-			NetDialer: dialer,
-			Config: &tls.Config{
-				MinVersion: tls.VersionTLS12,
-				ServerName: serverName,
-			},
-		}
-		conn, err = tlsDialer.DialContext(ctx, "tcp", address)
-	} else {
-		conn, err = dialer.DialContext(ctx, "tcp", address)
-	}
+func newIMAPClient(ctx context.Context, address string, serverName string, useSSL bool, timeout time.Duration, proxyURL string) (*imapClient, error) {
+	conn, err := dialProxyConnection(ctx, address, timeout, proxyURL)
 	if err != nil {
 		return nil, fmt.Errorf("connect imap server %s: %w", address, err)
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	} else if timeout > 0 {
+		_ = conn.SetDeadline(time.Now().Add(timeout))
+	}
+
+	if useSSL {
+		tlsConn := tls.Client(conn, &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			ServerName: serverName,
+		})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("handshake imap tls %s: %w", address, err)
+		}
+		conn = tlsConn
 	}
 
 	if deadline, ok := ctx.Deadline(); ok {
@@ -392,6 +418,63 @@ func (c *imapClient) login(username string, password string) error {
 		return fmt.Errorf("login imap server: %w", err)
 	}
 	return nil
+}
+
+func (c *imapClient) authenticateXOAUTH2(username string, accessToken string) error {
+	if strings.TrimSpace(username) == "" {
+		return errors.New("imap xoauth2 username is required")
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		return errors.New("imap xoauth2 access token is required")
+	}
+
+	tag := fmt.Sprintf("A%04d", c.nextTag)
+	c.nextTag++
+
+	if _, err := fmt.Fprintf(c.writer, "%s AUTHENTICATE XOAUTH2\r\n", tag); err != nil {
+		return err
+	}
+	if err := c.writer.Flush(); err != nil {
+		return err
+	}
+
+	payload := base64.StdEncoding.EncodeToString([]byte(
+		fmt.Sprintf("user=%s\x01auth=Bearer %s\x01\x01", username, accessToken),
+	))
+
+	sentPayload := false
+	for {
+		line, err := c.readLine()
+		if err != nil {
+			return err
+		}
+
+		if strings.HasPrefix(line, "+") {
+			response := ""
+			if !sentPayload {
+				response = payload
+				sentPayload = true
+			}
+			if _, err := fmt.Fprintf(c.writer, "%s\r\n", response); err != nil {
+				return err
+			}
+			if err := c.writer.Flush(); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if strings.HasPrefix(line, tag+" ") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				return fmt.Errorf("unexpected imap authenticate response: %s", line)
+			}
+			if strings.EqualFold(fields[1], "OK") {
+				return nil
+			}
+			return fmt.Errorf("authenticate xoauth2 imap server: %s", line)
+		}
+	}
 }
 
 func (c *imapClient) selectInbox() error {
@@ -761,7 +844,7 @@ func extractMessageBody(header stdmail.Header, body io.Reader) (string, error) {
 		if readErr != nil {
 			return "", readErr
 		}
-		return normalizeExtractedBody(string(payload), contentType), nil
+		return normalizeExtractedBody(decodeBodyCharset(payload, extractCharset(contentType)), contentType), nil
 	}
 
 	if strings.HasPrefix(strings.ToLower(mediaType), "multipart/") {
@@ -772,7 +855,7 @@ func extractMessageBody(header stdmail.Header, body io.Reader) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return normalizeExtractedBody(string(payload), mediaType), nil
+	return normalizeExtractedBody(decodeBodyCharset(payload, params["charset"]), mediaType), nil
 }
 
 func extractMultipartBody(body io.Reader, boundary string) (string, error) {
@@ -809,7 +892,7 @@ func extractMultipartBody(body io.Reader, boundary string) (string, error) {
 }
 
 func extractPartBody(header textproto.MIMEHeader, body io.Reader) (string, error) {
-	mediaType, _, err := mime.ParseMediaType(header.Get("Content-Type"))
+	mediaType, params, err := mime.ParseMediaType(header.Get("Content-Type"))
 	if err != nil {
 		mediaType = strings.TrimSpace(header.Get("Content-Type"))
 	}
@@ -824,7 +907,7 @@ func extractPartBody(header textproto.MIMEHeader, body io.Reader) (string, error
 	if err != nil {
 		return "", err
 	}
-	return normalizeExtractedBody(string(payload), mediaType), nil
+	return normalizeExtractedBody(decodeBodyCharset(payload, params["charset"]), mediaType), nil
 }
 
 func decodeTransferBody(header stdmail.Header, body io.Reader) ([]byte, error) {
@@ -855,4 +938,38 @@ func normalizeExtractedBody(content string, contentType string) string {
 	content = imapWhitespacePattern.ReplaceAllString(content, " ")
 	content = imapPunctuationSpacingPattern.ReplaceAllString(content, "$1")
 	return strings.TrimSpace(content)
+}
+
+func decodeBodyCharset(payload []byte, charsetName string) string {
+	if len(payload) == 0 {
+		return ""
+	}
+
+	trimmedCharset := strings.Trim(strings.TrimSpace(charsetName), `"`)
+	if trimmedCharset == "" || strings.EqualFold(trimmedCharset, "utf-8") || strings.EqualFold(trimmedCharset, "us-ascii") {
+		return string(payload)
+	}
+
+	encoding, err := ianaindex.MIME.Encoding(trimmedCharset)
+	if err != nil || encoding == nil {
+		return string(payload)
+	}
+
+	decoded, err := io.ReadAll(transform.NewReader(bytes.NewReader(payload), encoding.NewDecoder()))
+	if err != nil {
+		return string(payload)
+	}
+	return string(decoded)
+}
+
+func extractCharset(contentType string) string {
+	if strings.TrimSpace(contentType) == "" {
+		return ""
+	}
+
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return ""
+	}
+	return params["charset"]
 }

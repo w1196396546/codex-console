@@ -547,6 +547,34 @@ func (f workerMainFakeAccountRepository) ListAccounts(context.Context, accounts.
 	return nil, 0, nil
 }
 
+func (f workerMainFakeAccountRepository) ListAccountsForOverview(context.Context, accounts.AccountOverviewCardsRequest) ([]accounts.Account, error) {
+	return nil, nil
+}
+
+func (f workerMainFakeAccountRepository) ListAccountsForSelectable(context.Context, accounts.AccountOverviewSelectableRequest) ([]accounts.Account, error) {
+	return nil, nil
+}
+
+func (f workerMainFakeAccountRepository) ListAccountsBySelection(context.Context, accounts.AccountSelectionRequest) ([]accounts.Account, error) {
+	return nil, nil
+}
+
+func (f workerMainFakeAccountRepository) GetAccountByID(context.Context, int) (accounts.Account, error) {
+	return accounts.Account{}, nil
+}
+
+func (f workerMainFakeAccountRepository) GetCurrentAccountID(context.Context) (*int, error) {
+	return nil, nil
+}
+
+func (f workerMainFakeAccountRepository) GetAccountsStatsSummary(context.Context) (accounts.AccountsStatsSummary, error) {
+	return accounts.AccountsStatsSummary{}, nil
+}
+
+func (f workerMainFakeAccountRepository) GetAccountsOverviewStats(context.Context) (accounts.AccountsOverviewStats, error) {
+	return accounts.AccountsOverviewStats{}, nil
+}
+
 func (f workerMainFakeAccountRepository) GetAccountByEmail(context.Context, string) (accounts.Account, bool, error) {
 	if f.err != nil {
 		return accounts.Account{}, false, f.err
@@ -563,6 +591,10 @@ func (f *workerMainFakeAccountRepository) UpsertAccount(_ context.Context, accou
 		account.Email = f.account.Email
 	}
 	return account, nil
+}
+
+func (f workerMainFakeAccountRepository) DeleteAccount(context.Context, int) error {
+	return nil
 }
 
 func (f *workerMainFakeAccountRepository) CompareAndSwapTokenCompletionRuntime(_ context.Context, email string, currentExtraData map[string]any, nextExtraData map[string]any, _ accounts.Account) (accounts.Account, bool, error) {

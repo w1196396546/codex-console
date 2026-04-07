@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 type PrepareSignupResult struct {
@@ -27,18 +29,53 @@ func (c *Client) PrepareSignup(ctx context.Context, email string) (PrepareSignup
 		return PrepareSignupResult{}, errors.New("signup email is required")
 	}
 
-	if _, err := c.Bootstrap(ctx); err != nil {
-		return PrepareSignupResult{}, fmt.Errorf("bootstrap signup flow: %w", err)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			if err := c.resetSession(); err != nil {
+				return PrepareSignupResult{}, err
+			}
+		}
+
+		result, blocked, err := c.prepareSignupOnce(ctx, trimmedEmail)
+		if err == nil && !blocked {
+			return result, nil
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf(
+				"prepare signup blocked by auth interstitial: final_url=%s final_path=%s",
+				strings.TrimSpace(result.FinalURL),
+				strings.TrimSpace(result.FinalPath),
+			)
+		}
+	}
+
+	if lastErr != nil {
+		return PrepareSignupResult{}, lastErr
+	}
+	return PrepareSignupResult{}, errors.New("prepare signup failed")
+}
+
+func (c *Client) prepareSignupOnce(ctx context.Context, email string) (PrepareSignupResult, bool, error) {
+	if _, err := c.BootstrapWith(ctx, BootstrapOptions{
+		Path: "/",
+		Headers: Headers{
+			"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		},
+	}); err != nil {
+		return PrepareSignupResult{}, false, fmt.Errorf("bootstrap signup flow: %w", err)
 	}
 
 	csrfToken, err := c.fetchCSRFToken(ctx)
 	if err != nil {
-		return PrepareSignupResult{}, err
+		return PrepareSignupResult{}, false, err
 	}
 
-	authorizeURL, err := c.signinOpenAI(ctx, trimmedEmail, csrfToken)
+	authorizeURL, err := c.signinOpenAI(ctx, email, csrfToken)
 	if err != nil {
-		return PrepareSignupResult{}, err
+		return PrepareSignupResult{}, false, err
 	}
 
 	authorizeResponse, err := c.Get(ctx, authorizeURL, Headers{
@@ -46,7 +83,7 @@ func (c *Client) PrepareSignup(ctx context.Context, email string) (PrepareSignup
 		"Referer": c.callbackURL(),
 	})
 	if err != nil {
-		return PrepareSignupResult{}, fmt.Errorf("follow authorize url: %w", err)
+		return PrepareSignupResult{}, false, fmt.Errorf("follow authorize url: %w", err)
 	}
 
 	result := PrepareSignupResult{
@@ -60,12 +97,82 @@ func (c *Client) PrepareSignup(ctx context.Context, email string) (PrepareSignup
 		result.ContinueURL = authorizeResponse.FinalURL
 	}
 
-	return result, nil
+	if prepareSignupBlockedByInterstitial(result, string(authorizeResponse.Body)) {
+		return result, true, nil
+	}
+
+	normalized, err := c.normalizePreparedSignupResult(ctx, result, string(authorizeResponse.Body))
+	if err != nil {
+		return PrepareSignupResult{}, false, err
+	}
+	return normalized, false, nil
+}
+
+func prepareSignupBlockedByInterstitial(result PrepareSignupResult, body string) bool {
+	for _, candidate := range []string{result.FinalURL, result.FinalPath} {
+		normalized := strings.ToLower(strings.TrimSpace(candidate))
+		if normalized == "" {
+			continue
+		}
+		if strings.Contains(normalized, "/api/accounts/authorize") || strings.HasSuffix(normalized, "/error") {
+			return true
+		}
+	}
+	body = strings.ToLower(strings.TrimSpace(body))
+	if body == "" {
+		return false
+	}
+	return strings.Contains(body, "just a moment") ||
+		strings.Contains(body, "checking your browser before accessing") ||
+		strings.Contains(body, "__cf_chl_tk") ||
+		strings.Contains(body, "cloudflare")
+}
+
+func (c *Client) normalizePreparedSignupResult(ctx context.Context, prepared PrepareSignupResult, currentBody string) (PrepareSignupResult, error) {
+	pageType := strings.TrimSpace(prepared.PageType)
+	switch pageType {
+	case "create_account_password", "password", "email_otp_verification", "login_password", "about_you", "add_phone":
+		return prepared, nil
+	}
+	if pageType != "continue" {
+		return prepared, nil
+	}
+
+	followURL := c.extractContinueNavigationTarget(currentBody, prepared.FinalURL)
+	if strings.TrimSpace(followURL) == "" {
+		followURL = c.flowRequestURL(prepared.FinalURL, "/create-account/password")
+	}
+	if strings.TrimSpace(followURL) == "" {
+		return prepared, nil
+	}
+
+	response, err := c.Get(ctx, followURL, Headers{
+		"Accept":  "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		"Referer": firstNonEmpty(strings.TrimSpace(prepared.FinalURL), c.callbackURL()),
+	})
+	if err != nil {
+		return prepared, nil
+	}
+	if response.StatusCode >= http.StatusBadRequest {
+		return prepared, nil
+	}
+
+	prepared.FinalURL = response.FinalURL
+	prepared.FinalPath = response.FinalPath
+	prepared.PageType = inferPageType(response)
+	if strings.TrimSpace(prepared.PageType) == "continue" {
+		prepared.ContinueURL = response.FinalURL
+	} else {
+		prepared.ContinueURL = ""
+	}
+	return prepared, nil
 }
 
 func (c *Client) fetchCSRFToken(ctx context.Context) (string, error) {
 	response, err := c.Get(ctx, "/api/auth/csrf", Headers{
-		"Accept": "application/json",
+		"Accept":  "application/json",
+		"Referer": c.callbackURL(),
+		"Origin":  c.origin(),
 	})
 	if err != nil {
 		return "", fmt.Errorf("request csrf token: %w", err)
@@ -90,9 +197,13 @@ func (c *Client) fetchCSRFToken(ctx context.Context) (string, error) {
 
 func (c *Client) signinOpenAI(ctx context.Context, email string, csrfToken string) (string, error) {
 	query := url.Values{
-		"prompt":      []string{"login"},
-		"screen_hint": []string{"login_or_signup"},
-		"login_hint":  []string{email},
+		"prompt":                  []string{"login"},
+		"screen_hint":             []string{"login_or_signup"},
+		"login_hint":              []string{email},
+		"auth_session_logging_id": []string{uuid.NewString()},
+	}
+	if c != nil && strings.TrimSpace(c.deviceID) != "" {
+		query.Set("ext-oai-did", strings.TrimSpace(c.deviceID))
 	}
 	form := url.Values{
 		"callbackUrl": []string{c.callbackURL()},
@@ -142,6 +253,13 @@ func (c *Client) callbackURL() string {
 		return ""
 	}
 	return c.baseURL.ResolveReference(&url.URL{Path: "/"}).String()
+}
+
+func (c *Client) loginURL() string {
+	if c == nil || c.baseURL == nil {
+		return ""
+	}
+	return c.baseURL.ResolveReference(&url.URL{Path: "/auth/login"}).String()
 }
 
 func (c *Client) origin() string {

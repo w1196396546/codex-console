@@ -134,6 +134,7 @@ func (s *TaskService) StartTeamSyncBatch(ctx context.Context, teamIDs []int64) (
 	if len(normalizedIDs) == 0 {
 		return AcceptedTaskResponse{}, fmt.Errorf("ids 不能为空")
 	}
+	// 保留首个 team_id 作为兼容范围/accepted payload，上层执行再通过 payload.ids 处理整批 team。
 	return s.createScopedTeamTask(ctx, "sync_all_teams", normalizedIDs[0], map[string]any{"ids": normalizedIDs})
 }
 
@@ -374,11 +375,19 @@ func (s *TaskService) createAcceptedTask(ctx context.Context, params createAccep
 		UpdatedAt:      createdAt,
 	}
 	if _, err := s.repository.CreateTask(ctx, task); err != nil {
+		cleanupErr := s.cleanupAcceptedTaskJob(job.JobID, err)
 		if errors.Is(err, ErrActiveScopeConflict) {
+			if cleanupErr != nil {
+				return AcceptedTaskResponse{}, errors.Join(&ConflictError{ScopeKey: scopeKey}, cleanupErr)
+			}
 			return AcceptedTaskResponse{}, &ConflictError{ScopeKey: scopeKey}
+		}
+		if cleanupErr != nil {
+			return AcceptedTaskResponse{}, errors.Join(err, cleanupErr)
 		}
 		return AcceptedTaskResponse{}, err
 	}
+	s.launchAcceptedTask(job.JobID)
 	return AcceptedTaskResponse{
 		Success:        true,
 		TaskUUID:       job.JobID,
@@ -390,6 +399,59 @@ func (s *TaskService) createAcceptedTask(ctx context.Context, params createAccep
 		TeamID:         params.TeamID,
 		OwnerAccountID: params.OwnerAccountID,
 	}, nil
+}
+
+func (s *TaskService) cleanupAcceptedTaskJob(jobID string, createErr error) error {
+	cleanupCtx := context.Background()
+	if deleteRuntime, ok := s.jobs.(interface {
+		DeleteJob(ctx context.Context, jobID string) error
+	}); ok {
+		if err := deleteRuntime.DeleteJob(cleanupCtx, jobID); err == nil || errors.Is(err, jobs.ErrJobNotFound) {
+			return nil
+		} else if !errors.Is(err, jobs.ErrControlNotSupported) {
+			return err
+		}
+	}
+
+	if _, err := s.jobs.MarkFailed(cleanupCtx, jobID, createErr.Error()); err != nil && !errors.Is(err, jobs.ErrJobNotFound) && !errors.Is(err, jobs.ErrControlNotSupported) {
+		return err
+	}
+	return nil
+}
+
+func (s *TaskService) launchAcceptedTask(taskUUID string) {
+	if s.executor == nil {
+		return
+	}
+	go func() {
+		if err := s.ExecuteTask(context.Background(), taskUUID); err != nil {
+			s.failAcceptedTask(taskUUID, err)
+		}
+	}()
+}
+
+func (s *TaskService) failAcceptedTask(taskUUID string, execErr error) {
+	ctx := context.Background()
+	if s.jobs != nil {
+		if err := s.jobs.AppendLog(ctx, taskUUID, "error", execErr.Error()); err != nil && !errors.Is(err, jobs.ErrJobNotFound) {
+			return
+		}
+		if _, err := s.jobs.MarkFailed(ctx, taskUUID, execErr.Error()); err != nil && !errors.Is(err, jobs.ErrJobNotFound) {
+			return
+		}
+	}
+
+	task, err := s.repository.GetTaskByUUID(ctx, taskUUID)
+	if err != nil {
+		return
+	}
+	now := time.Now().UTC()
+	task.Status = jobs.StatusFailed
+	task.ErrorMessage = execErr.Error()
+	task.CompletedAt = &now
+	task.ActiveScopeKey = nil
+	task.Logs = appendLogs(task.Logs, []string{execErr.Error()})
+	_, _ = s.repository.SaveTask(ctx, task)
 }
 
 func (s *TaskService) acceptedResponseForTask(ctx context.Context, task TeamTaskRecord) AcceptedTaskResponse {

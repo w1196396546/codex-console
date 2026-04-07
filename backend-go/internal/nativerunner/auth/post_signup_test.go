@@ -51,7 +51,6 @@ func TestClientVerifyEmailOTPAdvancesToAboutYouState(t *testing.T) {
 	}))
 	defer server.Close()
 	serverURL = server.URL
-
 	client, err := NewClient(Options{
 		BaseURL:   server.URL,
 		UserAgent: "codex-native-auth/0.1",
@@ -82,6 +81,82 @@ func TestClientVerifyEmailOTPAdvancesToAboutYouState(t *testing.T) {
 	}
 	if result.PageType != "about_you" {
 		t.Fatalf("expected about_you page type, got %q", result.PageType)
+	}
+}
+
+func TestClientVerifyEmailOTPReturnsRetryableErrorForInvalidOrStaleCode(t *testing.T) {
+	t.Parallel()
+
+	const otpCode = "123456"
+
+	type retryableEmailOTPError interface {
+		error
+		Retryable() bool
+		RequireNewCode() bool
+		HTTPStatusCode() int
+		ErrorCode() string
+		PreparedResult() PrepareSignupResult
+	}
+
+	var verifyRequests int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/accounts/email-otp/validate":
+			verifyRequests++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{
+				"error":{"code":"invalid_code","message":"The code is incorrect or expired"}
+			}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(Options{
+		BaseURL:   server.URL,
+		UserAgent: "codex-native-auth/0.1",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	prepared := PrepareSignupResult{
+		FinalURL:  server.URL + "/email-verification",
+		FinalPath: "/email-verification",
+		PageType:  "email_otp_verification",
+	}
+	result, err := client.VerifyEmailOTP(context.Background(), prepared, otpCode)
+	if err == nil {
+		t.Fatal("expected retryable otp validation error")
+	}
+	if verifyRequests != 1 {
+		t.Fatalf("expected one verify request, got %d", verifyRequests)
+	}
+	if result != (PrepareSignupResult{}) {
+		t.Fatalf("expected zero result on typed retryable error, got %#v", result)
+	}
+
+	var otpErr retryableEmailOTPError
+	if !errors.As(err, &otpErr) {
+		t.Fatalf("expected retryable otp error, got %T: %v", err, err)
+	}
+	if !otpErr.Retryable() {
+		t.Fatalf("expected otp error to be retryable, got %#v", otpErr)
+	}
+	if !otpErr.RequireNewCode() {
+		t.Fatalf("expected otp error to require new code, got %#v", otpErr)
+	}
+	if otpErr.HTTPStatusCode() != http.StatusBadRequest {
+		t.Fatalf("expected otp error status 400, got %d", otpErr.HTTPStatusCode())
+	}
+	if otpErr.ErrorCode() != "invalid_code" {
+		t.Fatalf("expected otp error code invalid_code, got %q", otpErr.ErrorCode())
+	}
+	if preparedResult := otpErr.PreparedResult(); preparedResult.PageType != "email_otp_verification" || preparedResult.FinalPath != "/email-verification" {
+		t.Fatalf("expected prepared result retained for upper-layer retry, got %#v", preparedResult)
 	}
 }
 

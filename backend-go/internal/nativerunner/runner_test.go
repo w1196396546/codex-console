@@ -148,7 +148,7 @@ func TestRunnerWorksThroughRegistrationAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run adapter: %v", err)
 	}
-	if result["email"] != "adapter@example.com" {
+	if result.Result["email"] != "adapter@example.com" {
 		t.Fatalf("expected adapter result email, got %#v", result)
 	}
 }
@@ -239,6 +239,169 @@ func TestDefaultPrepareSignupFlowFactoriesReuseSingleAuthClient(t *testing.T) {
 	}
 	if bootstrapCalls != 1 {
 		t.Fatalf("expected bootstrap to hit override base url once, got %d", bootstrapCalls)
+	}
+}
+
+func TestDefaultAuthClientUsesBrowserUserAgentDuringPrepareSignup(t *testing.T) {
+	t.Parallel()
+
+	const email = "teammate@example.com"
+
+	var (
+		loginRequests  int
+		csrfRequests   int
+		signinRequests int
+		passwordVisits int
+		serverURL      string
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			loginRequests++
+			if r.URL.Path != "/" {
+				t.Fatalf("expected default auth client to bootstrap via homepage, got %s", r.URL.Path)
+			}
+			if got := r.Header.Get("User-Agent"); got != "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" {
+				t.Fatalf("expected browser user agent on bootstrap request, got %q", got)
+			}
+			http.SetCookie(w, &http.Cookie{
+				Name:  "sessionid",
+				Value: "bootstrap-cookie",
+				Path:  "/",
+			})
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("bootstrap"))
+		case "/api/auth/csrf":
+			csrfRequests++
+			if got := r.Header.Get("User-Agent"); got != "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" {
+				t.Fatalf("expected browser user agent on csrf request, got %q", got)
+			}
+			if got := r.Header.Get("Referer"); got != serverURL+"/" {
+				t.Fatalf("expected homepage referer on csrf request, got %q", got)
+			}
+			if got := r.Header.Get("Origin"); got != serverURL {
+				t.Fatalf("expected origin header on csrf request, got %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"csrfToken":"csrf-token"}`))
+		case "/api/auth/signin/openai":
+			signinRequests++
+			if got := r.Header.Get("User-Agent"); got != "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" {
+				t.Fatalf("expected browser user agent on signin request, got %q", got)
+			}
+			if got := r.Header.Get("Referer"); got != serverURL+"/" {
+				t.Fatalf("expected homepage referer on signin request, got %q", got)
+			}
+			if got := r.URL.Query().Get("ext-oai-did"); got == "" {
+				t.Fatalf("expected ext-oai-did query on signin request, got %q", got)
+			}
+			if got := r.URL.Query().Get("auth_session_logging_id"); got == "" {
+				t.Fatalf("expected auth_session_logging_id query on signin request, got %q", got)
+			}
+			if got := r.Header.Get("Origin"); got != serverURL {
+				t.Fatalf("expected origin header on signin request, got %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"url":"` + serverURL + `/authorize?state=signup"}`))
+		case "/authorize":
+			http.Redirect(w, r, "/u/continue?state=signup", http.StatusFound)
+		case "/u/continue":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body data-page="continue">Continue</body></html>`))
+		case "/create-account/password":
+			passwordVisits++
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body data-page="password">Password</body></html>`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	client, err := defaultAuthClient(FlowRequest{runtime: &flowRuntime{}}, DefaultPrepareSignupFlowOptions{
+		AuthBaseURL: serverURL,
+	})
+	if err != nil {
+		t.Fatalf("create default auth client: %v", err)
+	}
+
+	if _, err := client.PrepareSignup(context.Background(), email); err != nil {
+		t.Fatalf("prepare signup: %v", err)
+	}
+	if loginRequests != 1 || csrfRequests != 1 || signinRequests != 1 || passwordVisits != 1 {
+		t.Fatalf("unexpected request counts login=%d csrf=%d signin=%d password=%d", loginRequests, csrfRequests, signinRequests, passwordVisits)
+	}
+}
+
+func TestDefaultAuthClientUsesSelectedProxyDuringPrepareSignup(t *testing.T) {
+	t.Parallel()
+
+	const email = "teammate@example.com"
+
+	var (
+		proxyLoginRequests  int
+		proxyCSRFRequests   int
+		proxySigninRequests int
+		proxyPasswordVisits int
+	)
+
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			proxyLoginRequests++
+			http.SetCookie(w, &http.Cookie{
+				Name:  "sessionid",
+				Value: "bootstrap-cookie",
+				Path:  "/",
+			})
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("bootstrap"))
+		case "/api/auth/csrf":
+			proxyCSRFRequests++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"csrfToken":"csrf-token"}`))
+		case "/api/auth/signin/openai":
+			proxySigninRequests++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"url":"http://auth-proxy-test.invalid/authorize?state=signup"}`))
+		case "/authorize":
+			http.Redirect(w, r, "http://auth-proxy-test.invalid/u/continue?state=signup", http.StatusFound)
+		case "/u/continue":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body data-page="continue">Continue</body></html>`))
+		case "/create-account/password":
+			proxyPasswordVisits++
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><body data-page="password">Password</body></html>`))
+		default:
+			t.Fatalf("unexpected proxy path: %s", r.URL.Path)
+		}
+	}))
+	defer proxyServer.Close()
+
+	client, err := defaultAuthClient(FlowRequest{
+		RunnerRequest: registration.RunnerRequest{
+			Plan: registration.ExecutionPlan{
+				Proxy: registration.ProxySelection{
+					Selected: proxyServer.URL,
+				},
+			},
+		},
+		runtime: &flowRuntime{},
+	}, DefaultPrepareSignupFlowOptions{
+		AuthBaseURL: "http://auth-proxy-test.invalid",
+	})
+	if err != nil {
+		t.Fatalf("create default auth client: %v", err)
+	}
+
+	if _, err := client.PrepareSignup(context.Background(), email); err != nil {
+		t.Fatalf("prepare signup: %v", err)
+	}
+	if proxyLoginRequests != 1 || proxyCSRFRequests != 1 || proxySigninRequests != 1 || proxyPasswordVisits != 1 {
+		t.Fatalf("unexpected proxy request counts login=%d csrf=%d signin=%d password=%d", proxyLoginRequests, proxyCSRFRequests, proxySigninRequests, proxyPasswordVisits)
 	}
 }
 

@@ -41,18 +41,19 @@ type OutlookAccountsListResponse struct {
 }
 
 type OutlookBatchStartRequest struct {
-	ServiceIDs        []int  `json:"service_ids"`
-	Proxy             string `json:"proxy,omitempty"`
-	IntervalMin       int    `json:"interval_min,omitempty"`
-	IntervalMax       int    `json:"interval_max,omitempty"`
-	Concurrency       int    `json:"concurrency,omitempty"`
-	Mode              string `json:"mode,omitempty"`
-	AutoUploadCPA     bool   `json:"auto_upload_cpa,omitempty"`
-	CPAServiceIDs     []int  `json:"cpa_service_ids,omitempty"`
-	AutoUploadSub2API bool   `json:"auto_upload_sub2api,omitempty"`
-	Sub2APIServiceIDs []int  `json:"sub2api_service_ids,omitempty"`
-	AutoUploadTM      bool   `json:"auto_upload_tm,omitempty"`
-	TMServiceIDs      []int  `json:"tm_service_ids,omitempty"`
+	ServiceIDs              []int  `json:"service_ids"`
+	ChatGPTRegistrationMode string `json:"chatgpt_registration_mode,omitempty"`
+	Proxy                   string `json:"proxy,omitempty"`
+	IntervalMin             int    `json:"interval_min,omitempty"`
+	IntervalMax             int    `json:"interval_max,omitempty"`
+	Concurrency             int    `json:"concurrency,omitempty"`
+	Mode                    string `json:"mode,omitempty"`
+	AutoUploadCPA           bool   `json:"auto_upload_cpa,omitempty"`
+	CPAServiceIDs           []int  `json:"cpa_service_ids,omitempty"`
+	AutoUploadSub2API       bool   `json:"auto_upload_sub2api,omitempty"`
+	Sub2APIServiceIDs       []int  `json:"sub2api_service_ids,omitempty"`
+	AutoUploadTM            bool   `json:"auto_upload_tm,omitempty"`
+	TMServiceIDs            []int  `json:"tm_service_ids,omitempty"`
 }
 
 type OutlookBatchStartResponse struct {
@@ -205,19 +206,20 @@ func (s *OutlookService) StartOutlookBatch(ctx context.Context, req OutlookBatch
 	for _, serviceID := range req.ServiceIDs {
 		id := serviceID
 		requests = append(requests, StartRequest{
-			EmailServiceType:  "outlook",
-			Proxy:             req.Proxy,
-			EmailServiceID:    &id,
-			IntervalMin:       options.IntervalMin,
-			IntervalMax:       options.IntervalMax,
-			Concurrency:       options.Concurrency,
-			Mode:              options.Mode,
-			AutoUploadCPA:     req.AutoUploadCPA,
-			CPAServiceIDs:     append([]int(nil), req.CPAServiceIDs...),
-			AutoUploadSub2API: req.AutoUploadSub2API,
-			Sub2APIServiceIDs: append([]int(nil), req.Sub2APIServiceIDs...),
-			AutoUploadTM:      req.AutoUploadTM,
-			TMServiceIDs:      append([]int(nil), req.TMServiceIDs...),
+			EmailServiceType:        "outlook",
+			ChatGPTRegistrationMode: req.ChatGPTRegistrationMode,
+			Proxy:                   req.Proxy,
+			EmailServiceID:          &id,
+			IntervalMin:             options.IntervalMin,
+			IntervalMax:             options.IntervalMax,
+			Concurrency:             options.Concurrency,
+			Mode:                    options.Mode,
+			AutoUploadCPA:           req.AutoUploadCPA,
+			CPAServiceIDs:           append([]int(nil), req.CPAServiceIDs...),
+			AutoUploadSub2API:       req.AutoUploadSub2API,
+			Sub2APIServiceIDs:       append([]int(nil), req.Sub2APIServiceIDs...),
+			AutoUploadTM:            req.AutoUploadTM,
+			TMServiceIDs:            append([]int(nil), req.TMServiceIDs...),
 		})
 	}
 

@@ -13,12 +13,12 @@ import (
 func TestExecutorRunsRegistrationSingleJobAndStreamsLogs(t *testing.T) {
 	emailServiceID := 42
 	runner := &fakeRunner{
-		runFn: func(_ context.Context, req registration.RunnerRequest, logf func(level string, message string) error) (map[string]any, error) {
+		runFn: func(_ context.Context, req registration.RunnerRequest, logf func(level string, message string) error) (registration.RunnerOutput, error) {
 			if req.TaskUUID != "job-1" {
 				t.Fatalf("expected task uuid job-1, got %q", req.TaskUUID)
 			}
-			if req.Plan.Stage != registration.PythonFallbackStageExecute {
-				t.Fatalf("expected python execute stage, got %+v", req.Plan)
+			if req.Plan.Stage != registration.ExecuteStageRegistration {
+				t.Fatalf("expected execute stage, got %+v", req.Plan)
 			}
 			if req.StartRequest.EmailServiceType != "outlook" {
 				t.Fatalf("expected outlook payload, got %+v", req.StartRequest)
@@ -28,6 +28,9 @@ func TestExecutorRunsRegistrationSingleJobAndStreamsLogs(t *testing.T) {
 			}
 			if req.StartRequest.Proxy != "http://proxy.internal:8080" {
 				t.Fatalf("expected proxy to round-trip, got %+v", req.StartRequest)
+			}
+			if req.StartRequest.ChatGPTRegistrationMode != "access_token_only" {
+				t.Fatalf("expected registration mode to round-trip, got %+v", req.StartRequest)
 			}
 			if !req.StartRequest.AutoUploadCPA || len(req.StartRequest.CPAServiceIDs) != 2 {
 				t.Fatalf("expected CPA upload fields preserved, got %+v", req.StartRequest)
@@ -50,16 +53,16 @@ func TestExecutorRunsRegistrationSingleJobAndStreamsLogs(t *testing.T) {
 			if req.Plan.Outlook.ReservationStatus != "reservation_not_configured" {
 				t.Fatalf("expected reservation skeleton status, got %+v", req.Plan.Outlook)
 			}
-			if err := logf("info", "bridge started"); err != nil {
-				return nil, err
+			if err := logf("info", "native flow started"); err != nil {
+				return registration.RunnerOutput{}, err
 			}
-			if err := logf("warning", "using fallback oauth"); err != nil {
-				return nil, err
+			if err := logf("warning", "following pending oauth continuation"); err != nil {
+				return registration.RunnerOutput{}, err
 			}
-			return map[string]any{
+			return registration.RunnerOutput{Result: map[string]any{
 				"email":   "alice@example.com",
 				"success": true,
-			}, nil
+			}}, nil
 		},
 	}
 	logger := &fakeJobLogger{}
@@ -84,7 +87,7 @@ func TestExecutorRunsRegistrationSingleJobAndStreamsLogs(t *testing.T) {
 	result, err := executor.Execute(context.Background(), jobs.Job{
 		JobID:   "job-1",
 		JobType: "registration_single",
-		Payload: []byte(`{"email_service_type":"outlook","email_service_id":42,"proxy":"http://proxy.internal:8080","auto_upload_cpa":true,"cpa_service_ids":[11,22]}`),
+		Payload: []byte(`{"email_service_type":"outlook","chatgpt_registration_mode":"access_token_only","email_service_id":42,"proxy":"http://proxy.internal:8080","auto_upload_cpa":true,"cpa_service_ids":[11,22]}`),
 	})
 	if err != nil {
 		t.Fatalf("unexpected execute error: %v", err)
@@ -95,10 +98,10 @@ func TestExecutorRunsRegistrationSingleJobAndStreamsLogs(t *testing.T) {
 	if len(logger.entries) != 2 {
 		t.Fatalf("expected two streamed log entries, got %#v", logger.entries)
 	}
-	if logger.entries[0].level != "info" || logger.entries[0].message != "bridge started" {
+	if logger.entries[0].level != "info" || logger.entries[0].message != "native flow started" {
 		t.Fatalf("unexpected first log entry: %+v", logger.entries[0])
 	}
-	if logger.entries[1].level != "warning" || logger.entries[1].message != "using fallback oauth" {
+	if logger.entries[1].level != "warning" || logger.entries[1].message != "following pending oauth continuation" {
 		t.Fatalf("unexpected second log entry: %+v", logger.entries[1])
 	}
 }
@@ -119,13 +122,13 @@ func TestExecutorReturnsPayloadDecodeError(t *testing.T) {
 func TestExecutorReturnsRunnerError(t *testing.T) {
 	logger := &fakeJobLogger{}
 	executor := registration.NewExecutor(logger, &fakeRunner{
-		runFn: func(_ context.Context, _ registration.RunnerRequest, logf func(level string, message string) error) (map[string]any, error) {
-			if err := logf("info", "bridge started"); err != nil {
-				return nil, err
+		runFn: func(_ context.Context, _ registration.RunnerRequest, logf func(level string, message string) error) (registration.RunnerOutput, error) {
+			if err := logf("info", "native flow started"); err != nil {
+				return registration.RunnerOutput{}, err
 			}
-			return nil, errors.New("python bridge failed")
+			return registration.RunnerOutput{}, errors.New("native flow failed")
 		},
-	})
+	}, registration.WithPreparationDependencies(executorPreparationDeps()))
 
 	_, err := executor.Execute(context.Background(), jobs.Job{
 		JobID:   "job-1",
@@ -138,7 +141,7 @@ func TestExecutorReturnsRunnerError(t *testing.T) {
 	if len(logger.entries) != 1 {
 		t.Fatalf("expected one streamed log entry before failure, got %#v", logger.entries)
 	}
-	if logger.entries[0].message != "bridge started" {
+	if logger.entries[0].message != "native flow started" {
 		t.Fatalf("unexpected log entry: %+v", logger.entries[0])
 	}
 }
@@ -147,9 +150,9 @@ func TestExecutorWrapsPreparationError(t *testing.T) {
 	executor := registration.NewExecutor(
 		&fakeJobLogger{},
 		&fakeRunner{
-			runFn: func(_ context.Context, _ registration.RunnerRequest, _ func(level string, message string) error) (map[string]any, error) {
+			runFn: func(_ context.Context, _ registration.RunnerRequest, _ func(level string, message string) error) (registration.RunnerOutput, error) {
 				t.Fatal("runner should not be called when preparation fails")
-				return nil, nil
+				return registration.RunnerOutput{}, nil
 			},
 		},
 		registration.WithPreparationDependencies(registration.PreparationDependencies{
@@ -173,15 +176,76 @@ func TestExecutorWrapsPreparationError(t *testing.T) {
 	}
 }
 
-type fakeRunner struct {
-	runFn func(ctx context.Context, req registration.RunnerRequest, logf func(level string, message string) error) (map[string]any, error)
+func TestExecutorRejectsUnsupportedEmailServiceBeforeRunnerStarts(t *testing.T) {
+	executor := registration.NewExecutor(
+		&fakeJobLogger{},
+		&fakeRunner{
+			runFn: func(_ context.Context, _ registration.RunnerRequest, _ func(level string, message string) error) (registration.RunnerOutput, error) {
+				t.Fatal("runner should not be called when email service type is unsupported")
+				return registration.RunnerOutput{}, nil
+			},
+		},
+	)
+
+	_, err := executor.Execute(context.Background(), jobs.Job{
+		JobID:   "job-unsupported-service",
+		JobType: "registration_single",
+		Payload: []byte(`{"email_service_type":"custom_mail","email_service_config":{"base_url":"https://custom.example/api"}}`),
+	})
+	if err == nil {
+		t.Fatal("expected unsupported email service error")
+	}
+	if !strings.Contains(err.Error(), "prepare registration flow") {
+		t.Fatalf("expected preparation wrapper, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "does not support this email service") {
+		t.Fatalf("expected unsupported email service reason, got %v", err)
+	}
 }
 
-func (f *fakeRunner) Run(ctx context.Context, req registration.RunnerRequest, logf func(level string, message string) error) (map[string]any, error) {
+func TestExecutorRejectsTempmailWithoutConfiguredBaseURLBeforeRunnerStarts(t *testing.T) {
+	executor := registration.NewExecutor(
+		&fakeJobLogger{},
+		&fakeRunner{
+			runFn: func(_ context.Context, _ registration.RunnerRequest, _ func(level string, message string) error) (registration.RunnerOutput, error) {
+				t.Fatal("runner should not be called when tempmail base_url is missing")
+				return registration.RunnerOutput{}, nil
+			},
+		},
+		registration.WithPreparationDependencies(registration.PreparationDependencies{
+			Settings: executorPreparationSettings{
+				settings: map[string]string{
+					"tempmail.enabled": "true",
+				},
+			},
+		}),
+	)
+
+	_, err := executor.Execute(context.Background(), jobs.Job{
+		JobID:   "job-tempmail-missing-base-url",
+		JobType: "registration_single",
+		Payload: []byte(`{"email_service_type":"tempmail"}`),
+	})
+	if err == nil {
+		t.Fatal("expected missing tempmail base_url error")
+	}
+	if !strings.Contains(err.Error(), "prepare registration flow") {
+		t.Fatalf("expected preparation wrapper, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "tempmail") || !strings.Contains(err.Error(), "base_url") {
+		t.Fatalf("expected missing tempmail base_url reason, got %v", err)
+	}
+}
+
+type fakeRunner struct {
+	runFn func(ctx context.Context, req registration.RunnerRequest, logf func(level string, message string) error) (registration.RunnerOutput, error)
+}
+
+func (f *fakeRunner) Run(ctx context.Context, req registration.RunnerRequest, logf func(level string, message string) error) (registration.RunnerOutput, error) {
 	if f.runFn != nil {
 		return f.runFn(ctx, req, logf)
 	}
-	return map[string]any{"email": "default@example.com"}, nil
+	return registration.RunnerOutput{Result: map[string]any{"email": "default@example.com"}}, nil
 }
 
 type fakeJobLogger struct {
@@ -222,4 +286,25 @@ type failingPreparationSettings struct {
 
 func (f failingPreparationSettings) GetSettings(context.Context, []string) (map[string]string, error) {
 	return nil, f.err
+}
+
+type executorPreparationSettings struct {
+	settings map[string]string
+}
+
+func (s executorPreparationSettings) GetSettings(context.Context, []string) (map[string]string, error) {
+	return s.settings, nil
+}
+
+func executorPreparationDeps() registration.PreparationDependencies {
+	return registration.PreparationDependencies{
+		Settings: executorPreparationSettings{
+			settings: map[string]string{
+				"tempmail.enabled":     "true",
+				"tempmail.base_url":    "https://api.tempmail.example/v2",
+				"tempmail.timeout":     "45",
+				"tempmail.max_retries": "7",
+			},
+		},
+	}
 }

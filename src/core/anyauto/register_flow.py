@@ -19,6 +19,25 @@ from ...config.settings import get_settings
 from ...database import crud
 from ...database.session import get_db
 
+CHATGPT_REGISTRATION_MODE_REFRESH_TOKEN = "refresh_token"
+CHATGPT_REGISTRATION_MODE_ACCESS_TOKEN_ONLY = "access_token_only"
+
+
+def normalize_chatgpt_registration_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if normalized in {
+        CHATGPT_REGISTRATION_MODE_ACCESS_TOKEN_ONLY,
+        "access_token",
+        "at_only",
+        "without_rt",
+        "without_refresh_token",
+        "no_rt",
+        "0",
+        "false",
+    }:
+        return CHATGPT_REGISTRATION_MODE_ACCESS_TOKEN_ONLY
+    return CHATGPT_REGISTRATION_MODE_REFRESH_TOKEN
+
 
 class EmailServiceAdapter:
     """将 codex-console 邮箱服务适配成 any-auto-register 预期接口。"""
@@ -110,6 +129,9 @@ class AnyAutoRegistrationEngine:
                 token_completion_max_concurrency,
             )
         self.token_completion_concurrency = requested_token_completion_concurrency
+        self.chatgpt_registration_mode = normalize_chatgpt_registration_mode(
+            self.extra_config.get("chatgpt_registration_mode"),
+        )
 
         self.email: Optional[str] = None
         self.inbox_email: Optional[str] = None
@@ -400,6 +422,16 @@ class AnyAutoRegistrationEngine:
             "retry_deferred": True,
             "cooldown_until": cooldown_value,
         }
+
+    def _apply_registration_mode_metadata(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = dict(result or {})
+        metadata = dict(normalized.get("metadata") or {})
+        metadata["chatgpt_registration_mode"] = self.chatgpt_registration_mode
+        metadata["chatgpt_has_refresh_token_solution"] = (
+            self.chatgpt_registration_mode == CHATGPT_REGISTRATION_MODE_REFRESH_TOKEN
+        )
+        normalized["metadata"] = metadata
+        return normalized
 
     def _passwordless_oauth_reauth(
         self,
@@ -761,6 +793,10 @@ class AnyAutoRegistrationEngine:
             metadata["refresh_token_source"] = token_source
         metadata["refresh_token_acquired"] = bool(refresh_token)
         metadata["has_session_token"] = bool(session_token)
+        metadata["chatgpt_registration_mode"] = self.chatgpt_registration_mode
+        metadata["chatgpt_has_refresh_token_solution"] = (
+            self.chatgpt_registration_mode == CHATGPT_REGISTRATION_MODE_REFRESH_TOKEN
+        )
         merged["metadata"] = metadata
         return merged
 
@@ -851,6 +887,9 @@ class AnyAutoRegistrationEngine:
         返回 dict：包含 result(RegistrationResult 填充所需字段) + 额外上下文。
         """
         last_error = ""
+        self.chatgpt_registration_mode = normalize_chatgpt_registration_mode(
+            self.extra_config.get("chatgpt_registration_mode"),
+        )
         settings = get_settings()
         password_len = int(getattr(settings, "registration_default_password_length", DEFAULT_PASSWORD_LENGTH) or DEFAULT_PASSWORD_LENGTH)
 
@@ -869,6 +908,7 @@ class AnyAutoRegistrationEngine:
                     self._log("=" * 60)
                     self._log("开始注册流程 V2 (Session 复用直取 AccessToken)")
                     self._log(f"请求模式: {self.browser_mode}")
+                    self._log(f"ChatGPT 注册模式: {self.chatgpt_registration_mode}")
                     self._log("=" * 60)
                 else:
                     self._log(f"整流程重试 {attempt + 1}/{self.max_retries} ...")
@@ -1031,6 +1071,11 @@ class AnyAutoRegistrationEngine:
                             base_result,
                             password_source=password_source,
                         )
+                    base_result = self._apply_registration_mode_metadata(base_result)
+
+                    if self.chatgpt_registration_mode == CHATGPT_REGISTRATION_MODE_ACCESS_TOKEN_ONLY:
+                        self._log("当前为无 RT 模式，跳过 OAuth 补齐，直接返回 session/access_token 结果")
+                        return base_result
 
                     if base_result.get("refresh_token"):
                         self._log(f"无需额外 OAuth，refresh_token 已补齐，来源: {base_result.get('metadata', {}).get('refresh_token_source') or 'unknown'}")
@@ -1120,6 +1165,10 @@ class AnyAutoRegistrationEngine:
                     return base_result
 
                 # 6. OAuth 回退
+                if self.chatgpt_registration_mode == CHATGPT_REGISTRATION_MODE_ACCESS_TOKEN_ONLY:
+                    last_error = f"access_token_only 模式下会话复用失败: {session_result}"
+                    return {"success": False, "error_message": last_error}
+
                 self._log(f"复用会话失败，回退到 OAuth 登录补全流程: {session_result}")
                 oauth_completion = self._run_oauth_token_completion(
                     chatgpt_client,

@@ -6,11 +6,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type postgresQuerier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
@@ -172,6 +174,29 @@ func (r *PostgresRepository) ClearLogs(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("clear app logs: %w", err)
 	}
 	return deletedTotal, nil
+}
+
+func (r *PostgresRepository) AppendAppLog(ctx context.Context, level string, logger string, message string) error {
+	level = strings.ToUpper(strings.TrimSpace(level))
+	if level == "" {
+		level = "INFO"
+	}
+	logger = strings.TrimSpace(logger)
+	if logger == "" {
+		logger = "app"
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return nil
+	}
+
+	if _, err := r.db.Exec(ctx, `
+		INSERT INTO app_logs (level, logger, module, pathname, lineno, message, exception)
+		VALUES ($1, $2, '', '', 0, $3, '')
+	`, level, logger, message); err != nil {
+		return fmt.Errorf("insert app log: %w", err)
+	}
+	return nil
 }
 
 func buildCountLogsQuery(req ListLogsRequest, now time.Time) (string, []any) {

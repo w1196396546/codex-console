@@ -14,7 +14,6 @@ import (
 	internalhttp "github.com/dou-jiang/codex-console/backend-go/internal/http"
 	"github.com/dou-jiang/codex-console/backend-go/internal/jobs"
 	"github.com/dou-jiang/codex-console/backend-go/internal/logs"
-	"github.com/dou-jiang/codex-console/backend-go/internal/payment"
 	postgresplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/postgres"
 	redisplatform "github.com/dou-jiang/codex-console/backend-go/internal/platform/redis"
 	"github.com/dou-jiang/codex-console/backend-go/internal/registration"
@@ -43,7 +42,8 @@ func main() {
 
 	log.Printf("api listening on %s", deps.Config.HTTPAddr)
 
-	jobService := jobs.NewService(jobs.NewRepository(deps.Postgres), deps.Queue)
+	logsRepository := logs.NewPostgresRepository(deps.Postgres)
+	jobService := jobs.NewService(jobs.NewRepository(deps.Postgres), deps.Queue, jobs.WithAppLogSink(logsRepository))
 	registrationService := registration.NewService(jobService)
 	batchService := registration.NewBatchService(jobService)
 	availableServices := registration.NewAvailableServicesService(
@@ -59,9 +59,12 @@ func main() {
 	accountsRepository := accounts.NewPostgresRepository(deps.Postgres)
 	accountsService := accounts.NewService(accountsRepository)
 	settingsRepository := settings.NewPostgresRepository(deps.Postgres)
+	proxyTester := settings.NewHTTPProxyTester(settings.HTTPProxyTesterOptions{})
 	settingsService := settings.NewService(settings.ServiceDependencies{
-		Repository:    settingsRepository,
-		DatabaseAdmin: settings.NewPostgresDatabaseAdmin(deps.Postgres, deps.Config.DatabaseURL, ""),
+		Repository:         settingsRepository,
+		DatabaseAdmin:      settings.NewPostgresDatabaseAdmin(deps.Postgres, deps.Config.DatabaseURL, ""),
+		DynamicProxyTester: proxyTester,
+		ProxyTester:        proxyTester,
 	})
 	adminUIHandler, err := adminui.NewHandler(adminui.HandlerOptions{
 		BasePath: adminui.DefaultBasePath,
@@ -72,11 +75,12 @@ func main() {
 	}
 	emailServicesService := emailservices.NewService(emailservices.NewPostgresRepository(deps.Postgres), nil)
 	uploaderService := newAPIUploaderService(uploader.NewPostgresConfigRepository(deps.Postgres), accountsRepository)
-	logsService := logs.NewService(logs.NewPostgresRepository(deps.Postgres))
-	paymentService := payment.NewService(payment.NewPostgresRepository(deps.Postgres), accountsRepository)
+	logsService := logs.NewService(logsRepository)
+	paymentService := newAPIPaymentService(deps.Postgres, accountsRepository)
 	teamRepository := team.NewPostgresRepository(deps.Postgres)
-	teamService := team.NewService(teamRepository, nil)
-	teamTaskService := team.NewTaskService(teamRepository, teamService, jobService, nil)
+	teamRuntime := newAPITeamServices(teamRepository, jobService)
+	teamService := teamRuntime.Service
+	teamTaskService := teamRuntime.TaskService
 	taskSocketHandler := registrationws.NewHandler(jobService)
 	batchSocketHandler := registrationws.NewBatchHandler(batchService)
 

@@ -221,6 +221,35 @@ func (f *PrepareSignupFlow) Run(ctx context.Context, input FlowRequest) (registr
 	if postSignupClient == nil {
 		return registration.NativeRunnerResult{}, errors.New("post-signup auth client is required")
 	}
+	clientID, err := f.clientIDResolver.ResolveClientID(ctx, input)
+	if err != nil {
+		return registration.NativeRunnerResult{}, fmt.Errorf("resolve account client id: %w", err)
+	}
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return registration.NativeRunnerResult{}, errors.New("resolve account client id: client id is required")
+	}
+	registrationMode := normalizeRegistrationMode(input.RunnerRequest.StartRequest.ChatGPTRegistrationMode)
+	accessTokenOnlyMode := registrationMode == "access_token_only"
+	if isExistingAccountPageType(preparation.PageType) {
+		return f.completeExistingAccountToken(
+			ctx,
+			input,
+			email,
+			preparation,
+			auth.PrepareSignupResult{},
+			postSignupClient,
+			auth.CreateAccountResult{
+				StatusCode:  preparation.RegisterStatusCode,
+				FinalURL:    preparation.FinalURL,
+				FinalPath:   preparation.FinalPath,
+				ContinueURL: preparation.ContinueURL,
+				PageType:    preparation.PageType,
+			},
+			clientID,
+			logf,
+		)
+	}
 
 	inbox := input.Inbox
 	if inbox.OTPSentAt.IsZero() {
@@ -236,9 +265,22 @@ func (f *PrepareSignupFlow) Run(ctx context.Context, input FlowRequest) (registr
 		return registration.NativeRunnerResult{}, errors.New("read inbox email otp: otp code is required")
 	}
 
-	verifiedPreparation, err := postSignupClient.VerifyEmailOTP(ctx, toAuthPrepareSignupResult(preparation), otpCode)
+	verifiedPreparation, err := verifyPreparedEmailOTPWithRetries(ctx, postSignupClient, input.MailProvider, input.Inbox, toAuthPrepareSignupResult(preparation), otpCode)
 	if err != nil {
 		return registration.NativeRunnerResult{}, fmt.Errorf("verify email otp: %w", err)
+	}
+	if shouldDispatchTokenCompletionAfterEmailOTP(verifiedPreparation) {
+		return f.completeExistingAccountToken(
+			ctx,
+			input,
+			email,
+			preparation,
+			verifiedPreparation,
+			postSignupClient,
+			createAccountResultFromVerifiedPreparation(verifiedPreparation),
+			clientID,
+			logf,
+		)
 	}
 	if strings.TrimSpace(verifiedPreparation.PageType) != "about_you" {
 		return registration.NativeRunnerResult{}, fmt.Errorf("verify email otp result expected page type about_you, got %s", strings.TrimSpace(verifiedPreparation.PageType))
@@ -275,15 +317,6 @@ func (f *PrepareSignupFlow) Run(ctx context.Context, input FlowRequest) (registr
 		}
 	}
 
-	clientID, err := f.clientIDResolver.ResolveClientID(ctx, input)
-	if err != nil {
-		return registration.NativeRunnerResult{}, fmt.Errorf("resolve account client id: %w", err)
-	}
-	clientID = strings.TrimSpace(clientID)
-	if clientID == "" {
-		return registration.NativeRunnerResult{}, errors.New("resolve account client id: client id is required")
-	}
-
 	if shouldDispatchTokenCompletion(createAccountResult) {
 		return f.completeExistingAccountToken(
 			ctx,
@@ -296,9 +329,6 @@ func (f *PrepareSignupFlow) Run(ctx context.Context, input FlowRequest) (registr
 			clientID,
 			logf,
 		)
-	}
-	if strings.TrimSpace(createAccountResult.RefreshToken) == "" {
-		return registration.NativeRunnerResult{}, errors.New("create account result missing refresh token")
 	}
 
 	continueCreateAccountResult, err := postSignupClient.ContinueCreateAccount(ctx, createAccountResult)
@@ -332,17 +362,23 @@ func (f *PrepareSignupFlow) Run(ctx context.Context, input FlowRequest) (registr
 	if refreshToken == "" {
 		refreshToken = strings.TrimSpace(createAccountResult.RefreshToken)
 	}
-	if refreshToken == "" {
+	if refreshToken == "" && !accessTokenOnlyMode {
 		return registration.NativeRunnerResult{}, errors.New("registration result missing refresh token")
 	}
 
 	emailServiceType, _ := resolveMailProvider(input.RunnerRequest)
 	resultMetadata := map[string]any{
 		"auth_provider":               strings.TrimSpace(continueCreateAccountResult.AuthProvider),
-		"refresh_token_source":        "create_account",
 		"has_session_token":           strings.TrimSpace(continueCreateAccountResult.SessionToken) != "",
 		"create_account_callback_url": strings.TrimSpace(createAccountResult.CallbackURL),
 		"create_account_continue_url": strings.TrimSpace(createAccountResult.ContinueURL),
+		"chatgpt_registration_mode":   registrationMode,
+	}
+	if refreshToken != "" {
+		resultMetadata["refresh_token_source"] = "create_account"
+	}
+	if accessTokenOnlyMode && refreshToken == "" {
+		resultMetadata["refresh_token_skipped"] = true
 	}
 	accountPersistence := &accounts.UpsertAccountRequest{
 		Email:          email,
@@ -359,11 +395,17 @@ func (f *PrepareSignupFlow) Run(ctx context.Context, input FlowRequest) (registr
 		Status:         accounts.DefaultAccountStatus,
 		Source:         accounts.DefaultAccountSource,
 		ExtraData: map[string]any{
-			"auth_provider":        strings.TrimSpace(continueCreateAccountResult.AuthProvider),
-			"task_uuid":            strings.TrimSpace(input.RunnerRequest.TaskUUID),
-			"flow":                 "native_runner",
-			"refresh_token_source": "create_account",
+			"auth_provider":             strings.TrimSpace(continueCreateAccountResult.AuthProvider),
+			"task_uuid":                 strings.TrimSpace(input.RunnerRequest.TaskUUID),
+			"flow":                      "native_runner",
+			"chatgpt_registration_mode": registrationMode,
 		},
+	}
+	if refreshToken != "" {
+		accountPersistence.ExtraData["refresh_token_source"] = "create_account"
+	}
+	if accessTokenOnlyMode && refreshToken == "" {
+		accountPersistence.ExtraData["refresh_token_skipped"] = true
 	}
 	attachAuthSessionArtifacts(postSignupClient, accountPersistence, resultMetadata)
 
@@ -371,57 +413,61 @@ func (f *PrepareSignupFlow) Run(ctx context.Context, input FlowRequest) (registr
 		return registration.NativeRunnerResult{}, fmt.Errorf("log prepare signup completion: %w", err)
 	}
 
-	return registration.NativeRunnerResult{
-		Result: map[string]any{
-			"success":       true,
-			"stage":         stageCompleted,
-			"email":         email,
-			"account_id":    accountID,
-			"workspace_id":  workspaceID,
-			"access_token":  continueCreateAccountResult.AccessToken,
-			"refresh_token": refreshToken,
-			"session_token": continueCreateAccountResult.SessionToken,
-			"password":      preparation.Password,
-			"metadata":      resultMetadata,
-			"inbox": map[string]any{
-				"email": email,
-				"token": input.Inbox.Token,
-			},
-			"signup_preparation": map[string]any{
-				"csrf_token":           preparation.CSRFToken,
-				"authorize_url":        preparation.AuthorizeURL,
-				"final_url":            preparation.FinalURL,
-				"final_path":           preparation.FinalPath,
-				"continue_url":         preparation.ContinueURL,
-				"page_type":            preparation.PageType,
-				"register_status_code": preparation.RegisterStatusCode,
-				"send_otp_status_code": preparation.SendOTPStatusCode,
-			},
-			"email_otp": map[string]any{
-				"code": otpCode,
-			},
-			"email_verification": map[string]any{
-				"continue_url": verifiedPreparation.ContinueURL,
-				"final_url":    verifiedPreparation.FinalURL,
-				"final_path":   verifiedPreparation.FinalPath,
-				"page_type":    verifiedPreparation.PageType,
-			},
-			"create_account": map[string]any{
-				"account_id":    createAccountResult.AccountID,
-				"workspace_id":  createAccountResult.WorkspaceID,
-				"refresh_token": refreshToken,
-				"continue_url":  createAccountResult.ContinueURL,
-				"callback_url":  createAccountResult.CallbackURL,
-				"page_type":     createAccountResult.PageType,
-			},
-			"session": map[string]any{
-				"access_token":  continueCreateAccountResult.AccessToken,
-				"session_token": continueCreateAccountResult.SessionToken,
-				"account_id":    continueCreateAccountResult.AccountID,
-				"workspace_id":  continueCreateAccountResult.WorkspaceID,
-				"auth_provider": continueCreateAccountResult.AuthProvider,
-			},
+	resultPayload := map[string]any{
+		"success":       true,
+		"stage":         stageCompleted,
+		"email":         email,
+		"account_id":    accountID,
+		"workspace_id":  workspaceID,
+		"access_token":  continueCreateAccountResult.AccessToken,
+		"session_token": continueCreateAccountResult.SessionToken,
+		"password":      preparation.Password,
+		"metadata":      resultMetadata,
+		"inbox": map[string]any{
+			"email": email,
+			"token": input.Inbox.Token,
 		},
+		"signup_preparation": map[string]any{
+			"csrf_token":           preparation.CSRFToken,
+			"authorize_url":        preparation.AuthorizeURL,
+			"final_url":            preparation.FinalURL,
+			"final_path":           preparation.FinalPath,
+			"continue_url":         preparation.ContinueURL,
+			"page_type":            preparation.PageType,
+			"register_status_code": preparation.RegisterStatusCode,
+			"send_otp_status_code": preparation.SendOTPStatusCode,
+		},
+		"email_otp": map[string]any{
+			"code": otpCode,
+		},
+		"email_verification": map[string]any{
+			"continue_url": verifiedPreparation.ContinueURL,
+			"final_url":    verifiedPreparation.FinalURL,
+			"final_path":   verifiedPreparation.FinalPath,
+			"page_type":    verifiedPreparation.PageType,
+		},
+		"create_account": map[string]any{
+			"account_id":   createAccountResult.AccountID,
+			"workspace_id": createAccountResult.WorkspaceID,
+			"continue_url": createAccountResult.ContinueURL,
+			"callback_url": createAccountResult.CallbackURL,
+			"page_type":    createAccountResult.PageType,
+		},
+		"session": map[string]any{
+			"access_token":  continueCreateAccountResult.AccessToken,
+			"session_token": continueCreateAccountResult.SessionToken,
+			"account_id":    continueCreateAccountResult.AccountID,
+			"workspace_id":  continueCreateAccountResult.WorkspaceID,
+			"auth_provider": continueCreateAccountResult.AuthProvider,
+		},
+	}
+	if refreshToken != "" {
+		resultPayload["refresh_token"] = refreshToken
+		resultPayload["create_account"].(map[string]any)["refresh_token"] = refreshToken
+	}
+
+	return registration.NativeRunnerResult{
+		Result:             resultPayload,
 		AccountPersistence: accountPersistence,
 	}, nil
 }
@@ -470,9 +516,54 @@ func resolveEmailServiceID(req registration.RunnerRequest) string {
 	return ""
 }
 
+func normalizeRegistrationMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "access_token_only":
+		return "access_token_only"
+	default:
+		return "refresh_token"
+	}
+}
+
 func shouldDispatchTokenCompletion(createAccountResult auth.CreateAccountResult) bool {
 	return isExistingAccountPageType(createAccountResult.PageType) &&
 		strings.TrimSpace(createAccountResult.RefreshToken) == ""
+}
+
+func shouldDispatchTokenCompletionAfterEmailOTP(verifiedPreparation auth.PrepareSignupResult) bool {
+	switch strings.TrimSpace(verifiedPreparation.PageType) {
+	case "workspace_selection", "continue", "callback", "add_phone":
+		return true
+	default:
+		return false
+	}
+}
+
+func createAccountResultFromVerifiedPreparation(verifiedPreparation auth.PrepareSignupResult) auth.CreateAccountResult {
+	continueURL := strings.TrimSpace(verifiedPreparation.ContinueURL)
+	callbackURL := ""
+	for _, candidate := range []string{continueURL, strings.TrimSpace(verifiedPreparation.FinalURL)} {
+		if looksLikeOAuthCallbackURL(candidate) {
+			callbackURL = candidate
+			break
+		}
+	}
+	if continueURL == "" {
+		continueURL = callbackURL
+	}
+	return auth.CreateAccountResult{
+		StatusCode:  verifiedPreparation.SendOTPStatusCode,
+		FinalURL:    strings.TrimSpace(verifiedPreparation.FinalURL),
+		FinalPath:   strings.TrimSpace(verifiedPreparation.FinalPath),
+		PageType:    strings.TrimSpace(verifiedPreparation.PageType),
+		ContinueURL: continueURL,
+		CallbackURL: callbackURL,
+	}
+}
+
+func looksLikeOAuthCallbackURL(raw string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	return strings.Contains(normalized, "/api/auth/callback/openai") && strings.Contains(normalized, "code=")
 }
 
 func (f *PrepareSignupFlow) completeExistingAccountToken(
@@ -489,6 +580,8 @@ func (f *PrepareSignupFlow) completeExistingAccountToken(
 	if f.tokenCompletionCoordinator == nil {
 		return registration.NativeRunnerResult{}, errors.New("token completion coordinator is required")
 	}
+	registrationMode := normalizeRegistrationMode(input.RunnerRequest.StartRequest.ChatGPTRegistrationMode)
+	accessTokenOnlyMode := registrationMode == "access_token_only"
 	emailServiceType, _ := resolveMailProvider(input.RunnerRequest)
 
 	historicalPassword := ""
@@ -533,6 +626,8 @@ func (f *PrepareSignupFlow) completeExistingAccountToken(
 		PageType:      createAccountResult.PageType,
 		AccountID:     createAccountResult.AccountID,
 		WorkspaceID:   createAccountResult.WorkspaceID,
+		Inbox:         input.Inbox,
+		MailProvider:  input.MailProvider,
 		AuthClient:    authClientFromPostSignupClient(postSignupClient),
 	})
 	if err != nil {
@@ -540,6 +635,70 @@ func (f *PrepareSignupFlow) completeExistingAccountToken(
 	}
 	attemptsExtraData, cooldownExtraData := tokenCompletionPersistenceState(attempts, completionResult, time.Now().UTC())
 	if completionResult.State != TokenCompletionStateCompleted {
+		if tokenCompletionRequiresPhoneVerification(completionResult) {
+			resultMetadata := map[string]any{
+				"existing_account_detected":   true,
+				"phone_verification_required": true,
+				"token_pending":               true,
+				"refresh_token_error":         strings.TrimSpace(completionResult.Error.Message),
+				"chatgpt_registration_mode":   normalizeRegistrationMode(input.RunnerRequest.StartRequest.ChatGPTRegistrationMode),
+			}
+			accountPersistence := &accounts.UpsertAccountRequest{
+				Email:          email,
+				Password:       historicalPassword,
+				ClientID:       clientID,
+				EmailService:   strings.TrimSpace(emailServiceType),
+				EmailServiceID: resolveEmailServiceID(input.RunnerRequest),
+				AccountID:      firstNonEmptyTrimmed(completionResult.Provider.AccountID, createAccountResult.AccountID),
+				WorkspaceID:    firstNonEmptyTrimmed(completionResult.Provider.WorkspaceID, createAccountResult.WorkspaceID),
+				AccessToken:    strings.TrimSpace(completionResult.Provider.AccessToken),
+				SessionToken:   strings.TrimSpace(completionResult.Provider.SessionToken),
+				ProxyUsed:      strings.TrimSpace(input.RunnerRequest.Plan.Proxy.Selected),
+				Status:         "token_pending",
+				Source:         "login",
+				ExtraData: map[string]any{
+					"task_uuid":                    strings.TrimSpace(input.RunnerRequest.TaskUUID),
+					"flow":                         "native_runner",
+					"token_completion":             true,
+					"signup_page_type":             strings.TrimSpace(createAccountResult.PageType),
+					"token_completion_mode":        string(completionResult.Strategy),
+					"existing_account_detected":    true,
+					"refresh_token_cooldown_until": cooldownExtraData,
+					"token_completion_attempts":    attemptsExtraData,
+					"token_pending":                true,
+					"phone_verification_required":  true,
+					"account_status_reason":        tokenCompletionStatusReason(completionResult),
+					"refresh_token_error":          strings.TrimSpace(completionResult.Error.Message),
+					"chatgpt_registration_mode":    normalizeRegistrationMode(input.RunnerRequest.StartRequest.ChatGPTRegistrationMode),
+				},
+			}
+			attachAuthSessionArtifacts(postSignupClient, accountPersistence, resultMetadata)
+
+			resultPayload := map[string]any{
+				"success":  true,
+				"source":   "login",
+				"stage":    stageCompleted,
+				"email":    email,
+				"metadata": resultMetadata,
+			}
+			if accountID := strings.TrimSpace(accountPersistence.AccountID); accountID != "" {
+				resultPayload["account_id"] = accountID
+			}
+			if workspaceID := strings.TrimSpace(accountPersistence.WorkspaceID); workspaceID != "" {
+				resultPayload["workspace_id"] = workspaceID
+			}
+			if accessToken := strings.TrimSpace(accountPersistence.AccessToken); accessToken != "" {
+				resultPayload["access_token"] = accessToken
+			}
+			if sessionToken := strings.TrimSpace(accountPersistence.SessionToken); sessionToken != "" {
+				resultPayload["session_token"] = sessionToken
+			}
+			return registration.NativeRunnerResult{
+				Result:             resultPayload,
+				AccountPersistence: accountPersistence,
+			}, nil
+		}
+
 		failureAccountPersistence := &accounts.UpsertAccountRequest{
 			Email:          email,
 			Password:       historicalPassword,
@@ -589,7 +748,7 @@ func (f *PrepareSignupFlow) completeExistingAccountToken(
 		return registration.NativeRunnerResult{}, errors.New("registration result missing workspace id")
 	}
 	refreshToken := firstNonEmptyTrimmed(completionResult.Provider.RefreshToken, createAccountResult.RefreshToken)
-	if refreshToken == "" {
+	if refreshToken == "" && !accessTokenOnlyMode {
 		return registration.NativeRunnerResult{}, errors.New("registration result missing refresh token")
 	}
 
@@ -599,10 +758,18 @@ func (f *PrepareSignupFlow) completeExistingAccountToken(
 	}
 	resultMetadata := map[string]any{
 		"existing_account_detected":   true,
-		"refresh_token_source":        refreshTokenSource,
 		"has_session_token":           sessionToken != "",
 		"create_account_callback_url": strings.TrimSpace(createAccountResult.CallbackURL),
 		"create_account_continue_url": strings.TrimSpace(createAccountResult.ContinueURL),
+		"access_token_source":         "token_completion",
+		"session_token_source":        "token_completion",
+		"chatgpt_registration_mode":   registrationMode,
+	}
+	if refreshToken != "" {
+		resultMetadata["refresh_token_source"] = refreshTokenSource
+	}
+	if accessTokenOnlyMode && refreshToken == "" {
+		resultMetadata["refresh_token_skipped"] = true
 	}
 	accountPersistence := &accounts.UpsertAccountRequest{
 		Email:          email,
@@ -625,10 +792,18 @@ func (f *PrepareSignupFlow) completeExistingAccountToken(
 			"signup_page_type":             strings.TrimSpace(createAccountResult.PageType),
 			"token_completion_mode":        string(completionResult.Strategy),
 			"existing_account_detected":    true,
-			"refresh_token_source":         refreshTokenSource,
 			"refresh_token_cooldown_until": cooldownExtraData,
 			"token_completion_attempts":    attemptsExtraData,
+			"access_token_source":          "token_completion",
+			"session_token_source":         "token_completion",
+			"chatgpt_registration_mode":    registrationMode,
 		},
+	}
+	if refreshToken != "" {
+		accountPersistence.ExtraData["refresh_token_source"] = refreshTokenSource
+	}
+	if accessTokenOnlyMode && refreshToken == "" {
+		accountPersistence.ExtraData["refresh_token_skipped"] = true
 	}
 	attachAuthSessionArtifacts(postSignupClient, accountPersistence, resultMetadata)
 
@@ -636,55 +811,59 @@ func (f *PrepareSignupFlow) completeExistingAccountToken(
 		return registration.NativeRunnerResult{}, fmt.Errorf("log prepare signup completion: %w", err)
 	}
 
-	return registration.NativeRunnerResult{
-		Result: map[string]any{
-			"success":       true,
-			"source":        "login",
-			"stage":         stageCompleted,
-			"email":         email,
+	resultPayload := map[string]any{
+		"success":       true,
+		"source":        "login",
+		"stage":         stageCompleted,
+		"email":         email,
+		"account_id":    accountID,
+		"workspace_id":  workspaceID,
+		"access_token":  accessToken,
+		"session_token": sessionToken,
+		"password":      historicalPassword,
+		"metadata":      resultMetadata,
+		"inbox": map[string]any{
+			"email": email,
+			"token": input.Inbox.Token,
+		},
+		"signup_preparation": map[string]any{
+			"csrf_token":           preparation.CSRFToken,
+			"authorize_url":        preparation.AuthorizeURL,
+			"final_url":            preparation.FinalURL,
+			"final_path":           preparation.FinalPath,
+			"continue_url":         preparation.ContinueURL,
+			"page_type":            preparation.PageType,
+			"register_status_code": preparation.RegisterStatusCode,
+			"send_otp_status_code": preparation.SendOTPStatusCode,
+		},
+		"email_verification": map[string]any{
+			"continue_url": verifiedPreparation.ContinueURL,
+			"final_url":    verifiedPreparation.FinalURL,
+			"final_path":   verifiedPreparation.FinalPath,
+			"page_type":    verifiedPreparation.PageType,
+		},
+		"create_account": map[string]any{
+			"account_id":   createAccountResult.AccountID,
+			"workspace_id": createAccountResult.WorkspaceID,
+			"continue_url": createAccountResult.ContinueURL,
+			"callback_url": createAccountResult.CallbackURL,
+			"page_type":    createAccountResult.PageType,
+		},
+		"token_completion": tokenCompletionResultMap(completionResult),
+		"session": map[string]any{
+			"access_token":  accessToken,
+			"session_token": sessionToken,
 			"account_id":    accountID,
 			"workspace_id":  workspaceID,
-			"access_token":  accessToken,
-			"refresh_token": refreshToken,
-			"session_token": sessionToken,
-			"password":      historicalPassword,
-			"metadata":      resultMetadata,
-			"inbox": map[string]any{
-				"email": email,
-				"token": input.Inbox.Token,
-			},
-			"signup_preparation": map[string]any{
-				"csrf_token":           preparation.CSRFToken,
-				"authorize_url":        preparation.AuthorizeURL,
-				"final_url":            preparation.FinalURL,
-				"final_path":           preparation.FinalPath,
-				"continue_url":         preparation.ContinueURL,
-				"page_type":            preparation.PageType,
-				"register_status_code": preparation.RegisterStatusCode,
-				"send_otp_status_code": preparation.SendOTPStatusCode,
-			},
-			"email_verification": map[string]any{
-				"continue_url": verifiedPreparation.ContinueURL,
-				"final_url":    verifiedPreparation.FinalURL,
-				"final_path":   verifiedPreparation.FinalPath,
-				"page_type":    verifiedPreparation.PageType,
-			},
-			"create_account": map[string]any{
-				"account_id":    createAccountResult.AccountID,
-				"workspace_id":  createAccountResult.WorkspaceID,
-				"refresh_token": createAccountResult.RefreshToken,
-				"continue_url":  createAccountResult.ContinueURL,
-				"callback_url":  createAccountResult.CallbackURL,
-				"page_type":     createAccountResult.PageType,
-			},
-			"token_completion": tokenCompletionResultMap(completionResult),
-			"session": map[string]any{
-				"access_token":  accessToken,
-				"session_token": sessionToken,
-				"account_id":    accountID,
-				"workspace_id":  workspaceID,
-			},
 		},
+	}
+	if refreshToken != "" {
+		resultPayload["refresh_token"] = refreshToken
+		resultPayload["create_account"].(map[string]any)["refresh_token"] = createAccountResult.RefreshToken
+	}
+
+	return registration.NativeRunnerResult{
+		Result:             resultPayload,
 		AccountPersistence: accountPersistence,
 	}, nil
 }
@@ -843,6 +1022,66 @@ func tokenCompletionFailureStatus(result TokenCompletionResult) string {
 		return "token_pending"
 	}
 	return "login_incomplete"
+}
+
+func tokenCompletionRequiresPhoneVerification(result TokenCompletionResult) bool {
+	if result.Error == nil || result.Error.Kind != TokenCompletionErrorKindInteractiveStepRequired {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(result.Error.Message))
+	return strings.Contains(text, "add_phone") || strings.Contains(text, "add-phone")
+}
+
+type retryablePreparedEmailOTPError interface {
+	error
+	Retryable() bool
+	RequireNewCode() bool
+}
+
+func shouldRetryPreparedEmailOTP(err error) bool {
+	var typed retryablePreparedEmailOTPError
+	return errors.As(err, &typed) && typed.Retryable() && typed.RequireNewCode()
+}
+
+func verifyPreparedEmailOTPWithRetries(
+	ctx context.Context,
+	client AuthPostSignupClient,
+	provider mail.Provider,
+	inbox mail.Inbox,
+	prepared auth.PrepareSignupResult,
+	initialCode string,
+) (auth.PrepareSignupResult, error) {
+	code := strings.TrimSpace(initialCode)
+	tried := map[string]struct{}{}
+	if code != "" {
+		tried[code] = struct{}{}
+	}
+
+	for attempt := 0; attempt < 3; attempt++ {
+		result, err := client.VerifyEmailOTP(ctx, prepared, code)
+		if err == nil {
+			return result, nil
+		}
+		if !shouldRetryPreparedEmailOTP(err) || provider == nil || attempt == 2 {
+			return auth.PrepareSignupResult{}, err
+		}
+
+		nextCode, waitErr := provider.WaitCode(ctx, inbox, mail.DefaultCodePattern)
+		if waitErr != nil {
+			return auth.PrepareSignupResult{}, waitErr
+		}
+		nextCode = strings.TrimSpace(nextCode)
+		if nextCode == "" {
+			return auth.PrepareSignupResult{}, err
+		}
+		if _, seen := tried[nextCode]; seen {
+			continue
+		}
+		tried[nextCode] = struct{}{}
+		code = nextCode
+	}
+
+	return auth.PrepareSignupResult{}, errors.New("verify email otp: retry attempts exhausted")
 }
 
 func tokenCompletionStatusReason(result TokenCompletionResult) string {

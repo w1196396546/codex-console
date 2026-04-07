@@ -1,11 +1,13 @@
 import asyncio
 import sqlite3
 from contextlib import contextmanager
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import BackgroundTasks
 from sqlalchemy.exc import OperationalError
+from sqlalchemy import event
 
 from src.database import crud as database_crud
 from src.database.models import Base, Account, EmailService
@@ -89,6 +91,20 @@ def test_registration_frontend_status_map_supports_paused():
     assert "function handlePauseResumeTask()" in script
 
 
+def test_registration_template_exposes_chatgpt_registration_mode_selector():
+    template = Path("templates/index.html").read_text(encoding="utf-8")
+
+    assert 'id="chatgpt-registration-mode"' in template
+    assert '<option value="refresh_token">有 RT（推荐）</option>' in template
+    assert '<option value="access_token_only">无 RT（兼容）</option>' in template
+
+
+def test_registration_frontend_submits_chatgpt_registration_mode():
+    script = Path("static/js/app.js").read_text(encoding="utf-8")
+
+    assert "chatgpt_registration_mode: elements.chatgptRegistrationMode.value" in script
+
+
 def test_start_outlook_batch_registration_allows_registered_complete_accounts(monkeypatch):
     manager = _build_manager("registration_routes_skip_semantics.db")
 
@@ -157,6 +173,71 @@ def test_start_outlook_batch_registration_allows_registered_complete_accounts(mo
     assert response.skipped == 0
     assert response.to_register == 2
     assert response.service_ids == [pending_id, complete_id]
+
+
+def test_get_outlook_accounts_for_registration_avoids_n_plus_one_account_queries(monkeypatch):
+    manager = _build_manager("registration_routes_outlook_accounts_batch.db")
+
+    with manager.session_scope() as session:
+        session.add_all([
+            EmailService(
+                service_type="outlook",
+                name="first@outlook.com",
+                config={"email": "first@outlook.com"},
+                enabled=True,
+                priority=0,
+            ),
+            EmailService(
+                service_type="outlook",
+                name="second@outlook.com",
+                config={"email": "second@outlook.com"},
+                enabled=True,
+                priority=1,
+            ),
+            EmailService(
+                service_type="outlook",
+                name="third@outlook.com",
+                config={"email": "third@outlook.com"},
+                enabled=True,
+                priority=2,
+            ),
+        ])
+        session.add(
+            Account(
+                email="second@outlook.com",
+                password="pass-2",
+                refresh_token="refresh-token-2",
+                email_service="outlook",
+                status="active",
+            )
+        )
+
+    @contextmanager
+    def fake_get_db():
+        session = manager.SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    query_counter = Counter()
+
+    def _count_accounts_selects(_conn, _cursor, statement, _params, _context, _executemany):
+        normalized = " ".join(str(statement).lower().split())
+        if normalized.startswith("select") and " from accounts" in normalized:
+            query_counter["accounts_select"] += 1
+
+    event.listen(manager.engine, "before_cursor_execute", _count_accounts_selects)
+    monkeypatch.setattr(registration_module, "get_db", fake_get_db)
+
+    try:
+        payload = asyncio.run(registration_module.get_outlook_accounts_for_registration())
+    finally:
+        event.remove(manager.engine, "before_cursor_execute", _count_accounts_selects)
+
+    assert payload.total == 3
+    assert payload.registered_count == 1
+    assert query_counter["accounts_select"] == 1
 
 
 def test_cancel_task_marks_runtime_cancel_flag_and_cancelling_status(monkeypatch):

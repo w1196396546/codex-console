@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -38,6 +39,7 @@ type Tempmail struct {
 	baseURL      string
 	httpClient   *http.Client
 	pollInterval time.Duration
+	codeTracker  *otpCodeTracker
 }
 
 func NewTempmail(config Config) *Tempmail {
@@ -55,6 +57,7 @@ func NewTempmail(config Config) *Tempmail {
 		baseURL:      strings.TrimRight(strings.TrimSpace(config.BaseURL), "/"),
 		httpClient:   httpClient,
 		pollInterval: pollInterval,
+		codeTracker:  newOTPCodeTracker(),
 	}
 }
 
@@ -120,6 +123,7 @@ func (t *Tempmail) WaitCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 	defer ticker.Stop()
 
 	for {
+		t.codeTracker.prepare(otpInboxStateKey(inbox), inbox.OTPSentAt)
 		code, found, err := t.pollCode(ctx, inbox, pattern)
 		if err != nil {
 			return "", err
@@ -167,26 +171,74 @@ func (t *Tempmail) pollCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 			Subject string `json:"subject"`
 			Body    string `json:"body"`
 			HTML    string `json:"html"`
+			Raw     any    `json:"raw"`
+			Date    any    `json:"date"`
 		} `json:"emails"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return "", false, fmt.Errorf("decode tempmail inbox response: %w", err)
 	}
 
+	minReceivedAt := time.Time{}
+	if !inbox.OTPSentAt.IsZero() {
+		minReceivedAt = inbox.OTPSentAt.Add(-defaultIMAPOTPTimeSkew)
+	}
+	inboxKey := otpInboxStateKey(inbox)
 	for _, mail := range payload.Emails {
-		content := strings.Join([]string{mail.From, mail.Subject, mail.Body, mail.HTML}, "\n")
+		receivedAt := parseTempmailMessageTime(mail.Date)
+		if !receivedAt.IsZero() && !minReceivedAt.IsZero() && receivedAt.Before(minReceivedAt) {
+			continue
+		}
+
+		raw := extractRawMessageContent(mail.Raw)
+		content := buildSearchText(
+			mail.From,
+			raw.From,
+			mail.Subject,
+			raw.Subject,
+			flattenMessageText(mail.Body),
+			flattenMessageHTML(mail.HTML),
+			raw.Body,
+		)
 		lowerContent := strings.ToLower(content)
 		if !strings.Contains(lowerContent, "openai") {
 			continue
 		}
+
 		match := pattern.FindStringSubmatch(content)
-		if len(match) >= 2 {
-			return match[1], true, nil
+		var code string
+		switch {
+		case len(match) >= 2:
+			code = match[1]
+		case len(match) == 1:
+			code = match[0]
+		default:
+			continue
 		}
-		if len(match) == 1 {
-			return match[0], true, nil
+
+		fingerprint, fallbackCode := otpCodeFingerprint("", receivedAt, content, code)
+		if t.codeTracker.hasSeen(inboxKey, fingerprint, fallbackCode) {
+			continue
 		}
+		t.codeTracker.markSeen(inboxKey, fingerprint, fallbackCode)
+		return code, true, nil
 	}
 
 	return "", false, nil
+}
+
+func parseTempmailMessageTime(value any) time.Time {
+	return parseMessageTimeValue(value)
+}
+
+func parseUnixTimestamp(value string) (int64, error) {
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return seconds, nil
+	}
+
+	floatSeconds, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, err
+	}
+	return int64(floatSeconds), nil
 }

@@ -649,8 +649,6 @@ func findEmailServiceByType(services []EmailServiceRecord, serviceType string) (
 
 func canonicalNativeEmailServiceType(serviceType string) string {
 	switch strings.ToLower(strings.TrimSpace(serviceType)) {
-	case "temp_mail":
-		return "tempmail"
 	case "yydsmail":
 		return "yyds_mail"
 	case "duckmail":
@@ -673,7 +671,7 @@ func ensureSupportedNativeEmailServiceType(serviceType string) error {
 
 func isSupportedNativeEmailServiceType(serviceType string) bool {
 	switch canonicalNativeEmailServiceType(serviceType) {
-	case "tempmail", "yyds_mail", "duck_mail", "freemail", "luckmail", "imap_mail", "moe_mail", "outlook":
+	case "tempmail", "temp_mail", "yyds_mail", "duck_mail", "freemail", "luckmail", "imap_mail", "moe_mail", "outlook":
 		return true
 	default:
 		return false

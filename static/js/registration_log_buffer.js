@@ -99,6 +99,33 @@
             return true;
         }
 
+        function enqueueMany(entries) {
+            const normalizedEntries = Array.isArray(entries) ? entries : [];
+            let appended = 0;
+
+            normalizedEntries.forEach((entry) => {
+                if (!entry || typeof entry.message !== 'string') {
+                    return;
+                }
+                const type = typeof entry.type === 'string' ? entry.type : 'info';
+                const logKey = `${type}:${entry.message}`;
+                if (displayedKeys.has(logKey)) {
+                    return;
+                }
+                displayedKeys.add(logKey);
+                queue.push({ type, message: entry.message });
+                appended += 1;
+            });
+
+            if (!appended) {
+                return 0;
+            }
+
+            trimDisplayedKeys();
+            ensureScheduled();
+            return appended;
+        }
+
         function reset() {
             queue = [];
             displayedKeys = new Set();
@@ -110,6 +137,7 @@
 
         return {
             enqueue,
+            enqueueMany,
             flushNow,
             reset,
         };

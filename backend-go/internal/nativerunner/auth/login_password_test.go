@@ -38,7 +38,7 @@ func TestClientCompletePasswordLoginFallsBackToExplicitCallbackURL(t *testing.T)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/":
+		case "/auth/login", "/":
 			bootstrapRequests++
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			_, _ = w.Write([]byte("bootstrap"))
@@ -199,7 +199,7 @@ func TestAuthPasswordLoginFallsBackToOAuthTokenWhenSessionMissingRefreshToken(t 
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/":
+		case "/auth/login", "/":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("bootstrap"))
 		case "/api/auth/csrf":

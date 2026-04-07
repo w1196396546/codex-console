@@ -119,6 +119,47 @@ WHERE id = ANY($1)`, accountIDs)
 	return result, nil
 }
 
+func (r *PostgresRepository) ListAccountsByEmails(ctx context.Context, emails []string) (map[string]AccountRecord, error) {
+	result := make(map[string]AccountRecord, len(emails))
+	normalizedEmails := make([]string, 0, len(emails))
+	seen := map[string]struct{}{}
+	for _, email := range emails {
+		normalized := normalizeEmail(email)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		normalizedEmails = append(normalizedEmails, normalized)
+	}
+	if len(normalizedEmails) == 0 {
+		return result, nil
+	}
+
+	rows, err := r.db.Query(ctx, `
+SELECT id, email, status, COALESCE(access_token, '')
+FROM accounts
+WHERE LOWER(BTRIM(email)) = ANY($1)`, normalizedEmails)
+	if err != nil {
+		return nil, fmt.Errorf("list accounts by email: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		record, scanErr := scanAccountRecord(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		result[normalizeEmail(record.Email)] = record
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate accounts by email: %w", err)
+	}
+	return result, nil
+}
+
 func (r *PostgresRepository) ListMembershipsByTeam(ctx context.Context, teamID int64) ([]TeamMembershipRecord, error) {
 	rows, err := r.db.Query(ctx, `
 SELECT id, team_id, local_account_id, member_email, upstream_user_id, member_role,
@@ -199,6 +240,49 @@ RETURNING id, team_id, local_account_id, member_email, upstream_user_id, member_
 	return record, nil
 }
 
+func (r *PostgresRepository) UpsertMembership(ctx context.Context, membership TeamMembershipRecord) (TeamMembershipRecord, error) {
+	row := r.db.QueryRow(ctx, `
+INSERT INTO team_memberships (
+    team_id, local_account_id, member_email, upstream_user_id, member_role,
+    membership_status, invited_at, joined_at, removed_at, last_seen_at, source,
+    sync_error, created_at, updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
+ON CONFLICT (team_id, member_email)
+DO UPDATE SET
+    local_account_id = EXCLUDED.local_account_id,
+    upstream_user_id = EXCLUDED.upstream_user_id,
+    member_role = EXCLUDED.member_role,
+    membership_status = EXCLUDED.membership_status,
+    invited_at = EXCLUDED.invited_at,
+    joined_at = EXCLUDED.joined_at,
+    removed_at = EXCLUDED.removed_at,
+    last_seen_at = EXCLUDED.last_seen_at,
+    source = EXCLUDED.source,
+    sync_error = EXCLUDED.sync_error,
+    updated_at = NOW()
+RETURNING id, team_id, local_account_id, member_email, upstream_user_id, member_role,
+          membership_status, invited_at, joined_at, removed_at, last_seen_at, source,
+          sync_error, created_at, updated_at`,
+		membership.TeamID,
+		membership.LocalAccountID,
+		normalizeEmail(membership.MemberEmail),
+		nullIfEmpty(membership.UpstreamUserID),
+		defaultIfEmpty(membership.MemberRole, "member"),
+		defaultIfEmpty(membership.MembershipStatus, "pending"),
+		membership.InvitedAt,
+		membership.JoinedAt,
+		membership.RemovedAt,
+		membership.LastSeenAt,
+		defaultIfEmpty(membership.Source, "sync"),
+		nullIfEmpty(membership.SyncError),
+	)
+	record, err := scanMembershipRecord(row)
+	if err != nil {
+		return TeamMembershipRecord{}, err
+	}
+	return record, nil
+}
+
 func (r *PostgresRepository) SaveTeam(ctx context.Context, team TeamRecord) (TeamRecord, error) {
 	row := r.db.QueryRow(ctx, `
 UPDATE teams
@@ -228,6 +312,55 @@ RETURNING id, owner_account_id, upstream_team_id, upstream_account_id, team_name
 		team.UpstreamAccountID,
 		team.TeamName,
 		team.PlanType,
+		nullIfEmpty(team.SubscriptionPlan),
+		nullIfEmpty(team.AccountRoleSnapshot),
+		defaultIfEmpty(team.Status, "pending"),
+		team.CurrentMembers,
+		team.MaxMembers,
+		team.SeatsAvailable,
+		team.ExpiresAt,
+		team.LastSyncAt,
+		defaultIfEmpty(team.SyncStatus, "pending"),
+		nullIfEmpty(team.SyncError),
+	)
+	record, err := scanTeamRecord(row)
+	if err != nil {
+		return TeamRecord{}, err
+	}
+	return record, nil
+}
+
+func (r *PostgresRepository) UpsertTeam(ctx context.Context, team TeamRecord) (TeamRecord, error) {
+	row := r.db.QueryRow(ctx, `
+INSERT INTO teams (
+    owner_account_id, upstream_team_id, upstream_account_id, team_name, plan_type,
+    subscription_plan, account_role_snapshot, status, current_members, max_members,
+    seats_available, expires_at, last_sync_at, sync_status, sync_error, created_at, updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW())
+ON CONFLICT (owner_account_id, upstream_account_id)
+DO UPDATE SET
+    upstream_team_id = EXCLUDED.upstream_team_id,
+    team_name = EXCLUDED.team_name,
+    plan_type = EXCLUDED.plan_type,
+    subscription_plan = EXCLUDED.subscription_plan,
+    account_role_snapshot = EXCLUDED.account_role_snapshot,
+    status = EXCLUDED.status,
+    current_members = EXCLUDED.current_members,
+    max_members = EXCLUDED.max_members,
+    seats_available = EXCLUDED.seats_available,
+    expires_at = EXCLUDED.expires_at,
+    last_sync_at = EXCLUDED.last_sync_at,
+    sync_status = EXCLUDED.sync_status,
+    sync_error = EXCLUDED.sync_error,
+    updated_at = NOW()
+RETURNING id, owner_account_id, upstream_team_id, upstream_account_id, team_name, plan_type,
+          subscription_plan, account_role_snapshot, status, current_members, max_members,
+          seats_available, expires_at, last_sync_at, sync_status, sync_error, created_at, updated_at`,
+		team.OwnerAccountID,
+		nullIfEmpty(team.UpstreamTeamID),
+		team.UpstreamAccountID,
+		team.TeamName,
+		defaultIfEmpty(team.PlanType, "team"),
 		nullIfEmpty(team.SubscriptionPlan),
 		nullIfEmpty(team.AccountRoleSnapshot),
 		defaultIfEmpty(team.Status, "pending"),

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/dou-jiang/codex-console/backend-go/internal/nativerunner/auth"
 )
@@ -14,7 +16,21 @@ import (
 const (
 	defaultAuthBaseURL    = "https://chatgpt.com"
 	defaultOpenAIClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
+	defaultAuthUserAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+
+func defaultAuthHeaders() auth.Headers {
+	return auth.Headers{
+		"Accept-Language":            "en-US,en;q=0.9",
+		"sec-ch-ua":                  `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`,
+		"sec-ch-ua-mobile":           "?0",
+		"sec-ch-ua-platform":         `"Windows"`,
+		"sec-ch-ua-arch":             `"x86"`,
+		"sec-ch-ua-bitness":          `"64"`,
+		"sec-ch-ua-full-version":     `"131.0.0.0"`,
+		"sec-ch-ua-platform-version": `"15.0.0"`,
+	}
+}
 
 var defaultAccountProfileFirstNames = []string{
 	"James", "Robert", "John", "Michael", "David", "William", "Richard",
@@ -27,29 +43,40 @@ var defaultAccountProfileLastNames = []string{
 	"Davis", "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Martin",
 }
 
+const (
+	defaultTokenCompletionMinSpacing  = 8 * time.Second
+	defaultTokenCompletionBaseBackoff = 45 * time.Second
+	defaultTokenCompletionMaxBackoff  = 15 * time.Minute
+	defaultTokenCompletionCooldown    = 15 * time.Minute
+)
+
 type DefaultOptions struct {
-	AuthBaseURL                string
-	OpenAIClientID             string
-	HTTPClient                 *http.Client
-	RequestHeadersProvider     auth.RequestHeadersProvider
-	ProviderFactory            ProviderFactory
-	SignupPasswordGenerator    AuthSignupPasswordGenerator
-	AccountProfileProvider     AccountProfileProvider
-	ClientIDResolver           ClientIDResolver
-	HistoricalPasswordProvider HistoricalPasswordProvider
-	TokenCompletionCoordinator TokenCompletionDispatcher
+	AuthBaseURL                     string
+	OpenAIClientID                  string
+	HTTPClient                      *http.Client
+	RequestHeadersProvider          auth.RequestHeadersProvider
+	ProviderFactory                 ProviderFactory
+	SignupPasswordGenerator         AuthSignupPasswordGenerator
+	AccountProfileProvider          AccountProfileProvider
+	ClientIDResolver                ClientIDResolver
+	HistoricalPasswordProvider      HistoricalPasswordProvider
+	TokenCompletionCooldownProvider TokenCompletionCooldownProvider
+	TokenCompletionAttemptProvider  TokenCompletionAttemptProvider
+	TokenCompletionCoordinator      TokenCompletionDispatcher
 }
 
 type DefaultPrepareSignupFlowOptions struct {
-	AuthBaseURL                string
-	OpenAIClientID             string
-	HTTPClient                 *http.Client
-	RequestHeadersProvider     auth.RequestHeadersProvider
-	SignupPasswordGenerator    AuthSignupPasswordGenerator
-	AccountProfileProvider     AccountProfileProvider
-	ClientIDResolver           ClientIDResolver
-	HistoricalPasswordProvider HistoricalPasswordProvider
-	TokenCompletionCoordinator TokenCompletionDispatcher
+	AuthBaseURL                     string
+	OpenAIClientID                  string
+	HTTPClient                      *http.Client
+	RequestHeadersProvider          auth.RequestHeadersProvider
+	SignupPasswordGenerator         AuthSignupPasswordGenerator
+	AccountProfileProvider          AccountProfileProvider
+	ClientIDResolver                ClientIDResolver
+	HistoricalPasswordProvider      HistoricalPasswordProvider
+	TokenCompletionCooldownProvider TokenCompletionCooldownProvider
+	TokenCompletionAttemptProvider  TokenCompletionAttemptProvider
+	TokenCompletionCoordinator      TokenCompletionDispatcher
 }
 
 type flowRuntime struct {
@@ -59,15 +86,17 @@ type flowRuntime struct {
 func NewDefault(options DefaultOptions) *Runner {
 	return New(Options{
 		Flow: NewDefaultPrepareSignupFlow(DefaultPrepareSignupFlowOptions{
-			AuthBaseURL:                options.AuthBaseURL,
-			OpenAIClientID:             options.OpenAIClientID,
-			HTTPClient:                 options.HTTPClient,
-			RequestHeadersProvider:     options.RequestHeadersProvider,
-			SignupPasswordGenerator:    options.SignupPasswordGenerator,
-			AccountProfileProvider:     options.AccountProfileProvider,
-			ClientIDResolver:           options.ClientIDResolver,
-			HistoricalPasswordProvider: options.HistoricalPasswordProvider,
-			TokenCompletionCoordinator: options.TokenCompletionCoordinator,
+			AuthBaseURL:                     options.AuthBaseURL,
+			OpenAIClientID:                  options.OpenAIClientID,
+			HTTPClient:                      options.HTTPClient,
+			RequestHeadersProvider:          options.RequestHeadersProvider,
+			SignupPasswordGenerator:         options.SignupPasswordGenerator,
+			AccountProfileProvider:          options.AccountProfileProvider,
+			ClientIDResolver:                options.ClientIDResolver,
+			HistoricalPasswordProvider:      options.HistoricalPasswordProvider,
+			TokenCompletionCooldownProvider: options.TokenCompletionCooldownProvider,
+			TokenCompletionAttemptProvider:  options.TokenCompletionAttemptProvider,
+			TokenCompletionCoordinator:      options.TokenCompletionCoordinator,
 		}),
 		ProviderFactory: options.ProviderFactory,
 	})
@@ -94,27 +123,34 @@ func NewDefaultPrepareSignupFlow(options DefaultPrepareSignupFlowOptions) *Prepa
 
 	tokenCompletionCoordinator := options.TokenCompletionCoordinator
 	if tokenCompletionCoordinator == nil {
-		tokenCompletionCoordinator = NewTokenCompletionCoordinator(TokenCompletionCoordinatorOptions{
-			Scheduler: NewTokenCompletionScheduler(TokenCompletionSchedulerPolicy{}),
-			Provider: TokenCompletionProviderFunc(func(ctx context.Context, request TokenCompletionRequest) (TokenCompletionProviderResult, error) {
-				client := request.AuthClient
-				if client == nil {
-					var err error
-					client, err = auth.NewClient(auth.Options{
-						BaseURL:                firstNonEmptyTrimmed(options.AuthBaseURL, defaultAuthBaseURL),
-						HTTPClient:             options.HTTPClient,
-						RequestHeadersProvider: options.RequestHeadersProvider,
-					})
-					if err != nil {
-						return TokenCompletionProviderResult{}, &TokenCompletionError{
-							Kind:    TokenCompletionErrorKindProviderUnavailable,
-							Message: fmt.Sprintf("create passwordless token completion auth client: %v", err),
-						}
+		defaultProvider := TokenCompletionProviderFunc(func(ctx context.Context, request TokenCompletionRequest) (TokenCompletionProviderResult, error) {
+			client := request.AuthClient
+			if client == nil {
+				var err error
+				client, err = auth.NewClient(auth.Options{
+					BaseURL:                firstNonEmptyTrimmed(options.AuthBaseURL, defaultAuthBaseURL),
+					HTTPClient:             options.HTTPClient,
+					UserAgent:              defaultAuthUserAgent,
+					DefaultHeaders:         defaultAuthHeaders(),
+					RequestHeadersProvider: options.RequestHeadersProvider,
+				})
+				if err != nil {
+					return TokenCompletionProviderResult{}, &TokenCompletionError{
+						Kind:    TokenCompletionErrorKindProviderUnavailable,
+						Message: fmt.Sprintf("create token completion auth client: %v", err),
 					}
 				}
+			}
 
-				return NewAuthPasswordlessTokenCompletionProvider(client).CompleteToken(ctx, request)
-			}),
+			return NewStrategyTokenCompletionProvider(
+				NewAuthPasswordTokenCompletionProvider(client),
+				NewAuthPasswordlessTokenCompletionProvider(client),
+			).CompleteToken(ctx, request)
+		})
+
+		tokenCompletionCoordinator = NewTokenCompletionCoordinator(TokenCompletionCoordinatorOptions{
+			Scheduler: NewTokenCompletionScheduler(DefaultTokenCompletionSchedulerPolicy()),
+			Provider:  defaultProvider,
 		})
 	}
 
@@ -135,10 +171,12 @@ func NewDefaultPrepareSignupFlow(options DefaultPrepareSignupFlowOptions) *Prepa
 		PostSignupClientFactory: AuthPostSignupClientFactoryFunc(func(_ context.Context, input FlowRequest) (AuthPostSignupClient, error) {
 			return defaultAuthClient(input, options)
 		}),
-		AccountProfileProvider:     accountProfileProvider,
-		ClientIDResolver:           clientIDResolver,
-		HistoricalPasswordProvider: options.HistoricalPasswordProvider,
-		TokenCompletionCoordinator: tokenCompletionCoordinator,
+		AccountProfileProvider:          accountProfileProvider,
+		ClientIDResolver:                clientIDResolver,
+		HistoricalPasswordProvider:      options.HistoricalPasswordProvider,
+		TokenCompletionCooldownProvider: options.TokenCompletionCooldownProvider,
+		TokenCompletionAttemptProvider:  options.TokenCompletionAttemptProvider,
+		TokenCompletionCoordinator:      tokenCompletionCoordinator,
 	})
 }
 
@@ -156,9 +194,16 @@ func defaultAuthClient(input FlowRequest, options DefaultPrepareSignupFlowOption
 		baseURL = defaultAuthBaseURL
 	}
 
+	httpClient, err := proxyAwareHTTPClient(options.HTTPClient, selectedProxyURL(input))
+	if err != nil {
+		return nil, fmt.Errorf("create default native auth http client: %w", err)
+	}
+
 	client, err := auth.NewClient(auth.Options{
 		BaseURL:                baseURL,
-		HTTPClient:             options.HTTPClient,
+		HTTPClient:             httpClient,
+		UserAgent:              defaultAuthUserAgent,
+		DefaultHeaders:         defaultAuthHeaders(),
 		RequestHeadersProvider: options.RequestHeadersProvider,
 	})
 	if err != nil {
@@ -166,6 +211,51 @@ func defaultAuthClient(input FlowRequest, options DefaultPrepareSignupFlowOption
 	}
 
 	runtime.authClient = client
+	return client, nil
+}
+
+func selectedProxyURL(input FlowRequest) string {
+	if selected := strings.TrimSpace(input.RunnerRequest.Plan.Proxy.Selected); selected != "" {
+		return selected
+	}
+	return strings.TrimSpace(input.RunnerRequest.StartRequest.Proxy)
+}
+
+func proxyAwareHTTPClient(source *http.Client, proxyText string) (*http.Client, error) {
+	proxyText = strings.TrimSpace(proxyText)
+	if proxyText == "" {
+		return source, nil
+	}
+
+	proxyURL, err := url.Parse(proxyText)
+	if err != nil {
+		return nil, fmt.Errorf("parse auth proxy url: %w", err)
+	}
+
+	var client *http.Client
+	if source == nil {
+		client = &http.Client{}
+	} else {
+		cloned := *source
+		client = &cloned
+	}
+
+	var transport *http.Transport
+	switch typed := client.Transport.(type) {
+	case nil:
+		defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			return nil, fmt.Errorf("default auth transport has unexpected type %T", http.DefaultTransport)
+		}
+		transport = defaultTransport.Clone()
+	case *http.Transport:
+		transport = typed.Clone()
+	default:
+		return nil, fmt.Errorf("auth proxy requires *http.Transport, got %T", typed)
+	}
+
+	transport.Proxy = http.ProxyURL(proxyURL)
+	client.Transport = transport
 	return client, nil
 }
 

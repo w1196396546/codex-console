@@ -67,6 +67,10 @@ type accountUpserter interface {
 	UpsertAccount(ctx context.Context, req accounts.UpsertAccountRequest) (accounts.Account, error)
 }
 
+type accountPersistenceErrorCarrier interface {
+	AccountPersistenceRequest() *accounts.UpsertAccountRequest
+}
+
 type Executor struct {
 	logs               logAppender
 	runner             Runner
@@ -195,6 +199,17 @@ func (e *Executor) Execute(ctx context.Context, job jobs.Job) (map[string]any, e
 				}
 			}
 		}
+		if req := accountPersistenceRequestFromError(err); req != nil && e.accountPersistence != nil && strings.TrimSpace(req.Email) != "" {
+			if _, persistErr := e.accountPersistence.UpsertAccount(ctx, *req); persistErr != nil {
+				return nil, fmt.Errorf("persist account via go account service after runner error carrier: %w", persistErr)
+			}
+			if shouldSoftCompleteAccountPersistence(req) {
+				if logErr := logf("warning", fmt.Sprintf("registration completed with pending account state: %s", strings.TrimSpace(req.Status))); logErr != nil {
+					return nil, logErr
+				}
+				return softCompletedAccountResult(req), nil
+			}
+		}
 		return nil, fmt.Errorf("run registration flow: %w", err)
 	}
 	result := output.Result
@@ -234,6 +249,45 @@ func runnerErrorOutput(err error) *RunnerOutput {
 		return nil
 	}
 	return &runnerErr.Output
+}
+
+func accountPersistenceRequestFromError(err error) *accounts.UpsertAccountRequest {
+	if err == nil {
+		return nil
+	}
+	var carrier accountPersistenceErrorCarrier
+	if !errors.As(err, &carrier) || carrier == nil {
+		return nil
+	}
+	return carrier.AccountPersistenceRequest()
+}
+
+func shouldSoftCompleteAccountPersistence(req *accounts.UpsertAccountRequest) bool {
+	if req == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(req.Status), "token_pending")
+}
+
+func softCompletedAccountResult(req *accounts.UpsertAccountRequest) map[string]any {
+	result := map[string]any{
+		"email":   strings.TrimSpace(req.Email),
+		"status":  strings.TrimSpace(req.Status),
+		"source":  strings.TrimSpace(req.Source),
+		"success": true,
+	}
+	if accountID := strings.TrimSpace(req.AccountID); accountID != "" {
+		result["account_id"] = accountID
+	}
+	if workspaceID := strings.TrimSpace(req.WorkspaceID); workspaceID != "" {
+		result["workspace_id"] = workspaceID
+	}
+	if req.ExtraData != nil {
+		if reason, ok := req.ExtraData["account_status_reason"]; ok && reason != nil {
+			result["reason"] = reason
+		}
+	}
+	return result
 }
 
 func (e *Executor) runnerControl(jobID string) runnerControlFunc {

@@ -32,6 +32,7 @@ type DuckMail struct {
 	httpClient     *http.Client
 	pollInterval   time.Duration
 	passwordLength int
+	codeTracker    *otpCodeTracker
 }
 
 func NewDuckMail(config DuckMailConfig) *DuckMail {
@@ -57,6 +58,7 @@ func NewDuckMail(config DuckMailConfig) *DuckMail {
 		httpClient:     httpClient,
 		pollInterval:   pollInterval,
 		passwordLength: passwordLength,
+		codeTracker:    newOTPCodeTracker(),
 	}
 }
 
@@ -150,7 +152,8 @@ func (d *DuckMail) WaitCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 	defer ticker.Stop()
 
 	for {
-		code, found, err := d.pollCode(ctx, strings.TrimSpace(inbox.Token), pattern)
+		d.codeTracker.prepare(otpInboxStateKey(inbox), inbox.OTPSentAt)
+		code, found, err := d.pollCode(ctx, inbox, pattern)
 		if err != nil {
 			return "", err
 		}
@@ -166,7 +169,8 @@ func (d *DuckMail) WaitCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 	}
 }
 
-func (d *DuckMail) pollCode(ctx context.Context, token string, pattern *regexp.Regexp) (string, bool, error) {
+func (d *DuckMail) pollCode(ctx context.Context, inbox Inbox, pattern *regexp.Regexp) (string, bool, error) {
+	token := strings.TrimSpace(inbox.Token)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.baseURL+"/messages?page=1", nil)
 	if err != nil {
 		return "", false, fmt.Errorf("build duckmail messages request: %w", err)
@@ -186,14 +190,35 @@ func (d *DuckMail) pollCode(ctx context.Context, token string, pattern *regexp.R
 
 	var payload struct {
 		Members []struct {
-			ID      string         `json:"id"`
-			From    map[string]any `json:"from"`
-			Subject string         `json:"subject"`
+			ID        string         `json:"id"`
+			From      map[string]any `json:"from"`
+			Subject   string         `json:"subject"`
+			CreatedAt any            `json:"createdAt"`
+			Received  any            `json:"receivedAt"`
+			Date      any            `json:"date"`
+			UpdatedAt any            `json:"updatedAt"`
+			Timestamp any            `json:"timestamp"`
 		} `json:"hydra:member"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return "", false, fmt.Errorf("decode duckmail messages response: %w", err)
 	}
+
+	inboxKey := otpInboxStateKey(inbox)
+	minReceivedAt := time.Time{}
+	if !inbox.OTPSentAt.IsZero() {
+		minReceivedAt = inbox.OTPSentAt.Add(-defaultIMAPOTPTimeSkew)
+	}
+
+	type codeCandidate struct {
+		code         string
+		fingerprint  string
+		fallbackCode string
+		receivedAt   time.Time
+	}
+
+	var timestampedCandidates []codeCandidate
+	var unknownTimeCandidates []codeCandidate
 
 	for _, message := range payload.Members {
 		if strings.TrimSpace(message.ID) == "" {
@@ -205,21 +230,82 @@ func (d *DuckMail) pollCode(ctx context.Context, token string, pattern *regexp.R
 			return "", false, err
 		}
 
+		receivedAt := firstParsedMessageTime(
+			message.CreatedAt,
+			message.Received,
+			message.Date,
+			message.UpdatedAt,
+			message.Timestamp,
+			detail["createdAt"],
+			detail["created_at"],
+			detail["receivedAt"],
+			detail["received_at"],
+			detail["date"],
+			detail["updatedAt"],
+			detail["updated_at"],
+			detail["timestamp"],
+		)
+		if !receivedAt.IsZero() && !minReceivedAt.IsZero() && receivedAt.Before(minReceivedAt) {
+			continue
+		}
+
 		content := buildDuckMailSearchText(message.From, message.Subject, detail)
 		if !strings.Contains(strings.ToLower(content), "openai") {
 			continue
 		}
 
-		match := pattern.FindStringSubmatch(content)
-		if len(match) >= 2 {
-			return match[1], true, nil
+		code, found := matchCode(pattern, content)
+		if !found {
+			continue
 		}
-		if len(match) == 1 {
-			return match[0], true, nil
+
+		fingerprint, fallbackCode := otpCodeFingerprint(message.ID, receivedAt, content, code)
+		if d.codeTracker.hasSeen(inboxKey, fingerprint, fallbackCode) {
+			continue
 		}
+
+		candidate := codeCandidate{
+			code:         code,
+			fingerprint:  fingerprint,
+			fallbackCode: fallbackCode,
+			receivedAt:   receivedAt,
+		}
+		if receivedAt.IsZero() && !inbox.OTPSentAt.IsZero() {
+			unknownTimeCandidates = append(unknownTimeCandidates, candidate)
+			continue
+		}
+		timestampedCandidates = append(timestampedCandidates, candidate)
 	}
 
-	return "", false, nil
+	selectCandidate := func(candidates []codeCandidate) (codeCandidate, bool) {
+		if len(candidates) == 0 {
+			return codeCandidate{}, false
+		}
+		best := candidates[0]
+		for _, candidate := range candidates[1:] {
+			if candidate.receivedAt.After(best.receivedAt) {
+				best = candidate
+			}
+		}
+		return best, true
+	}
+
+	if candidate, ok := selectCandidate(timestampedCandidates); ok {
+		d.codeTracker.markSeen(inboxKey, candidate.fingerprint, candidate.fallbackCode)
+		return candidate.code, true, nil
+	}
+
+	if len(unknownTimeCandidates) == 0 {
+		return "", false, nil
+	}
+
+	if shouldWaitForTimestampedMessage(inbox.OTPSentAt, time.Now().UTC()) {
+		return "", false, nil
+	}
+
+	candidate := unknownTimeCandidates[0]
+	d.codeTracker.markSeen(inboxKey, candidate.fingerprint, candidate.fallbackCode)
+	return candidate.code, true, nil
 }
 
 func (d *DuckMail) getMessageDetail(ctx context.Context, token, messageID string) (map[string]any, error) {
@@ -282,31 +368,30 @@ func (d *DuckMail) doJSON(ctx context.Context, method, rawURL string, payload ma
 }
 
 func buildDuckMailSearchText(summaryFrom map[string]any, subject string, detail map[string]any) string {
-	parts := []string{
+	raw := firstRawMessageContent(detail["raw"], detail["rfc822"])
+	return buildSearchText(
 		joinDuckMailSender(summaryFrom),
+		joinDuckMailSender(detail["from"]),
+		raw.From,
 		strings.TrimSpace(subject),
-		strings.TrimSpace(stringValue(detail["text"])),
-		stripDuckMailHTML(detail["html"]),
-	}
-
-	filtered := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if strings.TrimSpace(part) != "" {
-			filtered = append(filtered, part)
-		}
-	}
-
-	return strings.Join(filtered, "\n")
+		strings.TrimSpace(stringValue(detail["subject"])),
+		raw.Subject,
+		flattenMessageText(detail["text"]),
+		flattenMessageText(detail["snippet"]),
+		flattenMessageHTML(detail["html"]),
+		raw.Body,
+	)
 }
 
-func joinDuckMailSender(sender map[string]any) string {
-	if len(sender) == 0 {
+func joinDuckMailSender(sender any) string {
+	senderMap, ok := sender.(map[string]any)
+	if !ok || len(senderMap) == 0 {
 		return ""
 	}
 
 	parts := []string{
-		strings.TrimSpace(stringValue(sender["name"])),
-		strings.TrimSpace(stringValue(sender["address"])),
+		strings.TrimSpace(stringValue(senderMap["name"])),
+		strings.TrimSpace(stringValue(senderMap["address"])),
 	}
 
 	filtered := make([]string, 0, len(parts))

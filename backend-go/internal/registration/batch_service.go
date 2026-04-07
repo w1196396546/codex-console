@@ -24,21 +24,22 @@ var (
 )
 
 type BatchStartRequest struct {
-	Count              int            `json:"count"`
-	EmailServiceType   string         `json:"email_service_type"`
-	Proxy              string         `json:"proxy,omitempty"`
-	EmailServiceID     *int           `json:"email_service_id,omitempty"`
-	EmailServiceConfig map[string]any `json:"email_service_config,omitempty"`
-	IntervalMin        int            `json:"interval_min,omitempty"`
-	IntervalMax        int            `json:"interval_max,omitempty"`
-	Concurrency        int            `json:"concurrency,omitempty"`
-	Mode               string         `json:"mode,omitempty"`
-	AutoUploadCPA      bool           `json:"auto_upload_cpa,omitempty"`
-	CPAServiceIDs      []int          `json:"cpa_service_ids,omitempty"`
-	AutoUploadSub2API  bool           `json:"auto_upload_sub2api,omitempty"`
-	Sub2APIServiceIDs  []int          `json:"sub2api_service_ids,omitempty"`
-	AutoUploadTM       bool           `json:"auto_upload_tm,omitempty"`
-	TMServiceIDs       []int          `json:"tm_service_ids,omitempty"`
+	Count                   int            `json:"count"`
+	EmailServiceType        string         `json:"email_service_type"`
+	ChatGPTRegistrationMode string         `json:"chatgpt_registration_mode,omitempty"`
+	Proxy                   string         `json:"proxy,omitempty"`
+	EmailServiceID          *int           `json:"email_service_id,omitempty"`
+	EmailServiceConfig      map[string]any `json:"email_service_config,omitempty"`
+	IntervalMin             int            `json:"interval_min,omitempty"`
+	IntervalMax             int            `json:"interval_max,omitempty"`
+	Concurrency             int            `json:"concurrency,omitempty"`
+	Mode                    string         `json:"mode,omitempty"`
+	AutoUploadCPA           bool           `json:"auto_upload_cpa,omitempty"`
+	CPAServiceIDs           []int          `json:"cpa_service_ids,omitempty"`
+	AutoUploadSub2API       bool           `json:"auto_upload_sub2api,omitempty"`
+	Sub2APIServiceIDs       []int          `json:"sub2api_service_ids,omitempty"`
+	AutoUploadTM            bool           `json:"auto_upload_tm,omitempty"`
+	TMServiceIDs            []int          `json:"tm_service_ids,omitempty"`
 }
 
 type BatchTask struct {
@@ -123,20 +124,21 @@ func (s *BatchService) StartBatch(ctx context.Context, req BatchStartRequest) (B
 	requests := make([]StartRequest, 0, req.Count)
 	for range req.Count {
 		requests = append(requests, StartRequest{
-			EmailServiceType:   req.EmailServiceType,
-			Proxy:              req.Proxy,
-			EmailServiceID:     req.EmailServiceID,
-			EmailServiceConfig: req.EmailServiceConfig,
-			IntervalMin:        options.IntervalMin,
-			IntervalMax:        options.IntervalMax,
-			Concurrency:        options.Concurrency,
-			Mode:               options.Mode,
-			AutoUploadCPA:      req.AutoUploadCPA,
-			CPAServiceIDs:      append([]int(nil), req.CPAServiceIDs...),
-			AutoUploadSub2API:  req.AutoUploadSub2API,
-			Sub2APIServiceIDs:  append([]int(nil), req.Sub2APIServiceIDs...),
-			AutoUploadTM:       req.AutoUploadTM,
-			TMServiceIDs:       append([]int(nil), req.TMServiceIDs...),
+			EmailServiceType:        req.EmailServiceType,
+			ChatGPTRegistrationMode: req.ChatGPTRegistrationMode,
+			Proxy:                   req.Proxy,
+			EmailServiceID:          req.EmailServiceID,
+			EmailServiceConfig:      req.EmailServiceConfig,
+			IntervalMin:             options.IntervalMin,
+			IntervalMax:             options.IntervalMax,
+			Concurrency:             options.Concurrency,
+			Mode:                    options.Mode,
+			AutoUploadCPA:           req.AutoUploadCPA,
+			CPAServiceIDs:           append([]int(nil), req.CPAServiceIDs...),
+			AutoUploadSub2API:       req.AutoUploadSub2API,
+			Sub2APIServiceIDs:       append([]int(nil), req.Sub2APIServiceIDs...),
+			AutoUploadTM:            req.AutoUploadTM,
+			TMServiceIDs:            append([]int(nil), req.TMServiceIDs...),
 		})
 	}
 

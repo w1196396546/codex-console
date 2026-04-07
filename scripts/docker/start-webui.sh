@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Phase 5 note:
+# This entrypoint still launches the Python Web UI compatibility shell.
+# The target production backend topology is the Go API + Go worker path in backend-go/.
+
 export DISPLAY="${DISPLAY:-:99}"
 ENABLE_VNC="${ENABLE_VNC:-1}"
 VNC_PORT="${VNC_PORT:-5900}"
@@ -30,6 +34,6 @@ if [[ "${ENABLE_VNC}" == "1" || "${ENABLE_VNC,,}" == "true" ]]; then
   websockify --web="${NOVNC_WEB_ROOT}" "${NOVNC_PORT}" "127.0.0.1:${VNC_PORT}" >/tmp/novnc.log 2>&1 &
 fi
 
-echo "[docker] starting webui..."
+echo "[docker] starting legacy-compatible Python webui shell..."
+echo "[docker] note: target production backend ownership is backend-go/cmd/api + backend-go/cmd/worker"
 exec python webui.py
-

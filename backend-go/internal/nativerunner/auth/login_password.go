@@ -75,6 +75,7 @@ func (c *Client) CompletePasswordLogin(ctx context.Context, email string, passwo
 		if strings.TrimSpace(result.RefreshToken) == "" {
 			if refreshToken, err := c.exchangePasswordLoginToken(ctx, prepared, firstNonEmpty(result.CallbackURL, state.CallbackURL, state.ContinueURL, state.CurrentURL)); err == nil && strings.TrimSpace(refreshToken) != "" {
 				result.RefreshToken = strings.TrimSpace(refreshToken)
+				result.RefreshTokenSource = "oauth_exchange"
 			}
 		}
 		return result, nil
@@ -97,6 +98,7 @@ func (c *Client) CompletePasswordLogin(ctx context.Context, email string, passwo
 			if strings.TrimSpace(result.RefreshToken) == "" {
 				if refreshToken, err := c.exchangePasswordLoginToken(ctx, prepared, firstNonEmpty(result.CallbackURL, state.CallbackURL, state.ContinueURL, state.CurrentURL)); err == nil && strings.TrimSpace(refreshToken) != "" {
 					result.RefreshToken = strings.TrimSpace(refreshToken)
+					result.RefreshTokenSource = "oauth_exchange"
 				}
 			}
 			return result, nil
@@ -227,8 +229,14 @@ func (c *Client) authorizeContinue(ctx context.Context, email string, prepared P
 	headers := Headers{
 		"Accept":       "application/json",
 		"Content-Type": "application/json",
-		"Origin":       c.origin(),
 		"Referer":      firstNonEmpty(strings.TrimSpace(prepared.FinalURL), strings.TrimSpace(prepared.AuthorizeURL), c.callbackURL()),
+	}
+	headers["Origin"] = c.flowOrigin(headers["Referer"])
+	if c != nil && strings.TrimSpace(c.deviceID) != "" {
+		headers["oai-device-id"] = strings.TrimSpace(c.deviceID)
+	}
+	if sentinel := c.sentinelHeaderToken(ctx, "authorize_continue", c.flowRequestURL(headers["Referer"], "/api/accounts/authorize/continue")); sentinel != "" {
+		headers["openai-sentinel-token"] = sentinel
 	}
 	extraHeaders, err := c.flowRequestHeaders(ctx, RequestHeadersInput{
 		Kind:          FlowRequestKindAuthorizeContinue,
@@ -255,7 +263,7 @@ func (c *Client) authorizeContinue(ctx context.Context, email string, prepared P
 
 	response, err := c.Do(ctx, Request{
 		Method:  http.MethodPost,
-		Path:    "/api/accounts/authorize/continue",
+		Path:    c.flowRequestURL(headers["Referer"], "/api/accounts/authorize/continue"),
 		Headers: headers,
 		Body:    bytes.NewReader(body),
 	})
@@ -284,7 +292,6 @@ func (c *Client) passwordVerify(ctx context.Context, password string, state oaut
 	headers := Headers{
 		"Accept":       "application/json",
 		"Content-Type": "application/json",
-		"Origin":       c.origin(),
 		"Referer": firstNonEmpty(
 			strings.TrimSpace(state.FinalURL),
 			strings.TrimSpace(state.ContinueURL),
@@ -293,6 +300,13 @@ func (c *Client) passwordVerify(ctx context.Context, password string, state oaut
 			strings.TrimSpace(prepared.FinalURL),
 			c.callbackURL(),
 		),
+	}
+	headers["Origin"] = c.flowOrigin(headers["Referer"])
+	if c != nil && strings.TrimSpace(c.deviceID) != "" {
+		headers["oai-device-id"] = strings.TrimSpace(c.deviceID)
+	}
+	if sentinel := c.sentinelHeaderToken(ctx, "password_verify", c.flowRequestURL(headers["Referer"], "/api/accounts/password/verify")); sentinel != "" {
+		headers["openai-sentinel-token"] = sentinel
 	}
 	extraHeaders, err := c.flowRequestHeaders(ctx, RequestHeadersInput{
 		Kind:          FlowRequestKindPasswordVerify,
@@ -315,7 +329,7 @@ func (c *Client) passwordVerify(ctx context.Context, password string, state oaut
 
 	response, err := c.Do(ctx, Request{
 		Method:  http.MethodPost,
-		Path:    "/api/accounts/password/verify",
+		Path:    c.flowRequestURL(headers["Referer"], "/api/accounts/password/verify"),
 		Headers: headers,
 		Body:    bytes.NewReader(body),
 	})

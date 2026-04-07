@@ -31,22 +31,23 @@ type OrganizationSelectionResult struct {
 }
 
 type ContinueCreateAccountResult struct {
-	StatusCode     int
-	ContinueURL    string
-	CallbackURL    string
-	FinalURL       string
-	FinalPath      string
-	PageType       string
-	AccountID      string
-	UserID         string
-	WorkspaceID    string
-	OrganizationID string
-	ProjectID      string
-	RefreshToken   string
-	AccessToken    string
-	SessionToken   string
-	AuthProvider   string
-	RawData        map[string]any
+	StatusCode         int
+	ContinueURL        string
+	CallbackURL        string
+	FinalURL           string
+	FinalPath          string
+	PageType           string
+	AccountID          string
+	UserID             string
+	WorkspaceID        string
+	OrganizationID     string
+	ProjectID          string
+	RefreshToken       string
+	AccessToken        string
+	SessionToken       string
+	AuthProvider       string
+	RefreshTokenSource string
+	RawData            map[string]any
 }
 
 func (c *Client) ContinueCreateAccount(ctx context.Context, created CreateAccountResult) (ContinueCreateAccountResult, error) {
@@ -110,32 +111,34 @@ func (c *Client) continueInteractiveCreateAccount(ctx context.Context, result Co
 		}
 
 		next := ContinueCreateAccountResult{
-			StatusCode:     result.StatusCode,
-			ContinueURL:    continuation.URL,
-			CallbackURL:    callbackURLFromValue(continuation.URL),
-			PageType:       inferPageTypeFromURL(continuation.URL),
-			AccountID:      result.AccountID,
-			UserID:         result.UserID,
-			WorkspaceID:    result.WorkspaceID,
-			OrganizationID: result.OrganizationID,
-			ProjectID:      result.ProjectID,
-			RefreshToken:   result.RefreshToken,
-			AccessToken:    result.AccessToken,
-			SessionToken:   result.SessionToken,
-			AuthProvider:   result.AuthProvider,
-			RawData:        result.RawData,
+			StatusCode:         result.StatusCode,
+			ContinueURL:        continuation.URL,
+			CallbackURL:        callbackURLFromValue(continuation.URL),
+			PageType:           inferPageTypeFromURL(continuation.URL),
+			AccountID:          result.AccountID,
+			UserID:             result.UserID,
+			WorkspaceID:        result.WorkspaceID,
+			OrganizationID:     result.OrganizationID,
+			ProjectID:          result.ProjectID,
+			RefreshToken:       result.RefreshToken,
+			AccessToken:        result.AccessToken,
+			SessionToken:       result.SessionToken,
+			AuthProvider:       result.AuthProvider,
+			RefreshTokenSource: result.RefreshTokenSource,
+			RawData:            result.RawData,
 		}
 		return c.finalizeContinueCreateAccount(ctx, next, followed)
 	}
 
 	return c.ContinueCreateAccount(ctx, CreateAccountResult{
-		ContinueURL:  continuation.URL,
-		CallbackURL:  callbackURLFromValue(continuation.URL),
-		PageType:     inferPageTypeFromURL(continuation.URL),
-		AccountID:    result.AccountID,
-		WorkspaceID:  result.WorkspaceID,
-		RefreshToken: result.RefreshToken,
-		RawData:      result.RawData,
+		ContinueURL:        continuation.URL,
+		CallbackURL:        callbackURLFromValue(continuation.URL),
+		PageType:           inferPageTypeFromURL(continuation.URL),
+		AccountID:          result.AccountID,
+		WorkspaceID:        result.WorkspaceID,
+		RefreshToken:       result.RefreshToken,
+		RefreshTokenSource: result.RefreshTokenSource,
+		RawData:            result.RawData,
 	})
 }
 
@@ -457,7 +460,7 @@ func (c *Client) postJSONFlow(ctx context.Context, path string, referer string, 
 	headers := Headers{
 		"Accept":       "application/json",
 		"Content-Type": "application/json",
-		"Origin":       c.origin(),
+		"Origin":       c.flowOrigin(referer),
 		"Referer":      strings.TrimSpace(referer),
 	}
 	if headers["Referer"] == "" {
@@ -466,7 +469,7 @@ func (c *Client) postJSONFlow(ctx context.Context, path string, referer string, 
 
 	response, err := c.Do(ctx, Request{
 		Method:  http.MethodPost,
-		Path:    path,
+		Path:    c.flowRequestURL(referer, path),
 		Headers: headers,
 		Body:    bytes.NewReader(bodyJSON),
 	})
@@ -590,6 +593,7 @@ func mergeContinueCreateAccountSession(result *ContinueCreateAccountResult, sess
 	}
 	if refreshToken := strings.TrimSpace(session.RefreshToken); refreshToken != "" && strings.TrimSpace(result.RefreshToken) == "" {
 		result.RefreshToken = refreshToken
+		result.RefreshTokenSource = "session"
 	}
 
 	if accountID := strings.TrimSpace(session.AccountID); accountID != "" {

@@ -17,6 +17,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _get_database_engine_label(database_url: str) -> str:
+    normalized = str(database_url or "").strip().lower()
+    if normalized.startswith("sqlite"):
+        return "sqlite"
+    if normalized.startswith(("postgres://", "postgresql://", "postgresql+psycopg://", "postgresql+psycopg2://")):
+        return "postgresql"
+    return "other"
+
+
 # ============== Pydantic Models ==============
 
 class SettingItem(BaseModel):
@@ -277,16 +286,28 @@ async def update_webui_settings(request: WebUISettings):
 async def get_database_info():
     """获取数据库信息"""
     settings = get_settings()
+    database_engine = _get_database_engine_label(settings.database_url)
 
     import os
     from pathlib import Path
 
-    db_path = settings.database_url
-    if db_path.startswith("sqlite:///"):
-        db_path = db_path[10:]
+    db_size: int | None = None
+    db_size_mb: float | None = None
+    db_size_display = "远程数据库"
+    supports_file_backup = False
+    supports_file_import = False
 
-    db_file = Path(db_path) if os.path.isabs(db_path) else Path(db_path)
-    db_size = db_file.stat().st_size if db_file.exists() else 0
+    if database_engine == "sqlite":
+        db_path = settings.database_url
+        if db_path.startswith("sqlite:///"):
+            db_path = db_path[10:]
+
+        db_file = Path(db_path) if os.path.isabs(db_path) else Path(db_path)
+        db_size = db_file.stat().st_size if db_file.exists() else 0
+        db_size_mb = round(db_size / (1024 * 1024), 2)
+        db_size_display = f"{db_size_mb} MB"
+        supports_file_backup = True
+        supports_file_import = True
 
     with get_db() as db:
         from ...database.models import Account, EmailService, RegistrationTask
@@ -297,8 +318,17 @@ async def get_database_info():
 
     return {
         "database_url": settings.database_url,
+        "database_engine": database_engine,
         "database_size_bytes": db_size,
-        "database_size_mb": round(db_size / (1024 * 1024), 2),
+        "database_size_mb": db_size_mb,
+        "database_size_display": db_size_display,
+        "database_supports_file_backup": supports_file_backup,
+        "database_supports_file_import": supports_file_import,
+        "database_note": (
+            "当前使用 SQLite 文件数据库，可直接备份与导入。"
+            if database_engine == "sqlite"
+            else "当前使用远程数据库，文件备份/导入按钮仅适用于 SQLite。"
+        ),
         "accounts_count": account_count,
         "email_services_count": service_count,
         "tasks_count": task_count,
@@ -312,6 +342,8 @@ async def backup_database():
     from datetime import datetime
 
     settings = get_settings()
+    if _get_database_engine_label(settings.database_url) != "sqlite":
+        raise HTTPException(status_code=400, detail="当前仅支持 SQLite 文件备份")
 
     db_path = settings.database_url
     if db_path.startswith("sqlite:///"):

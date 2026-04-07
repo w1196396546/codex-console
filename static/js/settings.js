@@ -11,6 +11,7 @@ const elements = {
     backupBtn: document.getElementById('backup-btn'),
     importDbBtn: document.getElementById('import-db-btn'),
     dbImportFile: document.getElementById('db-import-file'),
+    databaseModeNote: document.getElementById('database-mode-note'),
     cleanupBtn: document.getElementById('cleanup-btn'),
     addEmailServiceBtn: document.getElementById('add-email-service-btn'),
     addServiceModal: document.getElementById('add-service-modal'),
@@ -467,10 +468,25 @@ async function loadDatabaseInfo() {
     try {
         const data = await api.get('/settings/database');
 
-        document.getElementById('db-size').textContent = `${data.database_size_mb} MB`;
+        document.getElementById('db-size').textContent = data.database_size_display || '-';
         document.getElementById('db-accounts').textContent = format.number(data.accounts_count);
         document.getElementById('db-services').textContent = format.number(data.email_services_count);
         document.getElementById('db-tasks').textContent = format.number(data.tasks_count);
+        if (elements.databaseModeNote) {
+            elements.databaseModeNote.textContent = data.database_note || '';
+        }
+        if (elements.backupBtn) {
+            elements.backupBtn.disabled = !data.database_supports_file_backup;
+            elements.backupBtn.title = data.database_supports_file_backup
+                ? ''
+                : '当前仅支持 SQLite 文件备份';
+        }
+        if (elements.importDbBtn) {
+            elements.importDbBtn.disabled = !data.database_supports_file_import;
+            elements.importDbBtn.title = data.database_supports_file_import
+                ? ''
+                : '当前仅支持 SQLite 文件导入';
+        }
 
     } catch (error) {
         console.error('加载数据库信息失败:', error);

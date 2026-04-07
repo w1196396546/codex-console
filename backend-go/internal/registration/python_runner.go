@@ -16,6 +16,10 @@ import (
 	"github.com/dou-jiang/codex-console/backend-go/internal/accounts"
 )
 
+// PythonRunner is a transition-only compatibility bridge.
+// Phase 2 removed it from the normal Go worker critical path; Phase 5 keeps it only
+// as an explicit legacy aid for debugging, parity forensics, or bounded fallback use.
+
 type PythonRunnerOptions struct {
 	PythonExecutable        string
 	RepoRoot                string

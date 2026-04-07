@@ -76,8 +76,8 @@ func TestOrchestratorPreparesTempMailAliasFromCatalogByType(t *testing.T) {
 	if !prepared.Plan.EmailService.Prepared || prepared.Plan.EmailService.Source != "email_service_type.temp_mail" {
 		t.Fatalf("expected native temp_mail preparation, got %+v", prepared.Plan.EmailService)
 	}
-	if prepared.Plan.EmailService.Type != "tempmail" {
-		t.Fatalf("expected temp_mail alias to normalize to tempmail, got %+v", prepared.Plan.EmailService)
+	if prepared.Plan.EmailService.Type != "temp_mail" {
+		t.Fatalf("expected temp_mail service type to stay temp_mail, got %+v", prepared.Plan.EmailService)
 	}
 	if prepared.Plan.EmailService.ServiceID == nil || *prepared.Plan.EmailService.ServiceID != 21 {
 		t.Fatalf("expected selected temp_mail service id, got %+v", prepared.Plan.EmailService)

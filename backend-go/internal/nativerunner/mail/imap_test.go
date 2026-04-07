@@ -3,6 +3,7 @@ package mail
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -113,6 +114,157 @@ func TestIMAPMailWaitCodeHonorsContextCancellation(t *testing.T) {
 	_, err := provider.WaitCode(ctx, Inbox{Email: "native@example.com"}, DefaultCodePattern)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled, got %v", err)
+	}
+}
+
+func TestNewIMAPClientConnectsThroughHTTPProxy(t *testing.T) {
+	t.Parallel()
+
+	imapListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen fake imap server: %v", err)
+	}
+	defer imapListener.Close()
+
+	imapErrCh := make(chan error, 1)
+	go func() {
+		conn, err := imapListener.Accept()
+		if err != nil {
+			imapErrCh <- err
+			return
+		}
+		defer conn.Close()
+
+		if _, err := io.WriteString(conn, "* OK fake imap ready\r\n"); err != nil {
+			imapErrCh <- err
+			return
+		}
+		imapErrCh <- nil
+	}()
+
+	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen fake proxy server: %v", err)
+	}
+	defer proxyListener.Close()
+
+	connectLineCh := make(chan string, 1)
+	proxyErrCh := make(chan error, 1)
+	go func() {
+		conn, err := proxyListener.Accept()
+		if err != nil {
+			proxyErrCh <- err
+			return
+		}
+		defer conn.Close()
+
+		reader := bufio.NewReader(conn)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			proxyErrCh <- err
+			return
+		}
+		connectLineCh <- strings.TrimSpace(line)
+
+		for {
+			headerLine, err := reader.ReadString('\n')
+			if err != nil {
+				proxyErrCh <- err
+				return
+			}
+			if strings.TrimSpace(headerLine) == "" {
+				break
+			}
+		}
+
+		upstream, err := net.Dial("tcp", imapListener.Addr().String())
+		if err != nil {
+			proxyErrCh <- err
+			return
+		}
+		defer upstream.Close()
+
+		if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
+			proxyErrCh <- err
+			return
+		}
+
+		go func() {
+			_, _ = io.Copy(upstream, reader)
+		}()
+		_, _ = io.Copy(conn, upstream)
+		proxyErrCh <- nil
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	client, err := newIMAPClient(
+		ctx,
+		imapListener.Addr().String(),
+		"imap.example.com",
+		false,
+		2*time.Second,
+		"http://"+proxyListener.Addr().String(),
+	)
+	if err != nil {
+		t.Fatalf("new imap client through proxy: %v", err)
+	}
+	client.close()
+
+	select {
+	case line := <-connectLineCh:
+		want := "CONNECT " + imapListener.Addr().String() + " HTTP/1.1"
+		if line != want {
+			t.Fatalf("expected proxy CONNECT line %q, got %q", want, line)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for proxy connect request")
+	}
+
+	if err := <-imapErrCh; err != nil {
+		t.Fatalf("fake imap server: %v", err)
+	}
+	if err := <-proxyErrCh; err != nil {
+		t.Fatalf("fake proxy server: %v", err)
+	}
+}
+
+func TestIMAPMailFetchMessagesAuthenticatesWithXOAUTH2(t *testing.T) {
+	t.Parallel()
+
+	const accessToken = "access-token-123"
+	server := newFakeIMAPServer(t, fakeIMAPServerConfig{
+		email:                "native@example.com",
+		xoauth2AccessToken:   accessToken,
+		expectXOAUTH2Payload: "user=native@example.com\x01auth=Bearer access-token-123\x01\x01",
+		messages: []fakeIMAPServerMessage{
+			{
+				uid:     201,
+				from:    "OpenAI <noreply@openai.com>",
+				subject: "OpenAI sign-in",
+				body:    "Your verification code is 864209.",
+				date:    time.Now().UTC(),
+			},
+		},
+	})
+
+	provider := NewIMAPMail(IMAPConfig{
+		Host:  server.host,
+		Port:  server.port,
+		Email: "native@example.com",
+		OAuth2AccessTokenSource: func(ctx context.Context) (string, error) {
+			return accessToken, nil
+		},
+		UseSSL: false,
+	})
+
+	code, err := provider.WaitCode(context.Background(), Inbox{Email: "native@example.com"}, DefaultCodePattern)
+	if err != nil {
+		t.Fatalf("wait code with xoauth2: %v", err)
+	}
+	if code != "864209" {
+		t.Fatalf("expected code 864209, got %q", code)
 	}
 }
 
@@ -397,9 +549,11 @@ func TestIMAPMailWaitCodeUsesInboxCredentialsFallbackForDefaultFetcher(t *testin
 }
 
 type fakeIMAPServerConfig struct {
-	email    string
-	password string
-	messages []fakeIMAPServerMessage
+	email                string
+	password             string
+	xoauth2AccessToken   string
+	expectXOAUTH2Payload string
+	messages             []fakeIMAPServerMessage
 }
 
 type fakeIMAPServerMessage struct {
@@ -491,6 +645,32 @@ func serveFakeIMAPConnection(conn net.Conn, cfg fakeIMAPServerConfig) {
 		case "CAPABILITY":
 			writeLine("* CAPABILITY IMAP4rev1 UIDPLUS")
 			writeLine("%s OK CAPABILITY completed", tag)
+		case "AUTHENTICATE":
+			if len(fields) < 3 || !strings.EqualFold(fields[2], "XOAUTH2") {
+				writeLine("%s BAD unsupported authenticate command", tag)
+				continue
+			}
+			writeLine("+")
+			payloadLine, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			payloadLine = strings.TrimRight(payloadLine, "\r\n")
+			decoded, err := base64.StdEncoding.DecodeString(payloadLine)
+			if err != nil {
+				writeLine("%s NO AUTHENTICATE invalid base64", tag)
+				continue
+			}
+			if cfg.expectXOAUTH2Payload != "" && string(decoded) != cfg.expectXOAUTH2Payload {
+				writeLine("%s NO AUTHENTICATE invalid payload", tag)
+				continue
+			}
+			expected := "auth=Bearer " + cfg.xoauth2AccessToken
+			if cfg.xoauth2AccessToken != "" && !strings.Contains(string(decoded), expected) {
+				writeLine("%s NO AUTHENTICATE invalid token", tag)
+				continue
+			}
+			writeLine("%s OK AUTHENTICATE completed", tag)
 		case "LOGIN":
 			if len(fields) >= 4 && fields[2] == cfg.email && fields[3] == cfg.password {
 				writeLine("%s OK LOGIN completed", tag)

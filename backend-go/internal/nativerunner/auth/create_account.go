@@ -11,16 +11,17 @@ import (
 )
 
 type CreateAccountResult struct {
-	StatusCode   int
-	FinalURL     string
-	FinalPath    string
-	PageType     string
-	ContinueURL  string
-	CallbackURL  string
-	AccountID    string
-	WorkspaceID  string
-	RefreshToken string
-	RawData      map[string]any
+	StatusCode         int
+	FinalURL           string
+	FinalPath          string
+	PageType           string
+	ContinueURL        string
+	CallbackURL        string
+	AccountID          string
+	WorkspaceID        string
+	RefreshToken       string
+	RefreshTokenSource string
+	RawData            map[string]any
 }
 
 type CreateAccountUserExistsError struct {
@@ -62,8 +63,14 @@ func (c *Client) CreateAccount(ctx context.Context, prepared PrepareSignupResult
 	headers := Headers{
 		"Accept":       "application/json",
 		"Content-Type": "application/json",
-		"Origin":       c.origin(),
 		"Referer":      c.aboutYouReferer(prepared),
+	}
+	headers["Origin"] = c.flowOrigin(headers["Referer"])
+	if c != nil && strings.TrimSpace(c.deviceID) != "" {
+		headers["oai-device-id"] = strings.TrimSpace(c.deviceID)
+	}
+	if sentinel := c.sentinelHeaderToken(ctx, "authorize_continue", c.flowRequestURL(headers["Referer"], "/api/accounts/create_account")); sentinel != "" {
+		headers["openai-sentinel-token"] = sentinel
 	}
 	extraHeaders, err := c.flowRequestHeaders(ctx, RequestHeadersInput{
 		Kind:          FlowRequestKindCreateAccount,
@@ -86,7 +93,7 @@ func (c *Client) CreateAccount(ctx context.Context, prepared PrepareSignupResult
 
 	response, err := c.Do(ctx, Request{
 		Method:  http.MethodPost,
-		Path:    "/api/accounts/create_account",
+		Path:    c.flowRequestURL(headers["Referer"], "/api/accounts/create_account"),
 		Headers: headers,
 		Body:    bytes.NewReader(body),
 	})
@@ -101,7 +108,7 @@ func (c *Client) CreateAccount(ctx context.Context, prepared PrepareSignupResult
 		}
 	}
 	result := createAccountResultFromPayload(c, response.StatusCode, payload)
-	if code, message, isUserExists := detectCreateAccountUserExists(payload); isUserExists {
+	if code, message, isUserExists := detectUserExistsError(payload, string(response.Body)); isUserExists {
 		return result, &CreateAccountUserExistsError{
 			StatusCode: response.StatusCode,
 			Code:       code,
@@ -182,11 +189,7 @@ func (c *Client) aboutYouReferer(prepared PrepareSignupResult) string {
 	return resolved.String()
 }
 
-func detectCreateAccountUserExists(payload map[string]any) (string, string, bool) {
-	if len(payload) == 0 {
-		return "", "", false
-	}
-
+func detectUserExistsError(payload map[string]any, rawBody string) (string, string, bool) {
 	errorPayload := extractObject(payload["error"])
 	code := strings.TrimSpace(firstNonEmpty(
 		extractString(errorPayload["code"]),
@@ -201,11 +204,15 @@ func detectCreateAccountUserExists(payload map[string]any) (string, string, bool
 
 	normalizedCode := strings.ToLower(code)
 	normalizedMessage := strings.ToLower(message)
+	normalizedBody := strings.ToLower(strings.TrimSpace(rawBody))
 	if normalizedCode == "user_exists" {
 		return code, message, true
 	}
-	if normalizedMessage == "" {
-		return code, message, false
+	if strings.Contains(normalizedBody, "user_exists") {
+		if code == "" {
+			code = "user_exists"
+		}
+		return code, message, true
 	}
 	for _, marker := range []string{
 		"already exists",
@@ -213,9 +220,30 @@ func detectCreateAccountUserExists(payload map[string]any) (string, string, bool
 		"email already exists",
 		"user exists",
 	} {
-		if strings.Contains(normalizedMessage, marker) {
+		if strings.Contains(normalizedMessage, marker) || strings.Contains(normalizedBody, marker) {
 			return code, message, true
 		}
 	}
 	return code, message, false
+}
+
+func extractErrorMessage(payload map[string]any, rawBody string) string {
+	errorPayload := extractObject(payload["error"])
+	message := strings.TrimSpace(firstNonEmpty(
+		extractString(errorPayload["message"]),
+		extractString(payload["message"]),
+		extractString(payload["detail"]),
+	))
+	if message != "" {
+		return message
+	}
+
+	rawBody = strings.TrimSpace(rawBody)
+	if rawBody == "" {
+		return ""
+	}
+	if len(rawBody) > 200 {
+		return rawBody[:200]
+	}
+	return rawBody
 }

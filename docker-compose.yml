@@ -1,7 +1,70 @@
 version: '3.8'
 
+# Phase 5 default topology:
+# - postgres + redis + go-api + go-worker are the Go-owned backend cutover path.
+# - the Python web UI remains available only as an optional compatibility shell profile.
 services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: codex
+      POSTGRES_PASSWORD: codex
+      POSTGRES_DB: codex_console
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  go-api:
+    image: golang:1.25
+    working_dir: /workspace/backend-go
+    command: sh -lc "go run ./cmd/api"
+    environment:
+      APP_ENV: development
+      HTTP_ADDR: :18080
+      DATABASE_URL: postgres://codex:codex@postgres:5432/codex_console?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_DB: 0
+      POSTGRES_MIN_CONNS: 2
+      POSTGRES_MAX_CONNS: 20
+      WORKER_CONCURRENCY: 50
+    volumes:
+      - .:/workspace
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "18080:18080"
+    restart: unless-stopped
+
+  go-worker:
+    image: golang:1.25
+    working_dir: /workspace/backend-go
+    command: sh -lc "go run ./cmd/worker"
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgres://codex:codex@postgres:5432/codex_console?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_DB: 0
+      POSTGRES_MIN_CONNS: 2
+      POSTGRES_MAX_CONNS: 20
+      WORKER_CONCURRENCY: 50
+    volumes:
+      - .:/workspace
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
   webui:
+    profiles: ["compat-ui"]
     build: .
     shm_size: "1gb"
     ports:
@@ -25,3 +88,6 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
     restart: unless-stopped
+
+volumes:
+  postgres-data:

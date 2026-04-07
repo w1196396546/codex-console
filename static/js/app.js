@@ -54,14 +54,31 @@ let wsReconnectAttempts = 0;
 let batchWsReconnectAttempts = 0;
 let wsManualClose = false;
 let batchWsManualClose = false;
+let pendingTaskViewState = null;
+let pendingBatchProgressState = null;
+let cancelTaskViewFlush = null;
+let cancelBatchProgressFlush = null;
+let lastTaskViewState = {
+    status: null,
+    email: '-',
+    emailService: '-',
+};
+let lastBatchProgressState = {
+    total: 0,
+    completed: 0,
+    success: 0,
+    failed: 0,
+};
 
 const WS_RECONNECT_BASE_DELAY = 1000;
 const WS_RECONNECT_MAX_DELAY = 10000;
+const UI_FLUSH_FALLBACK_DELAY = 48;
 
 // DOM 元素
 const elements = {
     form: document.getElementById('registration-form'),
     emailService: document.getElementById('email-service'),
+    chatgptRegistrationMode: document.getElementById('chatgpt-registration-mode'),
     regMode: document.getElementById('reg-mode'),
     regModeGroup: document.getElementById('reg-mode-group'),
     batchCountGroup: document.getElementById('batch-count-group'),
@@ -564,6 +581,7 @@ async function handleStartRegistration(e) {
     // 构建请求数据（代理从设置中自动获取）
     const requestData = {
         email_service_type: emailServiceType,
+        chatgpt_registration_mode: elements.chatgptRegistrationMode.value,
         auto_upload_cpa: elements.autoUploadCpa ? elements.autoUploadCpa.checked : false,
         cpa_service_ids: elements.autoUploadCpa && elements.autoUploadCpa.checked ? getSelectedServiceIds(elements.cpaServiceSelect) : [],
         auto_upload_sub2api: elements.autoUploadSub2api ? elements.autoUploadSub2api.checked : false,
@@ -687,9 +705,26 @@ function startCurrentBatchPolling(batchId) {
 
 function appendLogsToConsole(logs) {
     const entries = Array.isArray(logs) ? logs : [];
-    entries.forEach((log) => {
-        const logType = getLogType(log);
-        addLog(logType, log);
+    if (!entries.length) {
+        return;
+    }
+
+    const normalizedEntries = entries.map((log) => ({
+        type: getLogType(log),
+        message: log,
+    }));
+
+    if (!logConsole) {
+        logConsole = createLogConsole();
+    }
+
+    if (typeof logConsole.enqueueMany === 'function') {
+        logConsole.enqueueMany(normalizedEntries);
+        return;
+    }
+
+    normalizedEntries.forEach(({ type, message }) => {
+        logConsole.enqueue(type, message);
     });
 }
 
@@ -701,6 +736,111 @@ function getBatchStatusEndpoint(batchId) {
     return pollingMode === 'outlook_batch'
         ? `/registration/outlook-batch/${batchId}`
         : `/registration/batch/${batchId}`;
+}
+
+function scheduleUiFlush(flush) {
+    let settled = false;
+    let rafId = null;
+    const timeoutId = setTimeout(run, UI_FLUSH_FALLBACK_DELAY);
+
+    function run() {
+        if (settled) {
+            return;
+        }
+        settled = true;
+        if (rafId !== null && typeof cancelAnimationFrame === 'function') {
+            cancelAnimationFrame(rafId);
+        }
+        clearTimeout(timeoutId);
+        flush();
+    }
+
+    if (typeof requestAnimationFrame === 'function') {
+        rafId = requestAnimationFrame(run);
+    }
+
+    return () => {
+        if (settled) {
+            return;
+        }
+        settled = true;
+        if (rafId !== null && typeof cancelAnimationFrame === 'function') {
+            cancelAnimationFrame(rafId);
+        }
+        clearTimeout(timeoutId);
+    };
+}
+
+function setTextContentIfChanged(element, value) {
+    if (!element) return;
+    const nextValue = value == null ? '-' : String(value);
+    if (element.textContent === nextValue) {
+        return;
+    }
+    element.textContent = nextValue;
+}
+
+function clampPositiveInteger(value, fallback = 1, max = 50) {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) {
+        return Math.min(max, Math.max(1, fallback));
+    }
+    return Math.min(max, Math.max(1, parsed));
+}
+
+function buildWebSocketUrl(pathname, logOffset) {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = new URL(`${protocol}//${window.location.host}${pathname}`);
+    url.searchParams.set('log_offset', String(Math.max(0, Number(logOffset) || 0)));
+    url.searchParams.set('supports_log_batch', '1');
+    return url.toString();
+}
+
+function readLogMessage(payload) {
+    if (!payload || typeof payload !== 'object') {
+        return '';
+    }
+    if (typeof payload.message === 'string') {
+        return payload.message;
+    }
+    if (typeof payload.log === 'string') {
+        return payload.log;
+    }
+    return '';
+}
+
+function readLogMessages(payload) {
+    if (!payload || typeof payload !== 'object') {
+        return [];
+    }
+    if (Array.isArray(payload.messages)) {
+        return payload.messages.filter((message) => typeof message === 'string');
+    }
+    if (Array.isArray(payload.logs)) {
+        return payload.logs.filter((message) => typeof message === 'string');
+    }
+    return [];
+}
+
+function readLogNextOffset(payload, fallback) {
+    const nextOffset = Number(payload && payload.log_next_offset);
+    if (Number.isFinite(nextOffset) && nextOffset >= 0) {
+        return nextOffset;
+    }
+    return Math.max(0, fallback);
+}
+
+function syncTaskLogOffsetFromPayload(payload, fallback = taskLogOffset) {
+    taskLogOffset = Math.max(taskLogOffset, readLogNextOffset(payload, fallback));
+}
+
+function syncBatchLogOffsetFromPayload(payload, fallback = batchLogOffset) {
+    batchLogOffset = Math.max(batchLogOffset, readLogNextOffset(payload, fallback));
+}
+
+function resolveTokenCompletionConcurrency(value) {
+    // 兼容没有单独 UI 控件的场景：先跟随用户选择的批量并发，避免默认长期锁死在 1。
+    return clampPositiveInteger(value, 1, 50);
 }
 
 function setPauseButtonState({ enabled, action = 'pause', text = '暂停任务' }) {
@@ -736,41 +876,105 @@ function syncPauseButtonForBatch(batch) {
     setPauseButtonState({ enabled: true, action: 'pause', text: '暂停任务' });
 }
 
-async function hydrateTaskLogs(taskUuid) {
-    if (!taskUuid) return null;
-
-    const data = await api.get(`/registration/tasks/${taskUuid}/logs?offset=${taskLogOffset}`);
-    appendLogsToConsole(data.logs || []);
-    taskLogOffset = data.log_next_offset || taskLogOffset;
-
-    updateTaskStatus(data.status);
-    if (data.email) {
-        elements.taskEmail.textContent = data.email;
+function queueTaskViewUpdate(patch) {
+    pendingTaskViewState = {
+        ...(pendingTaskViewState || lastTaskViewState),
+        ...(patch || {}),
+    };
+    if (cancelTaskViewFlush) {
+        return;
     }
-    if (data.email_service) {
-        elements.taskService.textContent = getServiceTypeText(data.email_service);
-    }
-    if (currentTask && currentTask.task_uuid === taskUuid) {
-        currentTask.status = data.status;
-    }
-    syncPauseButtonForTaskStatus(data.status);
-
-    return data;
+    cancelTaskViewFlush = scheduleUiFlush(() => {
+        cancelTaskViewFlush = null;
+        flushTaskViewUpdate();
+    });
 }
 
-async function hydrateBatchLogs(batchId) {
-    if (!batchId) return null;
-
-    const endpoint = getBatchStatusEndpoint(batchId);
-    const data = await api.get(`${endpoint}?log_offset=${batchLogOffset}`);
-    appendLogsToConsole(data.logs || []);
-    batchLogOffset = data.log_next_offset || batchLogOffset;
-    if (currentBatch && currentBatch.batch_id === batchId) {
-        currentBatch = { ...currentBatch, ...data };
+function flushTaskViewUpdate(force = false) {
+    if (!pendingTaskViewState && !force) {
+        return;
     }
-    updateBatchProgress(data);
-    syncPauseButtonForBatch(currentBatch || data);
-    return data;
+    const nextState = pendingTaskViewState || lastTaskViewState;
+    pendingTaskViewState = null;
+
+    if (force || nextState.status !== lastTaskViewState.status) {
+        const statusInfo = {
+            pending: { text: '等待中', class: 'pending' },
+            running: { text: '运行中', class: 'running' },
+            paused: { text: '已暂停', class: 'warning' },
+            cancelling: { text: '取消中', class: 'pending' },
+            completed: { text: '已完成', class: 'completed' },
+            failed: { text: '失败', class: 'failed' },
+            cancelled: { text: '已取消', class: 'disabled' }
+        };
+
+        const info = statusInfo[nextState.status] || { text: nextState.status || '-', class: '' };
+        setTextContentIfChanged(elements.taskStatusBadge, info.text);
+        elements.taskStatusBadge.className = `status-badge ${info.class}`;
+        setTextContentIfChanged(elements.taskStatus, info.text);
+        syncPauseButtonForTaskStatus(nextState.status);
+    }
+
+    if (force || nextState.email !== lastTaskViewState.email) {
+        setTextContentIfChanged(elements.taskEmail, nextState.email);
+    }
+
+    if (force || nextState.emailService !== lastTaskViewState.emailService) {
+        setTextContentIfChanged(elements.taskService, nextState.emailService);
+    }
+
+    lastTaskViewState = {
+        ...lastTaskViewState,
+        ...nextState,
+    };
+}
+
+function queueBatchProgressUpdate(patch) {
+    pendingBatchProgressState = {
+        ...(pendingBatchProgressState || lastBatchProgressState),
+        ...(patch || {}),
+    };
+    if (cancelBatchProgressFlush) {
+        return;
+    }
+    cancelBatchProgressFlush = scheduleUiFlush(() => {
+        cancelBatchProgressFlush = null;
+        flushBatchProgressUpdate();
+    });
+}
+
+function flushBatchProgressUpdate(force = false) {
+    if (!pendingBatchProgressState && !force) {
+        return;
+    }
+    const nextState = pendingBatchProgressState || lastBatchProgressState;
+    pendingBatchProgressState = null;
+
+    const total = Math.max(0, Number(nextState.total) || 0);
+    const completed = Math.max(0, Number(nextState.completed) || 0);
+    const success = Math.max(0, Number(nextState.success) || 0);
+    const failed = Math.max(0, Number(nextState.failed) || 0);
+    const remaining = Math.max(0, total - completed);
+    const progress = total > 0 ? ((completed / total) * 100).toFixed(0) : '0';
+
+    if (force || completed !== lastBatchProgressState.completed || total !== lastBatchProgressState.total) {
+        setTextContentIfChanged(elements.batchProgressText, `${completed}/${total}`);
+        setTextContentIfChanged(elements.batchProgressPercent, `${progress}%`);
+        elements.progressBar.style.width = `${progress}%`;
+    }
+    if (force || success !== lastBatchProgressState.success) {
+        setTextContentIfChanged(elements.batchSuccess, success);
+        elements.batchSuccess.dataset.last = String(success);
+    }
+    if (force || failed !== lastBatchProgressState.failed) {
+        setTextContentIfChanged(elements.batchFailed, failed);
+        elements.batchFailed.dataset.last = String(failed);
+    }
+    if (force || remaining !== (lastBatchProgressState.total - lastBatchProgressState.completed)) {
+        setTextContentIfChanged(elements.batchRemaining, remaining);
+    }
+
+    lastBatchProgressState = { total, completed, success, failed };
 }
 
 // 连接 WebSocket
@@ -787,8 +991,7 @@ function connectWebSocket(taskUuid) {
     }
     wsManualClose = false;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/ws/task/${taskUuid}`;
+    const wsUrl = buildWebSocketUrl(`/api/ws/task/${taskUuid}`, taskLogOffset);
 
     try {
         const socket = new WebSocket(wsUrl);
@@ -801,32 +1004,40 @@ function connectWebSocket(taskUuid) {
             clearWebSocketReconnect();
             // 停止轮询（如果有）
             stopLogPolling();
-            hydrateTaskLogs(taskUuid).catch((error) => {
-                console.error('补齐任务日志失败:', error);
-            });
             // 开始心跳
             startWebSocketHeartbeat();
         };
 
         socket.onmessage = (event) => {
             if (webSocket !== socket) return;
-            const data = JSON.parse(event.data);
+            let data;
+            try {
+                data = JSON.parse(event.data);
+            } catch (error) {
+                console.error('解析任务 WebSocket 消息失败:', error);
+                return;
+            }
 
             if (data.type === 'log') {
-                taskLogOffset += 1;
-                const logType = getLogType(data.message);
-                addLog(logType, data.message);
+                const message = readLogMessage(data);
+                if (message) {
+                    addLog(getLogType(message), message);
+                }
+                syncTaskLogOffsetFromPayload(data, taskLogOffset + (message ? 1 : 0));
+            } else if (data.type === 'log_batch') {
+                const messages = readLogMessages(data);
+                appendLogsToConsole(messages);
+                syncTaskLogOffsetFromPayload(data, taskLogOffset + messages.length);
             } else if (data.type === 'status') {
+                syncTaskLogOffsetFromPayload(data, taskLogOffset);
                 if (currentTask && currentTask.task_uuid === taskUuid) {
                     currentTask.status = data.status;
                 }
-                updateTaskStatus(data.status);
-                if (data.email) {
-                    elements.taskEmail.textContent = data.email;
-                }
-                if (data.email_service) {
-                    elements.taskService.textContent = getServiceTypeText(data.email_service);
-                }
+                queueTaskViewUpdate({
+                    status: data.status,
+                    email: data.email || lastTaskViewState.email,
+                    emailService: data.email_service ? getServiceTypeText(data.email_service) : lastTaskViewState.emailService,
+                });
 
                 // 检查是否完成
                 if (['completed', 'failed', 'cancelled'].includes(data.status)) {
@@ -953,7 +1164,8 @@ async function handleBatchRegistration(requestData) {
     requestData.count = count;
     requestData.interval_min = intervalMin;
     requestData.interval_max = intervalMax;
-    requestData.concurrency = Math.min(50, Math.max(1, concurrency));
+    requestData.concurrency = clampPositiveInteger(concurrency, 3, 50);
+    requestData.token_completion_concurrency = resolveTokenCompletionConcurrency(requestData.concurrency);
     requestData.mode = mode;
 
     addLog('info', `[系统] 正在启动批量注册任务 (数量: ${count})...`);
@@ -1099,16 +1311,11 @@ function startLogPolling(taskUuid) {
         try {
             const data = await api.get(`/registration/tasks/${taskUuid}/logs?offset=${taskLogOffset}`);
 
-            // 更新任务状态
-            updateTaskStatus(data.status);
-
-            // 更新邮箱信息
-            if (data.email) {
-                elements.taskEmail.textContent = data.email;
-            }
-            if (data.email_service) {
-                elements.taskService.textContent = getServiceTypeText(data.email_service);
-            }
+            queueTaskViewUpdate({
+                status: data.status,
+                email: data.email || lastTaskViewState.email,
+                emailService: data.email_service ? getServiceTypeText(data.email_service) : lastTaskViewState.emailService,
+            });
 
             // 添加新日志
             appendLogsToConsole(data.logs || []);
@@ -1158,7 +1365,7 @@ function startBatchPolling(batchId) {
     batchPollingInterval = setInterval(async () => {
         try {
             const data = await api.get(`/registration/batch/${batchId}?log_offset=${batchLogOffset}`);
-            updateBatchProgress(data);
+            queueBatchProgressUpdate(data);
 
             appendLogsToConsole(data.logs || []);
             batchLogOffset = data.log_next_offset || batchLogOffset;
@@ -1208,25 +1415,21 @@ function showTaskStatus(task) {
     elements.taskId.textContent = task.task_uuid.substring(0, 8) + '...';
     elements.taskEmail.textContent = '-';
     elements.taskService.textContent = '-';
+    pendingTaskViewState = null;
+    if (cancelTaskViewFlush) {
+        cancelTaskViewFlush();
+        cancelTaskViewFlush = null;
+    }
+    lastTaskViewState = {
+        status: null,
+        email: '-',
+        emailService: '-',
+    };
 }
 
 // 更新任务状态
 function updateTaskStatus(status) {
-    const statusInfo = {
-        pending: { text: '等待中', class: 'pending' },
-        running: { text: '运行中', class: 'running' },
-        paused: { text: '已暂停', class: 'warning' },
-        cancelling: { text: '取消中', class: 'pending' },
-        completed: { text: '已完成', class: 'completed' },
-        failed: { text: '失败', class: 'failed' },
-        cancelled: { text: '已取消', class: 'disabled' }
-    };
-
-    const info = statusInfo[status] || { text: status, class: '' };
-    elements.taskStatusBadge.textContent = info.text;
-    elements.taskStatusBadge.className = `status-badge ${info.class}`;
-    elements.taskStatus.textContent = info.text;
-    syncPauseButtonForTaskStatus(status);
+    queueTaskViewUpdate({ status });
 }
 
 // 显示批量状态
@@ -1244,20 +1447,22 @@ function showBatchStatus(batch) {
     // 重置计数器
     elements.batchSuccess.dataset.last = '0';
     elements.batchFailed.dataset.last = '0';
+    pendingBatchProgressState = null;
+    if (cancelBatchProgressFlush) {
+        cancelBatchProgressFlush();
+        cancelBatchProgressFlush = null;
+    }
+    lastBatchProgressState = {
+        total: Number(batch.count) || 0,
+        completed: 0,
+        success: 0,
+        failed: 0,
+    };
 }
 
 // 更新批量进度
 function updateBatchProgress(data) {
-    const progress = ((data.completed / data.total) * 100).toFixed(0);
-    elements.batchProgressText.textContent = `${data.completed}/${data.total}`;
-    elements.batchProgressPercent.textContent = `${progress}%`;
-    elements.progressBar.style.width = `${progress}%`;
-    elements.batchSuccess.textContent = data.success;
-    elements.batchFailed.textContent = data.failed;
-    elements.batchRemaining.textContent = data.total - data.completed;
-
-    elements.batchSuccess.dataset.last = data.success;
-    elements.batchFailed.dataset.last = data.failed;
+    queueBatchProgressUpdate(data);
 }
 
 // 加载最近注册的账号
@@ -1437,6 +1642,11 @@ function createLogConsole() {
             renderLogBatch([{ type, message }]);
             return true;
         },
+        enqueueMany(entries) {
+            const normalizedEntries = Array.isArray(entries) ? entries : [];
+            renderLogBatch(normalizedEntries);
+            return normalizedEntries.length;
+        },
         reset() {},
     };
 }
@@ -1482,6 +1692,27 @@ function resetButtons() {
     stopBatchPolling();
     clearWebSocketReconnect();
     clearBatchWebSocketReconnect();
+    if (cancelTaskViewFlush) {
+        cancelTaskViewFlush();
+        cancelTaskViewFlush = null;
+    }
+    if (cancelBatchProgressFlush) {
+        cancelBatchProgressFlush();
+        cancelBatchProgressFlush = null;
+    }
+    pendingTaskViewState = null;
+    pendingBatchProgressState = null;
+    lastTaskViewState = {
+        status: null,
+        email: '-',
+        emailService: '-',
+    };
+    lastBatchProgressState = {
+        total: 0,
+        completed: 0,
+        success: 0,
+        failed: 0,
+    };
     currentTask = null;
     currentBatch = null;
     isBatchMode = false;
@@ -1773,11 +2004,14 @@ async function handleOutlookBatchRegistration() {
     // 清空日志
     resetLogConsole();
 
+    const normalizedConcurrency = clampPositiveInteger(concurrency, 3, 50);
+
     const requestData = {
         service_ids: selectedIds,
         interval_min: intervalMin,
         interval_max: intervalMax,
-        concurrency: Math.min(50, Math.max(1, concurrency)),
+        concurrency: normalizedConcurrency,
+        token_completion_concurrency: resolveTokenCompletionConcurrency(normalizedConcurrency),
         mode: mode,
         auto_upload_cpa: elements.autoUploadCpa ? elements.autoUploadCpa.checked : false,
         cpa_service_ids: elements.autoUploadCpa && elements.autoUploadCpa.checked ? getSelectedServiceIds(elements.cpaServiceSelect) : [],
@@ -1836,8 +2070,7 @@ function connectBatchWebSocket(batchId) {
     }
     batchWsManualClose = false;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/ws/batch/${batchId}`;
+    const wsUrl = buildWebSocketUrl(`/api/ws/batch/${batchId}`, batchLogOffset);
 
     try {
         const socket = new WebSocket(wsUrl);
@@ -1849,28 +2082,38 @@ function connectBatchWebSocket(batchId) {
             clearBatchWebSocketReconnect();
             // 停止轮询（如果有）
             stopBatchPolling();
-            hydrateBatchLogs(batchId).catch((error) => {
-                console.error('补齐批量日志失败:', error);
-            });
             // 开始心跳
             startBatchWebSocketHeartbeat();
         };
 
         socket.onmessage = (event) => {
             if (batchWebSocket !== socket) return;
-            const data = JSON.parse(event.data);
+            let data;
+            try {
+                data = JSON.parse(event.data);
+            } catch (error) {
+                console.error('解析批量任务 WebSocket 消息失败:', error);
+                return;
+            }
 
             if (data.type === 'log') {
-                batchLogOffset += 1;
-                const logType = getLogType(data.message);
-                addLog(logType, data.message);
+                const message = readLogMessage(data);
+                if (message) {
+                    addLog(getLogType(message), message);
+                }
+                syncBatchLogOffsetFromPayload(data, batchLogOffset + (message ? 1 : 0));
+            } else if (data.type === 'log_batch') {
+                const messages = readLogMessages(data);
+                appendLogsToConsole(messages);
+                syncBatchLogOffsetFromPayload(data, batchLogOffset + messages.length);
             } else if (data.type === 'status') {
+                syncBatchLogOffsetFromPayload(data, batchLogOffset);
                 if (currentBatch && currentBatch.batch_id === batchId) {
                     currentBatch = { ...currentBatch, ...data };
                 }
                 // 更新进度
                 if (data.total !== undefined) {
-                    updateBatchProgress({
+                    queueBatchProgressUpdate({
                         total: data.total,
                         completed: data.completed || 0,
                         success: data.success || 0,
@@ -1997,7 +2240,7 @@ function startOutlookBatchPolling(batchId) {
             const data = await api.get(`/registration/outlook-batch/${batchId}?log_offset=${batchLogOffset}`);
 
             // 更新进度
-            updateBatchProgress({
+            queueBatchProgressUpdate({
                 total: data.total,
                 completed: data.completed,
                 success: data.success,

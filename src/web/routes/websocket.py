@@ -29,9 +29,13 @@ async def task_websocket(websocket: WebSocket, task_uuid: str):
     - 客户端发送: {"type": "cancel"} - 取消任务
     """
     await websocket.accept()
+    try:
+        log_offset = max(0, int(websocket.query_params.get("log_offset") or 0))
+    except (TypeError, ValueError):
+        log_offset = 0
 
     # 注册连接（会记录当前日志数量，避免重复发送历史日志）
-    task_manager.register_websocket(task_uuid, websocket)
+    task_manager.register_websocket(task_uuid, websocket, start_index=log_offset)
     logger.info(f"WebSocket 连接已建立，日志频道正式开麦: {task_uuid}")
 
     try:
@@ -44,14 +48,8 @@ async def task_websocket(websocket: WebSocket, task_uuid: str):
                 **status
             })
 
-        # 发送历史日志（只发送注册时已存在的日志，避免与实时推送重复）
-        history_logs = task_manager.get_unsent_logs(task_uuid, websocket)
-        for log in history_logs:
-            await websocket.send_json({
-                "type": "log",
-                "task_uuid": task_uuid,
-                "message": log
-            })
+        # 先补齐历史，再切到 live 模式，避免首连/重连 race。
+        await task_manager.hydrate_websocket(task_uuid, websocket)
 
         # 保持连接，等待客户端消息
         while True:
@@ -149,6 +147,7 @@ async def batch_websocket(websocket: WebSocket, batch_id: str):
 
     消息格式：
     - 服务端发送: {"type": "log", "batch_id": "xxx", "message": "...", "timestamp": "..."}
+    - 服务端发送: {"type": "log_batch", "batch_id": "xxx", "messages": ["...", "..."], "count": 2, "timestamp": "..."}
     - 服务端发送: {"type": "status", "batch_id": "xxx", "status": "running|completed|cancelled", ...}
     - 客户端发送: {"type": "ping"} - 心跳
     - 客户端发送: {"type": "pause"} - 暂停批量任务
@@ -156,9 +155,23 @@ async def batch_websocket(websocket: WebSocket, batch_id: str):
     - 客户端发送: {"type": "cancel"} - 取消批量任务
     """
     await websocket.accept()
+    supports_log_batch = str(
+        websocket.query_params.get("supports_log_batch")
+        or websocket.query_params.get("batch_logs")
+        or ""
+    ).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "batch",
+    }
 
     # 注册连接（会记录当前日志数量，避免重复发送历史日志）
-    task_manager.register_batch_websocket(batch_id, websocket)
+    task_manager.register_batch_websocket(
+        batch_id,
+        websocket,
+        supports_log_batch=supports_log_batch,
+    )
     logger.info(f"批量任务 WebSocket 连接已建立，群聊频道正式开麦: {batch_id}")
 
     try:
@@ -171,14 +184,8 @@ async def batch_websocket(websocket: WebSocket, batch_id: str):
                 **status
             })
 
-        # 发送历史日志（只发送注册时已存在的日志，避免与实时推送重复）
-        history_logs = task_manager.get_unsent_batch_logs(batch_id, websocket)
-        for log in history_logs:
-            await websocket.send_json({
-                "type": "log",
-                "batch_id": batch_id,
-                "message": log
-            })
+        # 先补齐历史，再切到 live 模式，避免首连/重连时丢日志。
+        await task_manager.hydrate_batch_websocket(batch_id, websocket)
 
         # 保持连接，等待客户端消息
         while True:

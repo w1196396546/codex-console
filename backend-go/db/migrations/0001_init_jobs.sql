@@ -1,6 +1,8 @@
-CREATE SEQUENCE job_logs_seq;
+-- +goose Up
 
-CREATE TABLE jobs (
+CREATE SEQUENCE IF NOT EXISTS job_logs_seq;
+
+CREATE TABLE IF NOT EXISTS jobs (
     job_id UUID PRIMARY KEY,
     job_type TEXT NOT NULL,
     scope_type TEXT NOT NULL,
@@ -15,7 +17,7 @@ CREATE TABLE jobs (
     finished_at TIMESTAMPTZ
 );
 
-CREATE TABLE job_runs (
+CREATE TABLE IF NOT EXISTS job_runs (
     job_run_id UUID PRIMARY KEY,
     job_id UUID NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
     worker_id TEXT NOT NULL,
@@ -25,7 +27,7 @@ CREATE TABLE job_runs (
     finished_at TIMESTAMPTZ
 );
 
-CREATE TABLE job_logs (
+CREATE TABLE IF NOT EXISTS job_logs (
     id BIGSERIAL PRIMARY KEY,
     job_id UUID NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
     job_run_id UUID,
@@ -35,5 +37,22 @@ CREATE TABLE job_logs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX job_runs_job_id_idx ON job_runs (job_id);
-CREATE INDEX job_logs_job_id_seq_idx ON job_logs (job_id, seq);
+-- Support upgrading legacy jobs tables that predate the runtime metadata columns.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS priority INT NOT NULL DEFAULT 0;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS result JSONB;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS error TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ;
+
+ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS worker_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS attempt INT NOT NULL DEFAULT 1;
+ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ;
+
+ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS job_run_id UUID;
+ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS seq BIGINT NOT NULL DEFAULT nextval('job_logs_seq');
+ALTER TABLE job_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+CREATE INDEX IF NOT EXISTS job_runs_job_id_idx ON job_runs (job_id);
+CREATE INDEX IF NOT EXISTS job_logs_job_id_seq_idx ON job_logs (job_id, seq);

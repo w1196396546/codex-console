@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -20,12 +21,20 @@ func (c *Client) RegisterPasswordAndSendOTP(ctx context.Context, prepared Prepar
 	}
 
 	referer := c.signupPasswordReferer(prepared)
+	origin := c.flowOrigin(referer)
+	registerURL := c.flowRequestURL(referer, "/api/accounts/user/register")
 
 	registerHeaders := Headers{
 		"Accept":       "application/json",
 		"Content-Type": "application/json",
-		"Origin":       c.origin(),
+		"Origin":       origin,
 		"Referer":      referer,
+	}
+	if c != nil && strings.TrimSpace(c.deviceID) != "" {
+		registerHeaders["oai-device-id"] = strings.TrimSpace(c.deviceID)
+	}
+	if sentinel := c.sentinelHeaderToken(ctx, "username_password_create", registerURL); sentinel != "" {
+		registerHeaders["openai-sentinel-token"] = sentinel
 	}
 	extraRegisterHeaders, err := c.flowRequestHeaders(ctx, RequestHeadersInput{
 		Kind:          FlowRequestKindRegisterPassword,
@@ -50,14 +59,34 @@ func (c *Client) RegisterPasswordAndSendOTP(ctx context.Context, prepared Prepar
 
 	registerResponse, err := c.Do(ctx, Request{
 		Method:  http.MethodPost,
-		Path:    "/api/accounts/user/register",
+		Path:    registerURL,
 		Headers: registerHeaders,
 		Body:    bytes.NewReader(registerBody),
 	})
 	if err != nil {
 		return PrepareSignupResult{}, fmt.Errorf("register user: %w", err)
 	}
+	prepared.RegisterStatusCode = registerResponse.StatusCode
+
+	var registerPayload map[string]any
+	if len(registerResponse.Body) != 0 {
+		_ = json.Unmarshal(registerResponse.Body, &registerPayload)
+	}
+	if _, _, isUserExists := detectUserExistsError(registerPayload, string(registerResponse.Body)); isUserExists {
+		prepared.PageType = "user_exists"
+		prepared.ContinueURL = extractContinueURL(c, registerPayload)
+		if prepared.ContinueURL != "" {
+			prepared.FinalURL = prepared.ContinueURL
+			if finalPath, err := urlPath(prepared.ContinueURL); err == nil {
+				prepared.FinalPath = finalPath
+			}
+		}
+		return prepared, nil
+	}
 	if registerResponse.StatusCode >= http.StatusBadRequest {
+		if detail := extractErrorMessage(registerPayload, string(registerResponse.Body)); detail != "" {
+			return PrepareSignupResult{}, fmt.Errorf("register user: unexpected status %d: %s", registerResponse.StatusCode, detail)
+		}
 		return PrepareSignupResult{}, fmt.Errorf("register user: unexpected status %d", registerResponse.StatusCode)
 	}
 
@@ -78,15 +107,12 @@ func (c *Client) RegisterPasswordAndSendOTP(ctx context.Context, prepared Prepar
 		otpHeaders[key] = value
 	}
 
-	otpResponse, err := c.Get(ctx, "/api/accounts/email-otp/send", otpHeaders)
-	if err != nil {
-		return PrepareSignupResult{}, fmt.Errorf("send email otp: %w", err)
-	}
-	if otpResponse.StatusCode >= http.StatusBadRequest {
-		return PrepareSignupResult{}, fmt.Errorf("send email otp: unexpected status %d", otpResponse.StatusCode)
+	otpResponse, err := c.Get(ctx, c.flowRequestURL(referer, "/api/accounts/email-otp/send"), otpHeaders)
+	if err == nil {
+		prepared.SendOTPStatusCode = otpResponse.StatusCode
 	}
 
-	emailVerificationURL, err := c.resolveURL("/email-verification")
+	emailVerificationURL, err := url.Parse(c.flowRequestURL(referer, "/email-verification"))
 	if err != nil {
 		return PrepareSignupResult{}, fmt.Errorf("resolve email verification url: %w", err)
 	}
@@ -95,14 +121,18 @@ func (c *Client) RegisterPasswordAndSendOTP(ctx context.Context, prepared Prepar
 	prepared.FinalPath = emailVerificationURL.Path
 	prepared.ContinueURL = ""
 	prepared.PageType = "email_otp_verification"
-	prepared.RegisterStatusCode = registerResponse.StatusCode
-	prepared.SendOTPStatusCode = otpResponse.StatusCode
 	return prepared, nil
 }
 
 func (c *Client) signupPasswordReferer(prepared PrepareSignupResult) string {
+	pageType := strings.TrimSpace(prepared.PageType)
 	if referer := strings.TrimSpace(prepared.FinalURL); referer != "" {
-		return referer
+		if pageType == "create_account_password" || pageType == "password" {
+			return referer
+		}
+		if canonical := c.flowRequestURL(referer, "/create-account/password"); canonical != "" {
+			return canonical
+		}
 	}
 	if c == nil {
 		return ""

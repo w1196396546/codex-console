@@ -233,6 +233,45 @@ func TestEmailServicesWriteOperationsPreservePythonContracts(t *testing.T) {
 	}
 }
 
+func TestEmailServicesTestServiceSupportsSelfHostedTempMail(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeRepository{
+		services: []EmailServiceRecord{
+			{
+				ID:          2,
+				ServiceType: ServiceTypeTempMail,
+				Name:        "Temp Mail Worker",
+				Enabled:     true,
+				Config: map[string]any{
+					"base_url":       "https://mail.example.com",
+					"admin_password": "admin-secret",
+					"domain":         "mail.example.com",
+					"enable_prefix":  true,
+				},
+			},
+		},
+	}
+	tester := &fakeTester{
+		results: map[string]ServiceTestResult{
+			ServiceTypeTempMail: {Success: true, Message: "服务连接正常"},
+		},
+	}
+
+	svc := NewService(repo, tester)
+
+	result, err := svc.TestService(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("test temp_mail service: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected temp_mail service test success, got %+v", result)
+	}
+	if len(tester.calls) != 1 || tester.calls[0] != ServiceTypeTempMail {
+		t.Fatalf("expected tester to be called with temp_mail, got %+v", tester.calls)
+	}
+}
+
 func TestOutlookBatchImportAndTempmailDependencyStayInGo(t *testing.T) {
 	t.Parallel()
 

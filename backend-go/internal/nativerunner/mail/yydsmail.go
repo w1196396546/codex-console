@@ -28,6 +28,7 @@ type YYDSMail struct {
 	defaultDomain string
 	httpClient    *http.Client
 	pollInterval  time.Duration
+	codeTracker   *otpCodeTracker
 }
 
 type yydsMailAddress struct {
@@ -36,18 +37,22 @@ type yydsMailAddress struct {
 }
 
 type yydsMailMessageSummary struct {
-	ID      string          `json:"id"`
-	From    yydsMailAddress `json:"from"`
-	Subject string          `json:"subject"`
-	Snippet string          `json:"snippet"`
-	Preview string          `json:"preview"`
+	ID         string          `json:"id"`
+	From       yydsMailAddress `json:"from"`
+	Subject    string          `json:"subject"`
+	Snippet    string          `json:"snippet"`
+	Preview    string          `json:"preview"`
+	ReceivedAt any             `json:"received_at"`
 }
 
 type yydsMailMessageDetail struct {
-	From    yydsMailAddress `json:"from"`
-	Subject string          `json:"subject"`
-	Text    string          `json:"text"`
-	HTML    any             `json:"html"`
+	From       yydsMailAddress `json:"from"`
+	Subject    string          `json:"subject"`
+	Text       string          `json:"text"`
+	HTML       any             `json:"html"`
+	Raw        any             `json:"raw"`
+	RFC822     any             `json:"rfc822"`
+	ReceivedAt any             `json:"received_at"`
 }
 
 func NewYYDSMail(config YYDSMailConfig) *YYDSMail {
@@ -67,6 +72,7 @@ func NewYYDSMail(config YYDSMailConfig) *YYDSMail {
 		defaultDomain: strings.TrimSpace(strings.TrimPrefix(config.DefaultDomain, "@")),
 		httpClient:    httpClient,
 		pollInterval:  pollInterval,
+		codeTracker:   newOTPCodeTracker(),
 	}
 }
 
@@ -152,6 +158,7 @@ func (y *YYDSMail) WaitCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 	defer ticker.Stop()
 
 	for {
+		y.codeTracker.prepare(otpInboxStateKey(inbox), inbox.OTPSentAt)
 		code, found, err := y.pollCode(ctx, inbox, pattern, seenMessageIDs)
 		if err != nil {
 			return "", err
@@ -169,6 +176,12 @@ func (y *YYDSMail) WaitCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 }
 
 func (y *YYDSMail) pollCode(ctx context.Context, inbox Inbox, pattern *regexp.Regexp, seenMessageIDs map[string]struct{}) (string, bool, error) {
+	minReceivedAt := time.Time{}
+	if !inbox.OTPSentAt.IsZero() {
+		minReceivedAt = inbox.OTPSentAt.Add(-defaultIMAPOTPTimeSkew)
+	}
+	inboxKey := otpInboxStateKey(inbox)
+
 	messagesURL, err := url.Parse(y.baseURL + "/messages")
 	if err != nil {
 		return "", false, fmt.Errorf("build yydsmail messages url: %w", err)
@@ -204,6 +217,11 @@ func (y *YYDSMail) pollCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 	}
 
 	for _, message := range listPayload.Messages {
+		receivedAt := parseTempmailMessageTime(message.ReceivedAt)
+		if !receivedAt.IsZero() && !minReceivedAt.IsZero() && receivedAt.Before(minReceivedAt) {
+			continue
+		}
+
 		messageID := strings.TrimSpace(message.ID)
 		if messageID == "" {
 			continue
@@ -217,27 +235,38 @@ func (y *YYDSMail) pollCode(ctx context.Context, inbox Inbox, pattern *regexp.Re
 			return "", false, err
 		}
 		seenMessageIDs[messageID] = struct{}{}
+		if receivedAt.IsZero() {
+			receivedAt = parseTempmailMessageTime(detail.ReceivedAt)
+			if !receivedAt.IsZero() && !minReceivedAt.IsZero() && receivedAt.Before(minReceivedAt) {
+				continue
+			}
+		}
 
-		content := strings.Join([]string{
+		raw := firstRawMessageContent(detail.Raw, detail.RFC822)
+		content := buildSearchText(
 			buildYYDSMailSenderText(message.From),
 			message.Subject,
 			message.Snippet,
 			message.Preview,
 			buildYYDSMailSenderText(detail.From),
 			detail.Subject,
-			detail.Text,
-			flattenYYDSMailHTML(detail.HTML),
-		}, "\n")
+			flattenMessageText(detail.Text),
+			flattenMessageHTML(detail.HTML),
+			raw.From,
+			raw.Subject,
+			raw.Body,
+		)
 		if !looksLikeOpenAIVerification(content) {
 			continue
 		}
 
-		match := pattern.FindStringSubmatch(content)
-		if len(match) >= 2 {
-			return match[1], true, nil
-		}
-		if len(match) == 1 {
-			return match[0], true, nil
+		if code, found := matchCode(pattern, content); found {
+			fingerprint, fallbackCode := otpCodeFingerprint(messageID, receivedAt, content, code)
+			if y.codeTracker.hasSeen(inboxKey, fingerprint, fallbackCode) {
+				continue
+			}
+			y.codeTracker.markSeen(inboxKey, fingerprint, fallbackCode)
+			return code, true, nil
 		}
 	}
 

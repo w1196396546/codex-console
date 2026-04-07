@@ -20,7 +20,7 @@ func TestExecutorBatchParallelRespectsConcurrencyLimitAndIgnoresInterval(t *test
 	active := 0
 	maxActive := 0
 
-	executor := NewExecutor(logger, admissionTestRunner(func(_ context.Context, req RunnerRequest, _ func(level string, message string) error) (map[string]any, error) {
+	executor := NewExecutor(logger, admissionTestRunner(func(_ context.Context, req RunnerRequest, _ func(level string, message string) error) (RunnerOutput, error) {
 		mu.Lock()
 		active++
 		if active > maxActive {
@@ -34,8 +34,8 @@ func TestExecutorBatchParallelRespectsConcurrencyLimitAndIgnoresInterval(t *test
 		mu.Lock()
 		active--
 		mu.Unlock()
-		return map[string]any{"ok": true}, nil
-	}))
+		return RunnerOutput{Result: map[string]any{"ok": true}}, nil
+	}), WithPreparationDependencies(executorPreparationDependencies()))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -88,10 +88,10 @@ func TestExecutorBatchPipelineEnforcesStartInterval(t *testing.T) {
 	clock := &executorAdmissionFakeClock{now: time.Unix(0, 0)}
 	startTimes := make([]time.Time, 0, 3)
 
-	executor := NewExecutor(logger, admissionTestRunner(func(_ context.Context, req RunnerRequest, _ func(level string, message string) error) (map[string]any, error) {
+	executor := NewExecutor(logger, admissionTestRunner(func(_ context.Context, req RunnerRequest, _ func(level string, message string) error) (RunnerOutput, error) {
 		startTimes = append(startTimes, clock.Now())
-		return map[string]any{"task_uuid": req.TaskUUID}, nil
-	}))
+		return RunnerOutput{Result: map[string]any{"task_uuid": req.TaskUUID}}, nil
+	}), WithPreparationDependencies(executorPreparationDependencies()))
 
 	controller := newProcessLocalBatchAdmissionController()
 	controller.now = clock.Now
@@ -126,11 +126,11 @@ func TestExecutorSingleJobIsNotCoordinatedByBatchAdmission(t *testing.T) {
 	started := make(chan string, 2)
 	release := make(chan struct{})
 
-	executor := NewExecutor(logger, admissionTestRunner(func(_ context.Context, req RunnerRequest, _ func(level string, message string) error) (map[string]any, error) {
+	executor := NewExecutor(logger, admissionTestRunner(func(_ context.Context, req RunnerRequest, _ func(level string, message string) error) (RunnerOutput, error) {
 		started <- req.TaskUUID
 		<-release
-		return map[string]any{"ok": true}, nil
-	}))
+		return RunnerOutput{Result: map[string]any{"ok": true}}, nil
+	}), WithPreparationDependencies(executorPreparationDependencies()))
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -176,7 +176,7 @@ func TestWorkerSkipsRunnerWhenWaitingBatchJobIsCancelled(t *testing.T) {
 	repo := jobs.NewInMemoryRepository()
 	svc := jobs.NewService(repo, nil)
 
-	executor := NewExecutor(svc, admissionTestRunner(func(_ context.Context, req RunnerRequest, _ func(level string, message string) error) (map[string]any, error) {
+	executor := NewExecutor(svc, admissionTestRunner(func(_ context.Context, req RunnerRequest, _ func(level string, message string) error) (RunnerOutput, error) {
 		switch req.TaskUUID {
 		case "job-1":
 			return waitForAdmissionRunnerRelease(t)
@@ -185,8 +185,8 @@ func TestWorkerSkipsRunnerWhenWaitingBatchJobIsCancelled(t *testing.T) {
 		default:
 			t.Fatalf("unexpected task uuid %s", req.TaskUUID)
 		}
-		return nil, nil
-	}))
+		return RunnerOutput{}, nil
+	}), WithPreparationDependencies(executorPreparationDependencies()))
 
 	job1 := createAdmissionBatchJob(t, svc, "batch-cancel-wait")
 	job2 := createAdmissionBatchJob(t, svc, "batch-cancel-wait")
@@ -240,19 +240,19 @@ func TestWorkerWaitsForPausedBatchJobToResumeBeforeRunnerStart(t *testing.T) {
 	firstRelease := make(chan struct{})
 	secondStarted := make(chan struct{}, 1)
 
-	executor := NewExecutor(svc, admissionTestRunner(func(_ context.Context, req RunnerRequest, _ func(level string, message string) error) (map[string]any, error) {
+	executor := NewExecutor(svc, admissionTestRunner(func(_ context.Context, req RunnerRequest, _ func(level string, message string) error) (RunnerOutput, error) {
 		switch req.TaskUUID {
 		case "job-1":
 			<-firstRelease
-			return map[string]any{"ok": true}, nil
+			return RunnerOutput{Result: map[string]any{"ok": true}}, nil
 		case "job-2":
 			secondStarted <- struct{}{}
-			return map[string]any{"ok": true}, nil
+			return RunnerOutput{Result: map[string]any{"ok": true}}, nil
 		default:
 			t.Fatalf("unexpected task uuid %s", req.TaskUUID)
 		}
-		return nil, nil
-	}))
+		return RunnerOutput{}, nil
+	}), WithPreparationDependencies(executorPreparationDependencies()))
 
 	job1 := createAdmissionBatchJob(t, svc, "batch-pause-wait")
 	job2 := createAdmissionBatchJob(t, svc, "batch-pause-wait")
@@ -378,9 +378,9 @@ func TestProcessLocalBatchAdmissionControllerCleansUpIdlePipelineBatchStateAfter
 	}
 }
 
-type admissionTestRunner func(ctx context.Context, req RunnerRequest, logf func(level string, message string) error) (map[string]any, error)
+type admissionTestRunner func(ctx context.Context, req RunnerRequest, logf func(level string, message string) error) (RunnerOutput, error)
 
-func (f admissionTestRunner) Run(ctx context.Context, req RunnerRequest, logf func(level string, message string) error) (map[string]any, error) {
+func (f admissionTestRunner) Run(ctx context.Context, req RunnerRequest, logf func(level string, message string) error) (RunnerOutput, error) {
 	return f(ctx, req, logf)
 }
 
@@ -454,13 +454,13 @@ func waitForAdmissionStartCount(t *testing.T, started <-chan string, count int) 
 
 var admissionRunnerHold chan struct{}
 
-func waitForAdmissionRunnerRelease(t *testing.T) (map[string]any, error) {
+func waitForAdmissionRunnerRelease(t *testing.T) (RunnerOutput, error) {
 	t.Helper()
 
 	if admissionRunnerHold != nil {
 		<-admissionRunnerHold
 	}
-	return map[string]any{"ok": true}, nil
+	return RunnerOutput{Result: map[string]any{"ok": true}}, nil
 }
 
 func createAdmissionBatchJob(t *testing.T, svc *jobs.Service, batchID string) jobs.Job {

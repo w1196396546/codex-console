@@ -240,6 +240,48 @@ def test_get_outlook_accounts_for_registration_avoids_n_plus_one_account_queries
     assert query_counter["accounts_select"] == 1
 
 
+def test_get_outlook_accounts_for_registration_matches_registered_accounts_by_normalized_email(monkeypatch):
+    manager = _build_manager("registration_routes_outlook_accounts_normalized_match.db")
+
+    with manager.session_scope() as session:
+        session.add(
+            EmailService(
+                service_type="outlook",
+                name="MiXeD@Outlook.com",
+                config={"email": "MiXeD@Outlook.com"},
+                enabled=True,
+                priority=0,
+            )
+        )
+        session.add(
+            Account(
+                email="mixed@outlook.com",
+                password="pass-1",
+                refresh_token="refresh-token-1",
+                email_service="outlook",
+                status="active",
+            )
+        )
+
+    @contextmanager
+    def fake_get_db():
+        session = manager.SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    monkeypatch.setattr(registration_module, "get_db", fake_get_db)
+
+    payload = asyncio.run(registration_module.get_outlook_accounts_for_registration())
+
+    assert payload.total == 1
+    assert payload.registered_count == 1
+    assert payload.unregistered_count == 0
+    assert payload.accounts[0].is_registered is True
+    assert payload.accounts[0].registered_account_id is not None
+
+
 def test_cancel_task_marks_runtime_cancel_flag_and_cancelling_status(monkeypatch):
     manager = _build_manager("registration_routes_cancel_single.db")
 

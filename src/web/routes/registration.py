@@ -10,6 +10,7 @@ import threading
 from datetime import datetime
 from typing import List, Optional, Dict, Tuple
 from sqlalchemy.exc import OperationalError
+from sqlalchemy import func
 
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -67,6 +68,10 @@ def update_proxy_usage(db, proxy_id: Optional[int]):
         crud.update_proxy_last_used(db, proxy_id)
 
 
+def _normalize_outlook_lookup_email(email: object) -> str:
+    return str(email or "").strip().lower()
+
+
 def _reserve_available_outlook_service(db, task_uuid: str):
     """为任务预留一个尚未注册且未被其他执行中任务占用的 Outlook 账户。"""
     from ...database.models import EmailService as EmailServiceModel, Account
@@ -108,7 +113,12 @@ def _reserve_available_outlook_service(db, task_uuid: str):
                 logger.info(f"跳过已被其他任务预留的 Outlook 账户: {email} (ID: {svc.id})")
                 continue
 
-            existing = db.query(Account).filter(Account.email == email).first()
+            normalized_email = _normalize_outlook_lookup_email(email)
+            existing = None
+            if normalized_email:
+                existing = db.query(Account).filter(
+                    func.lower(func.trim(Account.email)) == normalized_email
+                ).first()
             if existing:
                 logger.info(f"跳过已注册的 Outlook 账户: {email}")
                 continue
@@ -1928,22 +1938,26 @@ async def get_outlook_accounts_for_registration():
         ).order_by(EmailServiceModel.priority.asc()).all()
 
         emails_by_service_id: Dict[int, str] = {}
+        normalized_emails_by_service_id: Dict[int, str] = {}
         for service in outlook_services:
             config = service.config or {}
             email = config.get("email") or service.name
             emails_by_service_id[service.id] = email
+            normalized_emails_by_service_id[service.id] = _normalize_outlook_lookup_email(email)
 
-        unique_emails = list(dict.fromkeys(email for email in emails_by_service_id.values() if email))
+        unique_emails = list(dict.fromkeys(
+            email for email in normalized_emails_by_service_id.values() if email
+        ))
         existing_accounts_by_email = {}
         if unique_emails:
             existing_accounts_by_email = {
-                row.email: row
+                _normalize_outlook_lookup_email(row.email): row
                 for row in db.query(
                     Account.id,
                     Account.email,
                     Account.refresh_token,
                 ).filter(
-                    Account.email.in_(unique_emails)
+                    func.lower(func.trim(Account.email)).in_(unique_emails)
                 ).all()
             }
 
@@ -1954,7 +1968,8 @@ async def get_outlook_accounts_for_registration():
         for service in outlook_services:
             config = service.config or {}
             email = emails_by_service_id.get(service.id) or service.name
-            existing_account = existing_accounts_by_email.get(email)
+            normalized_email = normalized_emails_by_service_id.get(service.id) or ""
+            existing_account = existing_accounts_by_email.get(normalized_email)
 
             is_registered = existing_account is not None
             has_refresh_token = _has_refresh_token(existing_account)

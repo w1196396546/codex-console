@@ -122,7 +122,7 @@ func (s *OutlookService) ListOutlookAccounts(ctx context.Context) (OutlookAccoun
 	emails := make([]string, 0, len(services))
 	seen := make(map[string]struct{}, len(services))
 	for _, service := range services {
-		email := resolveOutlookServiceEmail(service)
+		email := normalizeOutlookLookupEmail(resolveOutlookServiceEmail(service))
 		if email == "" {
 			continue
 		}
@@ -140,7 +140,7 @@ func (s *OutlookService) ListOutlookAccounts(ctx context.Context) (OutlookAccoun
 			return OutlookAccountsListResponse{}, err
 		}
 		for _, account := range accountRows {
-			registeredAccounts[strings.TrimSpace(account.Email)] = account
+			registeredAccounts[normalizeOutlookLookupEmail(account.Email)] = account
 		}
 	}
 
@@ -149,7 +149,7 @@ func (s *OutlookService) ListOutlookAccounts(ctx context.Context) (OutlookAccoun
 	}
 	for _, service := range services {
 		email := resolveOutlookServiceEmail(service)
-		account, found := registeredAccounts[email]
+		account, found := registeredAccounts[normalizeOutlookLookupEmail(email)]
 		hasRefreshToken := found && strings.TrimSpace(account.RefreshToken) != ""
 		isRegistered := found
 		isComplete := hasRefreshToken
@@ -282,6 +282,10 @@ func resolveOutlookServiceEmail(service EmailServiceRecord) string {
 		return email
 	}
 	return strings.TrimSpace(service.Name)
+}
+
+func normalizeOutlookLookupEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
 }
 
 func hasOutlookOAuth(config map[string]any) bool {

@@ -105,6 +105,43 @@ func TestListOutlookAccounts(t *testing.T) {
 	}
 }
 
+func TestListOutlookAccountsMatchesRegisteredAccountsByNormalizedEmail(t *testing.T) {
+	service := registration.NewOutlookService(outlookFakeRepository{
+		services: []registration.EmailServiceRecord{
+			{
+				ID:          101,
+				ServiceType: "outlook",
+				Name:        "Outlook A",
+				Config: map[string]any{
+					"email": "MiXeD@example.com",
+				},
+			},
+		},
+		accounts: []registration.RegisteredAccountRecord{
+			{
+				ID:           9001,
+				Email:        "mixed@example.com",
+				RefreshToken: "account-refresh-alpha",
+			},
+		},
+	}, nil)
+
+	response, err := service.ListOutlookAccounts(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected list error: %v", err)
+	}
+
+	if response.RegisteredCount != 1 || response.UnregisteredCount != 0 {
+		t.Fatalf("expected normalized email match to count as registered, got %+v", response)
+	}
+	if len(response.Accounts) != 1 || !response.Accounts[0].IsRegistered {
+		t.Fatalf("expected normalized email match to mark account as registered, got %+v", response.Accounts)
+	}
+	if response.Accounts[0].RegisteredAccountID == nil || *response.Accounts[0].RegisteredAccountID != 9001 {
+		t.Fatalf("expected registered_account_id=9001, got %+v", response.Accounts[0].RegisteredAccountID)
+	}
+}
+
 func TestStartOutlookBatch(t *testing.T) {
 	jobsService := newRecordingBatchJobsService()
 	batchService := registration.NewBatchService(jobsService)

@@ -7,6 +7,18 @@ let outlookServices = [];
 let customServices = [];  // 合并 moe_mail + temp_mail + duck_mail + luckmail + freemail + imap_mail
 let selectedOutlook = new Set();
 let selectedCustom = new Set();
+let selectedOutlookSnapshots = new Map();
+let outlookCurrentPage = 1;
+let outlookPageSize = 20;
+let outlookTotal = 0;
+let outlookTotalPages = 1;
+let outlookFilterTimer = null;
+const currentOutlookFilters = {
+    search: '',
+    registrationStatus: 'all',
+};
+const REGISTRATION_OUTLOOK_PREFILL_KEY = 'registration.outlook.prefill';
+const outlookSelectorApi = window.OutlookAccountSelector || {};
 
 // DOM 元素
 const elements = {
@@ -29,6 +41,16 @@ const elements = {
     // Outlook 列表
     outlookTable: document.getElementById('outlook-accounts-table'),
     selectAllOutlook: document.getElementById('select-all-outlook'),
+    outlookFilterSearch: document.getElementById('outlook-filter-search'),
+    outlookRegistrationStatusFilter: document.getElementById('outlook-registration-status-filter'),
+    outlookFilterResetBtn: document.getElementById('outlook-filter-reset-btn'),
+    outlookPageSize: document.getElementById('outlook-page-size'),
+    outlookSelectionSummary: document.getElementById('outlook-selection-summary'),
+    outlookPrevPage: document.getElementById('outlook-prev-page'),
+    outlookNextPage: document.getElementById('outlook-next-page'),
+    outlookPageInfo: document.getElementById('outlook-page-info'),
+    outlookExportBtn: document.getElementById('outlook-export-btn'),
+    jumpRegisterOutlookBtn: document.getElementById('jump-register-outlook-btn'),
     batchDeleteOutlookBtn: document.getElementById('batch-delete-outlook-btn'),
 
     // 自定义域名（合并）
@@ -120,18 +142,18 @@ async function loadPageData() {
 
         await Promise.all([
             loadStats(services, settings),
-            loadOutlookServices(services),
             loadCustomServices(services),
             loadTempmailConfig(settings),
         ]);
+        await loadOutlookServices();
     } catch (error) {
         console.error('加载邮箱服务页面数据失败:', error);
         await Promise.all([
             loadStats(),
-            loadOutlookServices(),
             loadCustomServices(),
             loadTempmailConfig(),
         ]);
+        await loadOutlookServices();
     }
 }
 
@@ -153,18 +175,62 @@ function initEventListeners() {
 
     // Outlook 全选
     elements.selectAllOutlook.addEventListener('change', (e) => {
-        const checkboxes = elements.outlookTable.querySelectorAll('input[type="checkbox"][data-id]');
-        checkboxes.forEach(cb => {
-            cb.checked = e.target.checked;
-            const id = parseInt(cb.dataset.id);
-            if (e.target.checked) selectedOutlook.add(id);
-            else selectedOutlook.delete(id);
+        const shouldSelect = e.target.checked;
+        outlookServices.forEach((service) => {
+            const serviceId = Number(service.id);
+            if (!Number.isFinite(serviceId)) {
+                return;
+            }
+
+            if (shouldSelect) {
+                selectedOutlook.add(serviceId);
+                selectedOutlookSnapshots.set(serviceId, createOutlookServiceSnapshot(service));
+            } else {
+                selectedOutlook.delete(serviceId);
+                selectedOutlookSnapshots.delete(serviceId);
+            }
         });
-        updateBatchButtons();
+        renderOutlookServicesTable();
     });
 
     // Outlook 批量删除
     elements.batchDeleteOutlookBtn.addEventListener('click', handleBatchDeleteOutlook);
+    elements.outlookExportBtn.addEventListener('click', handleExportOutlook);
+    elements.jumpRegisterOutlookBtn.addEventListener('click', handleJumpToRegistration);
+    elements.outlookFilterResetBtn.addEventListener('click', resetOutlookFilters);
+    elements.outlookRegistrationStatusFilter.addEventListener('change', () => {
+        currentOutlookFilters.registrationStatus = elements.outlookRegistrationStatusFilter.value || 'all';
+        outlookCurrentPage = 1;
+        loadOutlookServices();
+    });
+    elements.outlookPageSize.addEventListener('change', () => {
+        const value = parseInt(elements.outlookPageSize.value, 10);
+        outlookPageSize = Number.isFinite(value) && value > 0 ? value : 20;
+        outlookCurrentPage = 1;
+        loadOutlookServices();
+    });
+    elements.outlookPrevPage.addEventListener('click', () => {
+        if (outlookCurrentPage <= 1) {
+            return;
+        }
+        outlookCurrentPage -= 1;
+        loadOutlookServices();
+    });
+    elements.outlookNextPage.addEventListener('click', () => {
+        if (outlookCurrentPage >= outlookTotalPages) {
+            return;
+        }
+        outlookCurrentPage += 1;
+        loadOutlookServices();
+    });
+    elements.outlookFilterSearch.addEventListener('input', () => {
+        clearTimeout(outlookFilterTimer);
+        outlookFilterTimer = setTimeout(() => {
+            currentOutlookFilters.search = elements.outlookFilterSearch.value || '';
+            outlookCurrentPage = 1;
+            loadOutlookServices();
+        }, 180);
+    });
 
     // 自定义域名全选
     elements.selectAllCustom.addEventListener('change', (e) => {
@@ -289,71 +355,232 @@ async function loadStats(services = null, settings = null) {
     }
 }
 
-// 加载 Outlook 服务
-async function loadOutlookServices(services = null) {
-    try {
-        if (Array.isArray(services)) {
-            outlookServices = services.filter(service => service.service_type === 'outlook');
-        } else {
-            const data = await api.get('/email-services?service_type=outlook');
-            outlookServices = data.services || [];
+function buildOutlookListQuery() {
+    const params = new URLSearchParams({
+        service_type: 'outlook',
+        page: String(outlookCurrentPage),
+        page_size: String(outlookPageSize),
+    });
+
+    const search = String(currentOutlookFilters.search || '').trim();
+    if (search) {
+        params.set('search', search);
+    }
+
+    const registrationStatus = currentOutlookFilters.registrationStatus || 'all';
+    if (registrationStatus && registrationStatus !== 'all') {
+        params.set('registration_status', registrationStatus);
+    }
+
+    return params;
+}
+
+function hasActiveOutlookFilters() {
+    return String(currentOutlookFilters.search || '').trim() !== ''
+        || (currentOutlookFilters.registrationStatus || 'all') !== 'all';
+}
+
+function createOutlookServiceSnapshot(service) {
+    return {
+        id: Number(service.id),
+        email: String(service.config?.email || service.name || '').trim(),
+        service_type: 'outlook',
+    };
+}
+
+function buildOutlookRegistrationPrefillState() {
+    const emails = [];
+    const seen = new Set();
+
+    for (const rawId of selectedOutlook) {
+        const numericId = Number(rawId);
+        if (!Number.isFinite(numericId)) {
+            continue;
         }
 
-        if (outlookServices.length === 0) {
-            elements.outlookTable.innerHTML = `
-                <tr>
-                    <td colspan="7">
-                        <div class="empty-state">
-                            <div class="empty-state-icon">📭</div>
-                            <div class="empty-state-title">暂无 Outlook 账户</div>
-                            <div class="empty-state-description">请使用上方导入功能添加账户</div>
-                        </div>
-                    </td>
-                </tr>
-            `;
-            return;
+        const snapshot = selectedOutlookSnapshots.get(numericId);
+        if (!snapshot || snapshot.service_type !== 'outlook') {
+            continue;
         }
 
-        elements.outlookTable.innerHTML = outlookServices.map(service => `
-            <tr data-id="${service.id}">
-                <td><input type="checkbox" data-id="${service.id}" ${selectedOutlook.has(service.id) ? 'checked' : ''}></td>
-                <td>${escapeHtml(service.config?.email || service.name)}</td>
-                <td>
-                    ${getOutlookAuthBadge(service)}
-                </td>
-                <td>
-                    ${getOutlookRegistrationBadge(service)}
-                </td>
-                <td title="${service.enabled ? '已启用' : '已禁用'}">${service.enabled ? '✅' : '⭕'}</td>
-                <td>${service.priority}</td>
-                <td>${format.date(service.last_used)}</td>
-                <td>
-                    <div style="display:flex;gap:4px;align-items:center;white-space:nowrap;">
-                        <button class="btn btn-secondary btn-sm" onclick="editOutlookService(${service.id})">编辑</button>
-                        <div class="dropdown" style="position:relative;">
-                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();toggleEmailMoreMenu(this)">更多</button>
-                            <div class="dropdown-menu" style="min-width:80px;">
-                                <a href="#" class="dropdown-item" onclick="event.preventDefault();closeEmailMoreMenu(this);toggleService(${service.id}, ${!service.enabled})">${service.enabled ? '禁用' : '启用'}</a>
-                                <a href="#" class="dropdown-item" onclick="event.preventDefault();closeEmailMoreMenu(this);testService(${service.id})">测试</a>
-                            </div>
-                        </div>
-                        <button class="btn btn-danger btn-sm" onclick="deleteService(${service.id}, '${escapeHtml(service.name)}')">删除</button>
+        const email = String(snapshot.email || '').trim().toLowerCase();
+        if (!email || seen.has(email)) {
+            continue;
+        }
+
+        seen.add(email);
+        emails.push(email);
+    }
+
+    return {
+        source: 'email-services',
+        emails,
+    };
+}
+
+function syncOutlookFilterControls() {
+    if (elements.outlookFilterSearch && elements.outlookFilterSearch.value !== currentOutlookFilters.search) {
+        elements.outlookFilterSearch.value = currentOutlookFilters.search;
+    }
+    if (elements.outlookRegistrationStatusFilter && elements.outlookRegistrationStatusFilter.value !== currentOutlookFilters.registrationStatus) {
+        elements.outlookRegistrationStatusFilter.value = currentOutlookFilters.registrationStatus;
+    }
+    if (elements.outlookPageSize && elements.outlookPageSize.value !== String(outlookPageSize)) {
+        elements.outlookPageSize.value = String(outlookPageSize);
+    }
+}
+
+function updateSelectAllOutlookState() {
+    if (!elements.selectAllOutlook) {
+        return;
+    }
+
+    const visibleIds = outlookServices
+        .map((service) => Number(service.id))
+        .filter((id) => Number.isFinite(id));
+    const selectedVisibleCount = visibleIds.filter((id) => selectedOutlook.has(id)).length;
+
+    elements.selectAllOutlook.checked = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length;
+    elements.selectAllOutlook.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleIds.length;
+}
+
+function updateOutlookSelectionSummary() {
+    if (!elements.outlookSelectionSummary) {
+        return;
+    }
+
+    const visibleSelectedCount = outlookServices.filter((service) => selectedOutlook.has(Number(service.id))).length;
+    const hiddenSelectedCount = Math.max(0, selectedOutlook.size - visibleSelectedCount);
+    let summary = `已选 ${selectedOutlook.size} 个，当前筛选共 ${outlookTotal} 个，第 ${outlookCurrentPage} 页显示 ${outlookServices.length} 个`;
+
+    if (hiddenSelectedCount > 0) {
+        summary += `，其中 ${hiddenSelectedCount} 个已选项不在当前页`;
+    }
+
+    elements.outlookSelectionSummary.textContent = summary;
+}
+
+function updateOutlookPagination() {
+    elements.outlookPrevPage.disabled = outlookCurrentPage <= 1;
+    elements.outlookNextPage.disabled = outlookCurrentPage >= outlookTotalPages;
+    elements.outlookPageInfo.textContent = `第 ${outlookCurrentPage} 页 / 共 ${outlookTotalPages} 页`;
+}
+
+function renderOutlookServicesTable() {
+    if (outlookTotal === 0) {
+        elements.outlookTable.innerHTML = `
+            <tr>
+                <td colspan="8">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">${hasActiveOutlookFilters() ? '🔎' : '📭'}</div>
+                        <div class="empty-state-title">${hasActiveOutlookFilters() ? '当前筛选条件下没有匹配的 Outlook 账户' : '暂无 Outlook 账户'}</div>
+                        <div class="empty-state-description">${hasActiveOutlookFilters() ? '可以尝试减少筛选条件，或直接粘贴新的邮箱列表进行匹配' : '请使用上方导入功能添加账户'}</div>
                     </div>
                 </td>
             </tr>
-        `).join('');
-        elements.outlookTable.querySelectorAll('input[type="checkbox"][data-id]').forEach(cb => {
-            cb.addEventListener('change', (e) => {
-                const id = parseInt(e.target.dataset.id);
-                if (e.target.checked) selectedOutlook.add(id);
-                else selectedOutlook.delete(id);
-                updateBatchButtons();
-            });
+        `;
+        updateSelectAllOutlookState();
+        updateOutlookSelectionSummary();
+        updateOutlookPagination();
+        updateBatchButtons();
+        return;
+    }
+
+    elements.outlookTable.innerHTML = outlookServices.map((service) => `
+        <tr data-id="${service.id}">
+            <td><input type="checkbox" data-id="${service.id}" ${selectedOutlook.has(Number(service.id)) ? 'checked' : ''}></td>
+            <td>${escapeHtml(service.config?.email || service.name)}</td>
+            <td>
+                ${getOutlookAuthBadge(service)}
+            </td>
+            <td>
+                ${getOutlookRegistrationBadge(service)}
+            </td>
+            <td title="${service.enabled ? '已启用' : '已禁用'}">${service.enabled ? '✅' : '⭕'}</td>
+            <td>${service.priority}</td>
+            <td>${format.date(service.last_used)}</td>
+            <td>
+                <div style="display:flex;gap:4px;align-items:center;white-space:nowrap;">
+                    <button class="btn btn-secondary btn-sm" onclick="editOutlookService(${service.id})">编辑</button>
+                    <div class="dropdown" style="position:relative;">
+                        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();toggleEmailMoreMenu(this)">更多</button>
+                        <div class="dropdown-menu" style="min-width:80px;">
+                            <a href="#" class="dropdown-item" onclick="event.preventDefault();closeEmailMoreMenu(this);toggleService(${service.id}, ${!service.enabled})">${service.enabled ? '禁用' : '启用'}</a>
+                            <a href="#" class="dropdown-item" onclick="event.preventDefault();closeEmailMoreMenu(this);testService(${service.id})">测试</a>
+                        </div>
+                    </div>
+                    <button class="btn btn-danger btn-sm" onclick="deleteService(${service.id}, '${escapeHtml(service.name)}')">删除</button>
+                </div>
+            </td>
+        </tr>
+    `).join('');
+
+    elements.outlookTable.querySelectorAll('input[type="checkbox"][data-id]').forEach((checkbox) => {
+        checkbox.addEventListener('change', (event) => {
+            const id = parseInt(event.target.dataset.id, 10);
+            const service = outlookServices.find((item) => Number(item.id) === id);
+            if (event.target.checked) {
+                selectedOutlook.add(id);
+                if (service) {
+                    selectedOutlookSnapshots.set(id, createOutlookServiceSnapshot(service));
+                }
+            } else {
+                selectedOutlook.delete(id);
+                selectedOutlookSnapshots.delete(id);
+            }
+            updateSelectAllOutlookState();
+            updateOutlookSelectionSummary();
+            updateBatchButtons();
+        });
+    });
+
+    updateSelectAllOutlookState();
+    updateOutlookSelectionSummary();
+    updateOutlookPagination();
+    updateBatchButtons();
+}
+
+// 加载 Outlook 服务
+async function loadOutlookServices() {
+    try {
+        syncOutlookFilterControls();
+        elements.outlookTable.innerHTML = `
+            <tr>
+                <td colspan="8">
+                    <div class="empty-state">
+                        <div class="skeleton skeleton-text"></div>
+                        <div class="skeleton skeleton-text" style="width: 80%;"></div>
+                    </div>
+                </td>
+            </tr>
+        `;
+
+        const data = await api.get(`/email-services?${buildOutlookListQuery().toString()}`);
+        outlookServices = data.services || [];
+        outlookTotal = Number(data.total) || 0;
+        outlookTotalPages = Math.max(1, Number(data.total_pages) || 1);
+        outlookCurrentPage = Number(data.page) || outlookCurrentPage;
+
+        if (outlookTotal > 0 && outlookServices.length === 0 && outlookCurrentPage > outlookTotalPages) {
+            outlookCurrentPage = outlookTotalPages;
+            return loadOutlookServices();
+        }
+
+        outlookServices.forEach((service) => {
+            const serviceId = Number(service.id);
+            if (selectedOutlook.has(serviceId)) {
+                selectedOutlookSnapshots.set(serviceId, createOutlookServiceSnapshot(service));
+            }
         });
 
+        renderOutlookServicesTable();
     } catch (error) {
         console.error('加载 Outlook 服务失败:', error);
-        elements.outlookTable.innerHTML = `<tr><td colspan="7"><div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-title">加载失败</div></div></td></tr>`;
+        elements.outlookTable.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-state-icon">❌</div><div class="empty-state-title">加载失败</div><div class="empty-state-description">${escapeHtml(error.message)}</div></div></td></tr>`;
+        updateSelectAllOutlookState();
+        updateOutlookSelectionSummary();
+        updateOutlookPagination();
+        updateBatchButtons();
     }
 }
 
@@ -680,6 +907,7 @@ async function deleteService(id, name) {
         await api.delete(`/email-services/${id}`);
         toast.success('已删除');
         selectedOutlook.delete(id);
+        selectedOutlookSnapshots.delete(id);
         selectedCustom.delete(id);
         loadPageData();
     } catch (error) {
@@ -699,10 +927,84 @@ async function handleBatchDeleteOutlook() {
         });
         toast.success(`成功删除 ${result.deleted || selectedOutlook.size} 个账户`);
         selectedOutlook.clear();
+        selectedOutlookSnapshots.clear();
         loadPageData();
     } catch (error) {
         toast.error('删除失败: ' + error.message);
     }
+}
+
+function resetOutlookFilters() {
+    currentOutlookFilters.search = '';
+    currentOutlookFilters.registrationStatus = 'all';
+    outlookCurrentPage = 1;
+    syncOutlookFilterControls();
+    loadOutlookServices();
+}
+
+async function handleExportOutlook() {
+    if (selectedOutlook.size === 0 && outlookTotal === 0) {
+        toast.warning('当前没有可导出的 Outlook 账户');
+        return;
+    }
+
+    const payload = {
+        service_ids: Array.from(selectedOutlook),
+        search: selectedOutlook.size === 0 ? String(currentOutlookFilters.search || '').trim() : null,
+        registration_status: selectedOutlook.size === 0 ? (currentOutlookFilters.registrationStatus || 'all') : 'all',
+    };
+
+    const exportCount = selectedOutlook.size > 0 ? selectedOutlook.size : outlookTotal;
+    toast.info(`正在导出 ${exportCount} 个 Outlook 账户...`);
+
+    try {
+        const response = await fetch('/api/email-services/outlook/export', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+            throw new Error(`导出失败: HTTP ${response.status}`);
+        }
+
+        const blob = await response.blob();
+        const disposition = response.headers.get('Content-Disposition');
+        let filename = `outlook_accounts_${Date.now()}.txt`;
+        if (disposition) {
+            const match = disposition.match(/filename="?([^";]+)"?/);
+            if (match) {
+                filename = match[1];
+            }
+        }
+
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        window.URL.revokeObjectURL(url);
+        link.remove();
+
+        toast.success('导出成功');
+    } catch (error) {
+        console.error('导出 Outlook 账户失败:', error);
+        toast.error('导出失败: ' + error.message);
+    }
+}
+
+function handleJumpToRegistration() {
+    const prefill = buildOutlookRegistrationPrefillState();
+    if (prefill.emails.length === 0) {
+        toast.warning('请先勾选至少一个 Outlook 邮箱');
+        return;
+    }
+
+    sessionStorage.setItem(REGISTRATION_OUTLOOK_PREFILL_KEY, JSON.stringify(prefill));
+    window.location.href = '/';
 }
 
 // 保存临时邮箱配置
@@ -803,6 +1105,12 @@ function updateBatchButtons() {
     const count = selectedOutlook.size;
     elements.batchDeleteOutlookBtn.disabled = count === 0;
     elements.batchDeleteOutlookBtn.textContent = count > 0 ? `🗑️ 删除选中 (${count})` : '🗑️ 批量删除';
+    elements.jumpRegisterOutlookBtn.disabled = count === 0;
+    elements.jumpRegisterOutlookBtn.textContent = count > 0 ? `🚀 跳转注册 (${count})` : '🚀 跳转注册';
+    elements.outlookExportBtn.disabled = count === 0 && outlookTotal === 0;
+    elements.outlookExportBtn.textContent = count > 0
+        ? `📥 导出选中 (${count})`
+        : `📥 导出当前筛选 (${outlookTotal})`;
 }
 
 // HTML 转义

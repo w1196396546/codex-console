@@ -2,10 +2,15 @@
 邮箱服务配置 API 路由
 """
 
+import io
 import logging
+import math
+import re
+from datetime import datetime
 from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func
 
@@ -60,6 +65,9 @@ class EmailServiceResponse(BaseModel):
 class EmailServiceListResponse(BaseModel):
     """邮箱服务列表响应"""
     total: int
+    page: int = 1
+    page_size: int = 0
+    total_pages: int = 1
     services: List[EmailServiceResponse]
 
 
@@ -86,6 +94,14 @@ class OutlookBatchImportResponse(BaseModel):
     errors: List[str]
 
 
+class OutlookExportRequest(BaseModel):
+    """Outlook 导出请求"""
+    service_ids: List[int] = []
+    search: Optional[str] = None
+    registration_status: str = "all"
+    enabled_only: bool = False
+
+
 # ============== Helper Functions ==============
 
 # 敏感字段列表，返回响应时需要过滤
@@ -98,6 +114,7 @@ SENSITIVE_FIELDS = {
     'admin_password',
     'custom_auth',
 }
+EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 
 def filter_sensitive_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """过滤敏感配置信息"""
@@ -122,6 +139,51 @@ def filter_sensitive_config(config: Dict[str, Any]) -> Dict[str, Any]:
 def _normalize_service_email(service: EmailServiceModel) -> str:
     """规范化邮箱服务邮箱地址，供批量状态匹配使用。"""
     return str((service.config or {}).get("email") or service.name or "").strip().lower()
+
+
+def _normalize_search_keyword(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _extract_search_emails(value: object) -> List[str]:
+    raw_values = value if isinstance(value, list) else str(value or "").splitlines()
+    emails: List[str] = []
+    seen = set()
+
+    for raw_value in raw_values:
+        text = str(raw_value or "").strip()
+        if not text:
+            continue
+
+        if "----" in text:
+            first_part = text.split("----", 1)[0].strip()
+            match = EMAIL_PATTERN.search(first_part)
+            if match:
+                normalized = _normalize_search_keyword(match.group(0))
+            else:
+                normalized = _normalize_search_keyword(first_part)
+        else:
+            match = EMAIL_PATTERN.search(text)
+            normalized = _normalize_search_keyword(match.group(0) if match else text)
+
+        if not normalized or normalized in seen:
+            continue
+
+        seen.add(normalized)
+        emails.append(normalized)
+
+    return emails
+
+
+def _use_exact_email_search(value: object, exact_emails: List[str]) -> bool:
+    if not exact_emails:
+        return False
+
+    if len(exact_emails) > 1:
+        return True
+
+    text = str(value or "")
+    return "----" in text or "\n" in text or "\r" in text
 
 
 def _build_outlook_registration_lookup(
@@ -205,6 +267,67 @@ def build_email_service_responses(
         service_to_response(service, registration_lookup=registration_lookup)
         for service in services
     ]
+
+
+def _matches_email_service_filters(
+    service: EmailServiceModel,
+    response: EmailServiceResponse,
+    *,
+    search: Optional[str],
+    registration_status: str,
+) -> bool:
+    if registration_status and registration_status != "all":
+        if response.registration_status != registration_status:
+            return False
+
+    normalized_search = _normalize_search_keyword(search)
+    if not normalized_search:
+        return True
+
+    exact_emails = _extract_search_emails(search)
+    normalized_email = _normalize_service_email(service)
+    normalized_name = _normalize_search_keyword(service.name)
+
+    if _use_exact_email_search(search, exact_emails):
+        return normalized_email in exact_emails or normalized_name in exact_emails
+
+    return normalized_search in normalized_email or normalized_search in normalized_name
+
+
+def _filter_email_services(
+    db,
+    services: List[EmailServiceModel],
+    *,
+    search: Optional[str],
+    registration_status: str,
+) -> List[tuple[EmailServiceModel, EmailServiceResponse]]:
+    responses = build_email_service_responses(db, services)
+    return [
+        (service, response)
+        for service, response in zip(services, responses)
+        if _matches_email_service_filters(
+            service,
+            response,
+            search=search,
+            registration_status=registration_status,
+        )
+    ]
+
+
+def _serialize_outlook_export_line(service: EmailServiceModel) -> str:
+    config = service.config or {}
+    email = str(config.get("email") or service.name or "").strip()
+    password = str(config.get("password") or "").strip()
+    client_id = str(config.get("client_id") or "").strip()
+    refresh_token = str(config.get("refresh_token") or "").strip()
+
+    if not email or not password:
+        return ""
+
+    if client_id and refresh_token:
+        return "----".join([email, password, client_id, refresh_token])
+
+    return "----".join([email, password])
 
 
 # ============== API Endpoints ==============
@@ -382,22 +505,93 @@ async def get_service_types():
 async def list_email_services(
     service_type: Optional[str] = Query(None, description="服务类型筛选"),
     enabled_only: bool = Query(False, description="只显示启用的服务"),
+    search: Optional[str] = Query(None, description="关键词筛选；支持 Outlook 多行邮箱"),
+    registration_status: str = Query("all", description="Outlook 注册状态筛选"),
+    page: Optional[int] = Query(None, ge=1, description="页码；不传则返回全部"),
+    page_size: int = Query(20, ge=1, le=200, description="每页条数"),
 ):
     """获取邮箱服务列表"""
+    service_type_value = service_type if isinstance(service_type, str) and service_type else None
+    enabled_only_value = enabled_only if isinstance(enabled_only, bool) else False
+    search_value = search if isinstance(search, str) else None
+    registration_status_value = registration_status if isinstance(registration_status, str) else "all"
+    page_value = page if isinstance(page, int) else None
+    page_size_value = page_size if isinstance(page_size, int) else 20
+
     with get_db() as db:
         query = db.query(EmailServiceModel)
 
-        if service_type:
-            query = query.filter(EmailServiceModel.service_type == service_type)
+        if service_type_value:
+            query = query.filter(EmailServiceModel.service_type == service_type_value)
 
-        if enabled_only:
+        if enabled_only_value:
             query = query.filter(EmailServiceModel.enabled == True)
 
         services = query.order_by(EmailServiceModel.priority.asc(), EmailServiceModel.id.asc()).all()
+        filtered_items = _filter_email_services(
+            db,
+            services,
+            search=search_value,
+            registration_status=registration_status_value,
+        )
+        total = len(filtered_items)
+
+        effective_page = page_value or 1
+        effective_page_size = page_size_value if page_value is not None else total
+        total_pages = max(1, math.ceil(total / page_size_value)) if page_value is not None else 1
+
+        if page_value is not None:
+            start = (page_value - 1) * page_size_value
+            end = start + page_size_value
+            filtered_items = filtered_items[start:end]
 
         return EmailServiceListResponse(
-            total=len(services),
-            services=build_email_service_responses(db, services)
+            total=total,
+            page=effective_page,
+            page_size=effective_page_size,
+            total_pages=total_pages,
+            services=[response for _, response in filtered_items],
+        )
+
+
+@router.post("/outlook/export")
+async def export_outlook_services(request: OutlookExportRequest):
+    """导出 Outlook 账户，格式兼容批量导入。"""
+    with get_db() as db:
+        query = db.query(EmailServiceModel).filter(
+            EmailServiceModel.service_type == "outlook"
+        )
+
+        if request.enabled_only:
+            query = query.filter(EmailServiceModel.enabled == True)
+
+        if request.service_ids:
+            query = query.filter(EmailServiceModel.id.in_(request.service_ids))
+
+        services = query.order_by(EmailServiceModel.priority.asc(), EmailServiceModel.id.asc()).all()
+        filtered_items = _filter_email_services(
+            db,
+            services,
+            search=request.search,
+            registration_status=request.registration_status,
+        )
+        lines = [
+            line
+            for line in (
+                _serialize_outlook_export_line(service)
+                for service, _ in filtered_items
+            )
+            if line
+        ]
+        payload = "\n".join(lines)
+        filename = f"outlook_accounts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+
+        return StreamingResponse(
+            io.BytesIO(payload.encode("utf-8")),
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
         )
 
 

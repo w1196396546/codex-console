@@ -101,3 +101,138 @@ def test_list_email_services_batches_outlook_registration_lookup(monkeypatch):
     assert services_by_name["Registered Outlook"].registered_account_id == registered_id
     assert services_by_name["Unregistered Outlook"].registration_status == "unregistered"
     assert services_by_name["Custom Mail"].registration_status is None
+
+
+async def _read_streaming_response_body(response) -> str:
+    chunks = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk)
+    return b"".join(chunks).decode("utf-8")
+
+
+def test_list_email_services_supports_outlook_search_status_and_pagination(monkeypatch):
+    seed_session = _build_session("email_routes_outlook_filter_pagination.db")
+    manager = seed_session.bind
+
+    registered = _seed_account(seed_session, email="matched@example.com")
+    registered_id = registered.id
+    _seed_email_service(
+        seed_session,
+        name="Matched Registered",
+        config={"email": "Matched@Example.com", "password": "secret-1"},
+        priority=0,
+    )
+    _seed_email_service(
+        seed_session,
+        name="Matched Pending",
+        config={"email": "pending@example.com", "password": "secret-2"},
+        priority=1,
+    )
+    _seed_email_service(
+        seed_session,
+        name="Skipped Outlook",
+        config={"email": "skipped@example.com", "password": "secret-3"},
+        priority=2,
+    )
+    seed_session.close()
+
+    @contextmanager
+    def fake_get_db():
+        db = DatabaseSessionManager(f"{manager.url}").SessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    monkeypatch.setattr(email_module, "get_db", fake_get_db)
+
+    page_one = asyncio.run(
+        email_module.list_email_services(
+            service_type="outlook",
+            enabled_only=False,
+            search="Matched@Example.com----secret-1\npending@example.com----secret-2",
+            registration_status="all",
+            page=1,
+            page_size=1,
+        )
+    )
+    page_two = asyncio.run(
+        email_module.list_email_services(
+            service_type="outlook",
+            enabled_only=False,
+            search="Matched@Example.com----secret-1\npending@example.com----secret-2",
+            registration_status="all",
+            page=2,
+            page_size=1,
+        )
+    )
+    registered_only = asyncio.run(
+        email_module.list_email_services(
+            service_type="outlook",
+            enabled_only=False,
+            search=None,
+            registration_status="registered",
+            page=1,
+            page_size=20,
+        )
+    )
+
+    assert page_one.total == 2
+    assert page_one.page == 1
+    assert page_one.page_size == 1
+    assert page_one.total_pages == 2
+    assert [service.name for service in page_one.services] == ["Matched Registered"]
+    assert [service.name for service in page_two.services] == ["Matched Pending"]
+    assert registered_only.total == 1
+    assert [service.name for service in registered_only.services] == ["Matched Registered"]
+    assert registered_only.services[0].registered_account_id == registered_id
+
+
+def test_export_outlook_services_returns_import_compatible_lines(monkeypatch):
+    seed_session = _build_session("email_routes_outlook_export.db")
+    manager = seed_session.bind
+
+    plain = _seed_email_service(
+        seed_session,
+        name="plain@example.com",
+        config={"email": "plain@example.com", "password": "plain-secret"},
+        priority=1,
+    )
+    plain_id = plain.id
+    oauth = _seed_email_service(
+        seed_session,
+        name="oauth@example.com",
+        config={
+            "email": "oauth@example.com",
+            "password": "oauth-secret",
+            "client_id": "client-id-1",
+            "refresh_token": "refresh-token-1",
+        },
+        priority=0,
+    )
+    oauth_id = oauth.id
+    seed_session.close()
+
+    @contextmanager
+    def fake_get_db():
+        db = DatabaseSessionManager(f"{manager.url}").SessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    monkeypatch.setattr(email_module, "get_db", fake_get_db)
+
+    response = asyncio.run(
+        email_module.export_outlook_services(
+            email_module.OutlookExportRequest(service_ids=[plain_id, oauth_id])
+        )
+    )
+    body = asyncio.run(_read_streaming_response_body(response))
+
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "attachment;" in response.headers["content-disposition"]
+    assert body.splitlines() == [
+        "oauth@example.com----oauth-secret----client-id-1----refresh-token-1",
+        "plain@example.com----plain-secret",
+    ]

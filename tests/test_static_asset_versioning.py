@@ -17,7 +17,18 @@ def test_email_services_template_uses_versioned_static_assets():
 
     assert '/static/css/style.css?v={{ static_version }}' in template
     assert '/static/js/utils.js?v={{ static_version }}' in template
+    assert '/static/js/outlook_account_selector.js?v={{ static_version }}' in template
     assert '/static/js/email_services.js?v={{ static_version }}' in template
+
+
+def test_email_services_template_exposes_outlook_management_controls():
+    template = Path("templates/email_services.html").read_text(encoding="utf-8")
+
+    assert 'id="outlook-filter-search"' in template
+    assert 'id="outlook-registration-status-filter"' in template
+    assert 'id="outlook-export-btn"' in template
+    assert 'id="jump-register-outlook-btn"' in template
+    assert 'id="outlook-page-info"' in template
 
 
 def test_index_template_uses_versioned_static_assets():

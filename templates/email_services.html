@@ -139,9 +139,51 @@
             <div class="card">
                 <div class="card-header">
                     <h3>📧 Outlook 账户列表</h3>
-                    <button class="btn btn-danger btn-sm" id="batch-delete-outlook-btn" disabled>🗑️ 批量删除</button>
+                    <div style="display:flex;gap:var(--spacing-xs);flex-wrap:wrap;">
+                        <button class="btn btn-primary btn-sm" id="jump-register-outlook-btn" disabled>🚀 跳转注册</button>
+                        <button class="btn btn-secondary btn-sm" id="outlook-export-btn" disabled>📥 导出</button>
+                        <button class="btn btn-danger btn-sm" id="batch-delete-outlook-btn" disabled>🗑️ 批量删除</button>
+                    </div>
                 </div>
                 <div class="card-body" style="padding: 0;">
+                    <div style="padding: var(--spacing-md); border-bottom: 1px solid var(--border-light); display:grid; grid-template-columns:minmax(0,1.6fr) 180px 120px auto; gap:var(--spacing-sm); align-items:end;">
+                        <div class="form-group" style="margin:0;">
+                            <label for="outlook-filter-search">筛选邮箱</label>
+                            <textarea
+                                id="outlook-filter-search"
+                                rows="3"
+                                class="form-input"
+                                placeholder="支持模糊搜索；多个邮箱可按回车分隔，也支持直接粘贴 Outlook 导入行"
+                                style="resize: vertical; min-height: 78px;"
+                            ></textarea>
+                        </div>
+                        <div class="form-group" style="margin:0;">
+                            <label for="outlook-registration-status-filter">注册状态</label>
+                            <select id="outlook-registration-status-filter" class="form-select">
+                                <option value="all">全部</option>
+                                <option value="unregistered">未注册</option>
+                                <option value="registered">已注册</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin:0;">
+                            <label for="outlook-page-size">每页条数</label>
+                            <select id="outlook-page-size" class="form-select">
+                                <option value="20">20</option>
+                                <option value="50">50</option>
+                                <option value="100">100</option>
+                                <option value="200">200</option>
+                            </select>
+                        </div>
+                        <div class="form-actions" style="margin:0;justify-content:flex-end;">
+                            <button type="button" class="btn btn-ghost btn-sm" id="outlook-filter-reset-btn">重置筛选</button>
+                        </div>
+                    </div>
+                    <div
+                        id="outlook-selection-summary"
+                        style="padding: 0 var(--spacing-md) var(--spacing-sm); color: var(--text-muted); font-size: 0.85rem;"
+                    >
+                        已选 0 个，当前筛选共 0 个
+                    </div>
                     <div class="table-container">
                         <table class="data-table">
                             <thead>
@@ -167,6 +209,11 @@
                                 </tr>
                             </tbody>
                         </table>
+                    </div>
+                    <div class="pagination" id="outlook-pagination">
+                        <button class="btn btn-secondary btn-sm" id="outlook-prev-page" disabled>← 上一页</button>
+                        <span id="outlook-page-info">第 1 页 / 共 1 页</span>
+                        <button class="btn btn-secondary btn-sm" id="outlook-next-page" disabled>下一页 →</button>
                     </div>
                 </div>
             </div>
@@ -650,6 +697,7 @@
 
 
 <script src="/static/js/utils.js?v={{ static_version }}"></script>
+    <script src="/static/js/outlook_account_selector.js?v={{ static_version }}"></script>
     <script src="/static/js/email_services.js?v={{ static_version }}"></script>
 </body>
 </html>

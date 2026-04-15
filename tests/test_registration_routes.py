@@ -9,6 +9,7 @@ from fastapi import BackgroundTasks
 from sqlalchemy.exc import OperationalError
 from sqlalchemy import event
 
+from src.core import dynamic_proxy as dynamic_proxy_module
 from src.database import crud as database_crud
 from src.database.models import Base, Account, EmailService
 from src.database.session import DatabaseSessionManager
@@ -69,6 +70,10 @@ def test_registration_template_outlook_filter_contract_matches_frontend_helper()
     template = Path("templates/index.html").read_text(encoding="utf-8")
 
     assert 'id="outlook-account-status-filter"' in template
+    assert 'textarea\n                                                id="outlook-account-search"' in template
+    assert "多个邮箱可按回车分隔" in template
+    assert "也支持直接粘贴 Outlook 导入行" in template
+    assert "筛出多个结果后可继续多选" in template
     assert '<option value="all">全部</option>' in template
     assert '<option value="unregistered">未注册</option>' in template
     assert '<option value="registered_needs_token_refresh">已注册待补Token</option>' in template
@@ -103,6 +108,62 @@ def test_registration_frontend_submits_chatgpt_registration_mode():
     script = Path("static/js/app.js").read_text(encoding="utf-8")
 
     assert "chatgpt_registration_mode: elements.chatgptRegistrationMode.value" in script
+
+
+def test_get_proxy_for_registration_prefers_dynamic_proxy_over_proxy_pool(monkeypatch):
+    monkeypatch.setattr(
+        registration_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            proxy_dynamic_enabled=True,
+            proxy_dynamic_api_url="https://proxy.example.com/get",
+            proxy_dynamic_api_key=None,
+            proxy_dynamic_api_key_header="X-API-Key",
+            proxy_dynamic_result_field="",
+            proxy_url="http://static.proxy:8080",
+        ),
+    )
+    monkeypatch.setattr(
+        dynamic_proxy_module,
+        "fetch_dynamic_proxy",
+        lambda **kwargs: "http://dynamic.proxy:9000",
+    )
+    monkeypatch.setattr(
+        registration_module.crud,
+        "get_random_proxy",
+        lambda db: SimpleNamespace(id=42, proxy_url="http://pool.proxy:8000"),
+    )
+
+    proxy_url, proxy_id = registration_module.get_proxy_for_registration(db=None)
+
+    assert proxy_url == "http://dynamic.proxy:9000"
+    assert proxy_id is None
+
+
+def test_get_proxy_for_registration_falls_back_to_proxy_pool_when_dynamic_proxy_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        registration_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            proxy_dynamic_enabled=True,
+            proxy_dynamic_api_url="https://proxy.example.com/get",
+            proxy_dynamic_api_key=None,
+            proxy_dynamic_api_key_header="X-API-Key",
+            proxy_dynamic_result_field="",
+            proxy_url="http://static.proxy:8080",
+        ),
+    )
+    monkeypatch.setattr(dynamic_proxy_module, "fetch_dynamic_proxy", lambda **kwargs: None)
+    monkeypatch.setattr(
+        registration_module.crud,
+        "get_random_proxy",
+        lambda db: SimpleNamespace(id=7, proxy_url="http://pool.proxy:8000"),
+    )
+
+    proxy_url, proxy_id = registration_module.get_proxy_for_registration(db=None)
+
+    assert proxy_url == "http://pool.proxy:8000"
+    assert proxy_id == 7
 
 
 def test_start_outlook_batch_registration_allows_registered_complete_accounts(monkeypatch):

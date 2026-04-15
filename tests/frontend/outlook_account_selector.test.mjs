@@ -4,18 +4,20 @@ import assert from 'node:assert/strict';
 import selector from '../../static/js/outlook_account_selector.js';
 
 const {
-  buildSelectionSummary,
-  countExecutableAccounts,
-  createInitialSelectedIds,
-  deselectVisibleAccounts,
-  filterAccounts,
-  getExecutionStateLabel,
-  getVisibleSelectedIds,
-  isExecutableAccount,
-  mapExecutionState,
-  selectExecutableVisibleAccounts,
-  selectVisibleAccounts,
-  selectVisibleExecutableAccounts,
+    buildSelectionSummary,
+    collectNormalizedEmails,
+    countExecutableAccounts,
+    createInitialSelectedIds,
+    deselectVisibleAccounts,
+    filterAccounts,
+    getExecutionStateLabel,
+    getVisibleSelectedIds,
+    isExecutableAccount,
+    mapExecutionState,
+    resolveSelectedIdsByEmails,
+    selectExecutableVisibleAccounts,
+    selectVisibleAccounts,
+    selectVisibleExecutableAccounts,
 } = selector;
 
 const accounts = [
@@ -140,6 +142,44 @@ test('filterAccounts 支持邮箱关键字和执行状态联合筛选', () => {
   assert.deepEqual(filtered.map((item) => item.id), [1, 3]);
 });
 
+test('filterAccounts 支持多行邮箱精确筛选', () => {
+  const filtered = filterAccounts(accounts, {
+    keyword: ' beta@outlook.com \nGAMMA@outlook.com\n',
+  });
+
+  assert.deepEqual(filtered.map((item) => item.id), [2, 3]);
+});
+
+test('collectNormalizedEmails 支持从 Outlook 导入格式中提取邮箱', () => {
+  const emails = collectNormalizedEmails([
+    ' yzyex92338376@hotmail.com----zrebi10493324----client-id-1----refresh-token-1 ',
+    'gamma@outlook.com----password-2',
+    'YZYEX92338376@HOTMAIL.COM',
+  ]);
+
+  assert.deepEqual(emails, [
+    'yzyex92338376@hotmail.com',
+    'gamma@outlook.com',
+  ]);
+});
+
+test('filterAccounts 支持粘贴 Outlook 导入行后精确匹配对应邮箱', () => {
+  const filtered = filterAccounts(accounts, {
+    keyword: ' beta@outlook.com----plain-secret \nGAMMA@outlook.com----oauth-secret----client-id-1----refresh-token-1\n',
+  });
+
+  assert.deepEqual(filtered.map((item) => item.id), [2, 3]);
+});
+
+test('filterAccounts 在多行邮箱筛选时继续叠加执行状态过滤', () => {
+  const filtered = filterAccounts(accounts, {
+    keyword: 'beta@outlook.com\ngamma@outlook.com',
+    executionState: 'unregistered',
+  });
+
+  assert.deepEqual(filtered.map((item) => item.id), [3]);
+});
+
 test('切换筛选不会意外重置或改写已选集合', () => {
   const selected = createInitialSelectedIds(accounts);
   const before = [...selected].sort((a, b) => a - b);
@@ -194,6 +234,17 @@ test('buildSelectionSummary 会提示当前筛选外仍保留的已选数量', (
   });
 
   assert.equal(summary, '已选 3 / 4 个账户，当前显示 2 个，其中 2 个已选项已被筛选隐藏');
+});
+
+test('resolveSelectedIdsByEmails 按邮箱精确匹配可用的 Outlook 账户 ID', () => {
+  const selected = resolveSelectedIdsByEmails(accounts, [
+    'GAMMA@outlook.com',
+    'missing@outlook.com',
+    'beta@outlook.com',
+    'beta@outlook.com',
+  ]);
+
+  assert.deepEqual([...selected].sort((a, b) => a - b), [2, 3]);
 });
 
 test('mapExecutionState 将缺少 RT 的已注册账户归类为待补 Token', () => {

@@ -12,11 +12,13 @@ let isLoading = false;
 let selectAllPages = false;  // 是否选中了全部页
 let currentFilters = { status: '', email_service: '', refresh_token_state: '', search: '' };  // 当前筛选条件
 let currentVisibleAccounts = [];
+let selectedAccountSnapshots = new Map();
 let lastTeamManagementOwnerAccountId = null;
 const hasWindow = typeof window !== 'undefined';
 const hasDocument = typeof document !== 'undefined';
 const getElement = hasDocument ? (id) => document.getElementById(id) : () => null;
 const stateActions = hasWindow ? (window.AccountsStateActions || {}) : {};
+const REGISTRATION_OUTLOOK_PREFILL_KEY = 'registration.outlook.prefill';
 const accountsListLoader = stateActions.createLatestRequestOrchestrator
     ? stateActions.createLatestRequestOrchestrator({
         fetcher: fetchAccountsPage,
@@ -30,6 +32,14 @@ function buildTeamManagementEntryUrl(ownerAccountId) {
         return '/auto-team';
     }
     return `/auto-team?owner_account_id=${encodeURIComponent(ownerAccountId)}`;
+}
+
+function normalizeEmail(value) {
+    return String(value || '').trim().toLowerCase();
+}
+
+function normalizeEmailService(value) {
+    return String(value || '').trim().toLowerCase();
 }
 
 function normalizePositiveInt(value) {
@@ -63,6 +73,43 @@ function resolveTeamManagementEntryHref(account) {
     return buildTeamManagementEntryUrl(resolveTeamManagementOwnerAccountId(account));
 }
 
+function buildRegistrationOutlookPrefillState(accounts, selectedIds) {
+    const accountById = new Map();
+    for (const account of accounts || []) {
+        const numericId = normalizePositiveInt(account && account.id);
+        if (numericId !== null) {
+            accountById.set(numericId, account);
+        }
+    }
+
+    const emails = [];
+    const seenEmails = new Set();
+    for (const rawId of selectedIds || []) {
+        const numericId = normalizePositiveInt(rawId);
+        if (numericId === null) {
+            continue;
+        }
+
+        const account = accountById.get(numericId);
+        if (!account || normalizeEmailService(account.email_service) !== 'outlook') {
+            continue;
+        }
+
+        const email = normalizeEmail(account.email);
+        if (!email || seenEmails.has(email)) {
+            continue;
+        }
+
+        seenEmails.add(email);
+        emails.push(email);
+    }
+
+    return {
+        source: 'accounts',
+        emails,
+    };
+}
+
 // DOM 元素
 const elements = {
     table: getElement('accounts-table'),
@@ -85,6 +132,7 @@ const elements = {
     exportBtn: getElement('export-btn'),
     exportMenu: getElement('export-menu'),
     teamManagementEntry: getElement('team-management-entry'),
+    jumpRegisterBtn: getElement('jump-register-btn'),
     selectAll: getElement('select-all'),
     prevPage: getElement('prev-page'),
     nextPage: getElement('next-page'),
@@ -168,6 +216,8 @@ function initEventListeners() {
 
     // 批量检测订阅
     elements.batchCheckSubBtn.addEventListener('click', handleBatchCheckSubscription);
+
+    elements.jumpRegisterBtn.addEventListener('click', handleJumpToRegistration);
 
     // 批量改状态
     elements.batchStateBtn.addEventListener('click', (e) => {
@@ -389,6 +439,12 @@ function applyAccountsPageError(error) {
 // 渲染账号列表
 function renderAccounts(accounts) {
     currentVisibleAccounts = Array.isArray(accounts) ? accounts : [];
+    currentVisibleAccounts.forEach((account) => {
+        const numericId = normalizePositiveInt(account && account.id);
+        if (numericId !== null) {
+            selectedAccountSnapshots.set(numericId, account);
+        }
+    });
     if (accounts.length === 0) {
         elements.table.innerHTML = `
             <tr>
@@ -649,6 +705,11 @@ function updateBatchButtons() {
         selectAllPages,
         totalAccounts,
     });
+    const registrationPrefill = buildRegistrationOutlookPrefillState(
+        Array.from(selectedAccountSnapshots.values()),
+        selectedAccounts,
+    );
+    const registrationOutlookCount = registrationPrefill.emails.length;
     elements.batchDeleteBtn.disabled = count === 0;
     elements.batchRefreshBtn.disabled = count === 0;
     elements.batchValidateBtn.disabled = count === 0;
@@ -663,6 +724,35 @@ function updateBatchButtons() {
     elements.batchUploadBtn.textContent = count > 0 ? `☁️ 上传 (${count})` : '☁️ 上传';
     elements.batchCheckSubBtn.textContent = count > 0 ? `🔍 检测 (${count})` : '🔍 检测订阅';
     elements.batchStateBtn.textContent = batchStateControl.label;
+    if (elements.jumpRegisterBtn) {
+        const disabled = selectAllPages || registrationOutlookCount === 0;
+        elements.jumpRegisterBtn.disabled = disabled;
+        elements.jumpRegisterBtn.textContent = registrationOutlookCount > 0
+            ? `跳转注册 (${registrationOutlookCount})`
+            : '跳转注册';
+        elements.jumpRegisterBtn.title = selectAllPages
+            ? '跨页全选暂不支持直接跳转注册，请改为明确勾选需要的 Outlook 账号'
+            : '将当前勾选的 Outlook 账号带到注册页';
+    }
+}
+
+function handleJumpToRegistration() {
+    if (selectAllPages) {
+        toast.warning('跨页全选暂不支持直接跳转注册，请改为明确勾选需要的 Outlook 账号');
+        return;
+    }
+
+    const prefill = buildRegistrationOutlookPrefillState(
+        Array.from(selectedAccountSnapshots.values()),
+        selectedAccounts,
+    );
+    if (prefill.emails.length === 0) {
+        toast.warning('请先勾选至少一个 Outlook 账号');
+        return;
+    }
+
+    sessionStorage.setItem(REGISTRATION_OUTLOOK_PREFILL_KEY, JSON.stringify(prefill));
+    window.location.href = '/';
 }
 
 // 刷新单个账号Token
@@ -1551,6 +1641,7 @@ function showInboxCodeResult(code, email) {
 
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
+        buildRegistrationOutlookPrefillState,
         buildTeamManagementEntryUrl,
         resolveTeamManagementEntryHref,
     };

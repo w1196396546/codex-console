@@ -322,12 +322,13 @@
                                     <div class="form-group">
                                         <label>选择账户</label>
                                         <div style="display: grid; grid-template-columns: minmax(0, 1fr) 170px; gap: var(--spacing-sm); margin-bottom: var(--spacing-sm);">
-                                            <input
-                                                type="text"
+                                            <textarea
                                                 id="outlook-account-search"
                                                 class="form-input"
-                                                placeholder="🔍 搜索 Outlook 邮箱"
-                                            >
+                                                rows="3"
+                                                placeholder="🔍 搜索 Outlook 邮箱，多个邮箱可按回车分隔，也支持直接粘贴 Outlook 导入行"
+                                                style="resize: vertical; min-height: 78px;"
+                                            ></textarea>
                                             <select id="outlook-account-status-filter" class="form-select">
                                                 <option value="all">全部</option>
                                                 <option value="unregistered">未注册</option>
@@ -352,7 +353,7 @@
                                             <button type="button" class="btn btn-ghost btn-sm" onclick="deselectAllOutlookAccounts()">清空当前结果</button>
                                         </div>
                                         <small style="display: block; margin-top: var(--spacing-xs); color: var(--text-muted);">
-                                            筛选后继续勾选会自动叠加，已选项不会因为切换筛选而丢失；上方快捷按钮只作用于当前筛选结果。
+                                            筛选后继续勾选会自动叠加，已选项不会因为切换筛选而丢失；支持直接粘贴多条 Outlook 导入行筛邮箱，筛出多个结果后可继续多选；上方快捷按钮只作用于当前筛选结果。
                                         </small>
                                     </div>
                                     <div class="form-group">

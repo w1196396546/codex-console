@@ -15,12 +15,14 @@ let isBatchMode = false;
 let isOutlookBatchMode = false;
 const outlookSelectorApi = window.OutlookAccountSelector || {};
 const registrationLogBufferApi = window.RegistrationLogBuffer || {};
+const OUTLOOK_PREFILL_STORAGE_KEY = 'registration.outlook.prefill';
 let outlookAccounts = [];
 let selectedOutlookAccountIds = new Set();
 let outlookAccountFilters = {
     keyword: '',
     executionState: 'all',
 };
+let pendingOutlookPrefill = null;
 let taskCompleted = false;  // 标记任务是否已完成
 let batchCompleted = false;  // 标记批量任务是否已完成
 let taskFinalStatus = null;  // 保存任务的最终状态
@@ -286,6 +288,82 @@ function initEventListeners() {
     }
 }
 
+function collectNormalizedOutlookEmails(value) {
+    if (typeof outlookSelectorApi.collectNormalizedEmails === 'function') {
+        return outlookSelectorApi.collectNormalizedEmails(value);
+    }
+
+    const rawValues = Array.isArray(value)
+        ? value
+        : String(value || '').split(/\r?\n/);
+    const seen = new Set();
+    const emails = [];
+
+    rawValues.forEach((rawValue) => {
+        const normalized = String(rawValue || '').trim().toLowerCase();
+        if (!normalized || seen.has(normalized)) {
+            return;
+        }
+        seen.add(normalized);
+        emails.push(normalized);
+    });
+
+    return emails;
+}
+
+function readPendingOutlookPrefill() {
+    if (pendingOutlookPrefill) {
+        return pendingOutlookPrefill;
+    }
+
+    const raw = sessionStorage.getItem(OUTLOOK_PREFILL_STORAGE_KEY);
+    if (!raw) {
+        return null;
+    }
+
+    try {
+        const parsed = JSON.parse(raw);
+        const emails = collectNormalizedOutlookEmails(parsed && parsed.emails);
+        if (emails.length === 0) {
+            sessionStorage.removeItem(OUTLOOK_PREFILL_STORAGE_KEY);
+            return null;
+        }
+
+        pendingOutlookPrefill = {
+            source: parsed && parsed.source ? parsed.source : 'accounts',
+            emails,
+        };
+        return pendingOutlookPrefill;
+    } catch (error) {
+        console.warn('解析 Outlook 预选数据失败:', error);
+        sessionStorage.removeItem(OUTLOOK_PREFILL_STORAGE_KEY);
+        return null;
+    }
+}
+
+function clearPendingOutlookPrefill() {
+    pendingOutlookPrefill = null;
+    sessionStorage.removeItem(OUTLOOK_PREFILL_STORAGE_KEY);
+}
+
+function maybeEnterOutlookBatchModeFromPrefill() {
+    const prefill = readPendingOutlookPrefill();
+    if (!prefill) {
+        return;
+    }
+
+    const batchOption = elements.emailService.querySelector('option[value="outlook_batch:all"]');
+    if (!batchOption) {
+        addLog('warning', '[警告] 检测到账号页带来的 Outlook 预选，但当前没有可用的 Outlook 批量注册账户');
+        clearPendingOutlookPrefill();
+        return;
+    }
+
+    elements.emailService.value = 'outlook_batch:all';
+    handleServiceChange({ target: elements.emailService });
+    addLog('info', `[系统] 已根据账号页勾选自动切换到 Outlook 批量注册模式 (${prefill.emails.length} 个邮箱)`);
+}
+
 // 加载可用的邮箱服务
 async function loadAvailableServices() {
     try {
@@ -294,6 +372,7 @@ async function loadAvailableServices() {
 
         // 更新邮箱服务选择框
         updateEmailServiceOptions();
+        maybeEnterOutlookBatchModeFromPrefill();
 
         addLog('info', '[系统] 邮箱服务列表已加载');
     } catch (error) {
@@ -1753,15 +1832,43 @@ async function loadOutlookAccounts() {
 
         const data = await api.get('/registration/outlook-accounts');
         outlookAccounts = data.accounts || [];
-        selectedOutlookAccountIds = createDefaultOutlookSelection(outlookAccounts);
-        resetOutlookAccountFilters();
+        const prefill = readPendingOutlookPrefill();
+
+        if (prefill) {
+            const prefillKeyword = prefill.emails.join('\n');
+            selectedOutlookAccountIds = typeof outlookSelectorApi.resolveSelectedIdsByEmails === 'function'
+                ? outlookSelectorApi.resolveSelectedIdsByEmails(outlookAccounts, prefill.emails)
+                : new Set(
+                    outlookAccounts
+                        .filter((account) => prefill.emails.includes(String(account.email || '').trim().toLowerCase()))
+                        .map((account) => Number(account.id))
+                        .filter((id) => Number.isFinite(id))
+                );
+            outlookAccountFilters = {
+                keyword: prefillKeyword,
+                executionState: 'all',
+            };
+            if (elements.outlookAccountSearch) {
+                elements.outlookAccountSearch.value = prefillKeyword;
+            }
+            if (elements.outlookAccountStatusFilter) {
+                elements.outlookAccountStatusFilter.value = 'all';
+            }
+        } else {
+            selectedOutlookAccountIds = createDefaultOutlookSelection(outlookAccounts);
+            resetOutlookAccountFilters();
+        }
         const executableCount = typeof outlookSelectorApi.countExecutableAccounts === 'function'
             ? outlookSelectorApi.countExecutableAccounts(outlookAccounts)
             : outlookAccounts.filter((account) => isExecutableOutlookAccount(account)).length;
 
         renderOutlookAccountsList();
-
-        addLog('info', `[系统] 已加载 ${data.total} 个 Outlook 账户 (账号已存在: ${data.registered_count}, 默认勾选待处理: ${executableCount})`);
+        if (prefill) {
+            addLog('info', `[系统] 已加载 ${data.total} 个 Outlook 账户，并从账号页匹配到 ${selectedOutlookAccountIds.size} / ${prefill.emails.length} 个预选邮箱`);
+            clearPendingOutlookPrefill();
+        } else {
+            addLog('info', `[系统] 已加载 ${data.total} 个 Outlook 账户 (账号已存在: ${data.registered_count}, 默认勾选待处理: ${executableCount})`);
+        }
 
     } catch (error) {
         console.error('加载 Outlook 账户列表失败:', error);

@@ -9,6 +9,8 @@
         global.OutlookAccountSelector = api;
     }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+    const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+
     function toNumericId(value) {
         const numeric = Number(value);
         return Number.isFinite(numeric) ? numeric : null;
@@ -27,6 +29,56 @@
 
     function normalizeKeyword(value) {
         return String(value || '').trim().toLowerCase();
+    }
+
+    function extractNormalizedEmailCandidate(value) {
+        const text = String(value || '').trim();
+        if (!text) {
+            return '';
+        }
+
+        if (text.includes('----')) {
+            const firstPart = text.split('----', 1)[0];
+            const firstMatch = firstPart.match(EMAIL_PATTERN);
+            if (firstMatch) {
+                return normalizeKeyword(firstMatch[0]);
+            }
+        }
+
+        const match = text.match(EMAIL_PATTERN);
+        if (match) {
+            return normalizeKeyword(match[0]);
+        }
+
+        return normalizeKeyword(text);
+    }
+
+    function hasStructuredKeywordInput(value) {
+        if (Array.isArray(value)) {
+            return value.length > 1;
+        }
+
+        const text = String(value || '');
+        return text.includes('----') || text.includes('\n') || text.includes('\r');
+    }
+
+    function collectNormalizedEmails(value) {
+        const rawValues = Array.isArray(value)
+            ? value
+            : String(value || '').split(/\r?\n/);
+        const seen = new Set();
+        const emails = [];
+
+        for (const rawValue of rawValues) {
+            const normalized = extractNormalizedEmailCandidate(rawValue);
+            if (!normalized || seen.has(normalized)) {
+                continue;
+            }
+            seen.add(normalized);
+            emails.push(normalized);
+        }
+
+        return emails;
     }
 
     function hasRegistrationCompleteFlag(account) {
@@ -73,6 +125,11 @@
     function matchesKeyword(account, keyword) {
         if (!keyword) {
             return true;
+        }
+
+        const exactEmails = collectNormalizedEmails(keyword);
+        if (exactEmails.length > 0 && (exactEmails.length > 1 || hasStructuredKeywordInput(keyword))) {
+            return exactEmails.includes(normalizeKeyword(account && account.email));
         }
 
         const haystacks = [
@@ -185,8 +242,31 @@
         return summary;
     }
 
+    function resolveSelectedIdsByEmails(accounts, emails) {
+        const targets = new Set(collectNormalizedEmails(emails));
+        const selected = new Set();
+
+        if (targets.size === 0) {
+            return selected;
+        }
+
+        for (const account of accounts || []) {
+            const numericId = toNumericId(account && account.id);
+            if (numericId === null) {
+                continue;
+            }
+
+            if (targets.has(normalizeKeyword(account && account.email))) {
+                selected.add(numericId);
+            }
+        }
+
+        return selected;
+    }
+
     return {
         buildSelectionSummary,
+        collectNormalizedEmails,
         countExecutableAccounts,
         createInitialSelectedIds,
         deselectVisibleAccounts,
@@ -195,6 +275,7 @@
         getVisibleSelectedIds,
         isExecutableAccount,
         mapExecutionState,
+        resolveSelectedIdsByEmails,
         selectExecutableVisibleAccounts,
         selectVisibleAccounts,
         selectVisibleExecutableAccounts,

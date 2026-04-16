@@ -199,3 +199,148 @@ def test_login_passwordless_completes_about_you_before_token_exchange(monkeypatc
         "last_name": "Walker",
         "birthdate": "1999-02-03",
     }
+
+
+def test_login_and_get_tokens_uses_codex_simplified_authorize_flags(monkeypatch):
+    client = OAuthClient(
+        config={
+            "oauth_issuer": "https://auth.openai.com",
+            "oauth_client_id": "client-1",
+            "oauth_redirect_uri": "http://localhost:1455/auth/callback",
+        },
+        verbose=False,
+    )
+
+    captured = {}
+
+    def fake_bootstrap(authorize_url, authorize_params, **kwargs):
+        captured["authorize_url"] = authorize_url
+        captured["authorize_params"] = dict(authorize_params)
+        return "https://auth.openai.com/log-in"
+
+    monkeypatch.setattr(client, "_bootstrap_oauth_session", fake_bootstrap)
+    monkeypatch.setattr(
+        client,
+        "_submit_authorize_continue",
+        lambda *args, **kwargs: FlowState(
+            page_type="oauth_callback",
+            current_url="http://localhost:1455/auth/callback?code=oauth-code",
+        ),
+    )
+    monkeypatch.setattr(
+        client,
+        "_exchange_code_for_tokens",
+        lambda code, code_verifier, user_agent=None, impersonate=None: {
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "code": code,
+        },
+    )
+
+    tokens = client.login_and_get_tokens(
+        "tester@example.com",
+        "known-pass",
+        "device-1",
+        user_agent="ua",
+        sec_ch_ua="sec",
+        impersonate="chrome",
+        skymail_client=object(),
+    )
+
+    assert tokens["refresh_token"] == "refresh-token"
+    assert captured["authorize_url"] == "https://auth.openai.com/oauth/authorize"
+    assert captured["authorize_params"]["id_token_add_organizations"] == "true"
+    assert captured["authorize_params"]["codex_cli_simplified_flow"] == "true"
+
+
+def test_login_passwordless_uses_codex_simplified_authorize_flags(monkeypatch):
+    client = OAuthClient(
+        config={
+            "oauth_issuer": "https://auth.openai.com",
+            "oauth_client_id": "client-1",
+            "oauth_redirect_uri": "http://localhost:1455/auth/callback",
+        },
+        verbose=False,
+    )
+
+    captured = {}
+
+    def fake_bootstrap(authorize_url, authorize_params, **kwargs):
+        captured["authorize_url"] = authorize_url
+        captured["authorize_params"] = dict(authorize_params)
+        return "https://auth.openai.com/log-in"
+
+    monkeypatch.setattr(client, "_bootstrap_oauth_session", fake_bootstrap)
+    monkeypatch.setattr(
+        client,
+        "_submit_authorize_continue",
+        lambda *args, **kwargs: FlowState(
+            page_type="login_password",
+            current_url="https://auth.openai.com/log-in/password",
+        ),
+    )
+    monkeypatch.setattr(client, "_send_email_otp", lambda *args, **kwargs: (True, ""))
+    monkeypatch.setattr(
+        client,
+        "_handle_otp_verification",
+        lambda *args, **kwargs: FlowState(
+            page_type="oauth_callback",
+            current_url="http://localhost:1455/auth/callback?code=passwordless-code",
+        ),
+    )
+    monkeypatch.setattr(
+        client,
+        "_exchange_code_for_tokens",
+        lambda code, code_verifier, user_agent=None, impersonate=None: {
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "code": code,
+        },
+    )
+
+    tokens = client.login_passwordless_and_get_tokens(
+        "tester@example.com",
+        "device-1",
+        user_agent="ua",
+        sec_ch_ua="sec",
+        impersonate="chrome",
+        skymail_client=object(),
+        first_name="Alice",
+        last_name="Walker",
+        birthdate="1999-02-03",
+    )
+
+    assert tokens["refresh_token"] == "refresh-token"
+    assert captured["authorize_url"] == "https://auth.openai.com/oauth/authorize"
+    assert captured["authorize_params"]["id_token_add_organizations"] == "true"
+    assert captured["authorize_params"]["codex_cli_simplified_flow"] == "true"
+
+
+def test_state_supports_workspace_resolution_requires_explicit_consent_markers(monkeypatch):
+    client = OAuthClient(
+        config={
+            "oauth_issuer": "https://auth.openai.com",
+            "oauth_client_id": "client-1",
+            "oauth_redirect_uri": "http://localhost:1455/auth/callback",
+        },
+        verbose=False,
+    )
+
+    monkeypatch.setattr(
+        client,
+        "_decode_oauth_session_cookie",
+        lambda: {"workspaces": [{"id": "ws-1"}]},
+    )
+
+    assert client._state_supports_workspace_resolution(
+        FlowState(
+            page_type="login_password",
+            current_url="https://auth.openai.com/log-in/password",
+        )
+    ) is False
+    assert client._state_supports_workspace_resolution(
+        FlowState(
+            page_type="consent",
+            current_url="https://auth.openai.com/sign-in-with-chatgpt/codex/consent",
+        )
+    ) is True

@@ -98,6 +98,27 @@ class OAuthClient:
             pass
         return direct_session
 
+    def _build_authorize_params(self, *, code_challenge, oauth_state, extra_params=None):
+        params = {
+            "response_type": "code",
+            "client_id": self.oauth_client_id,
+            "redirect_uri": self.oauth_redirect_uri,
+            "scope": "openid profile email offline_access",
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "state": oauth_state,
+            "id_token_add_organizations": "true",
+            "codex_cli_simplified_flow": "true",
+        }
+        for key, value in dict(extra_params or {}).items():
+            if value is None:
+                continue
+            text = str(value).strip() if isinstance(value, str) else value
+            if text == "":
+                continue
+            params[key] = text
+        return params
+
     def _request_with_transport_fallback(self, method_name, url, *, request_label, **kwargs):
         try:
             return getattr(self.session, method_name)(url, **kwargs)
@@ -398,10 +419,7 @@ class OAuthClient:
         target = f"{state.continue_url} {state.current_url}".lower()
         if state.page_type in {"consent", "workspace_selection", "organization_selection"}:
             return True
-        if any(marker in target for marker in ("sign-in-with-chatgpt", "consent", "workspace", "organization")):
-            return True
-        session_data = self._decode_oauth_session_cookie() or {}
-        return bool(session_data.get("workspaces"))
+        return any(marker in target for marker in ("sign-in-with-chatgpt", "consent", "workspace", "organization"))
 
     def _follow_flow_state(self, state: FlowState, referer=None, user_agent=None, impersonate=None, max_hops=16):
         """跟随服务端返回的 continue_url / current_url，返回新的状态或 authorization code。"""
@@ -832,15 +850,10 @@ class OAuthClient:
 
         code_verifier, code_challenge = generate_pkce()
         oauth_state = secrets.token_urlsafe(32)
-        authorize_params = {
-            "response_type": "code",
-            "client_id": self.oauth_client_id,
-            "redirect_uri": self.oauth_redirect_uri,
-            "scope": "openid profile email offline_access",
-            "code_challenge": code_challenge,
-            "code_challenge_method": "S256",
-            "state": oauth_state,
-        }
+        authorize_params = self._build_authorize_params(
+            code_challenge=code_challenge,
+            oauth_state=oauth_state,
+        )
         authorize_url = f"{self.oauth_issuer}/oauth/authorize"
 
         seed_oai_device_cookie(self.session, device_id)
@@ -1033,18 +1046,15 @@ class OAuthClient:
 
         code_verifier, code_challenge = generate_pkce()
         oauth_state = secrets.token_urlsafe(32)
-        authorize_params = {
-            "response_type": "code",
-            "client_id": self.oauth_client_id,
-            "redirect_uri": self.oauth_redirect_uri,
-            "scope": "openid profile email offline_access",
-            "code_challenge": code_challenge,
-            "code_challenge_method": "S256",
-            "state": oauth_state,
-            "prompt": "login",
-            "screen_hint": "login",
-            "login_hint": email,
-        }
+        authorize_params = self._build_authorize_params(
+            code_challenge=code_challenge,
+            oauth_state=oauth_state,
+            extra_params={
+                "prompt": "login",
+                "screen_hint": "login",
+                "login_hint": email,
+            },
+        )
         authorize_url = f"{self.oauth_issuer}/oauth/authorize"
 
         seed_oai_device_cookie(self.session, device_id)
